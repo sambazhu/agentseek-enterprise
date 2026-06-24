@@ -4,8 +4,8 @@ import importlib
 import re
 from typing import Any, Protocol
 
-from agentseek.enterprise.identity.models import EmployeeContext, IdentityDbSettings
-from agentseek.enterprise.identity.rules import (
+from agentseek_enterprise.identity.models import EmployeeContext, IdentityDbSettings
+from agentseek_enterprise.identity.rules import (
     BELONG_TO_LABELS,
     ROLE_LABELS,
     calculate_traveler_fields,
@@ -91,7 +91,7 @@ class DmStaffIdentityProvider:
             msg = (
                 f"Missing DM database driver module {self.settings.driver_module!r}. "
                 "Install the PyPI package 'dmpython' for Linux/Windows, configure the official dmPython driver, "
-                "or use AGENTSEEK_IDENTITY_DM_DRIVER_MODULE=agentseek.enterprise.identity.jdbc_driver locally."
+                "or use AGENTSEEK_IDENTITY_DM_DRIVER_MODULE=agentseek_enterprise.identity.jdbc_driver locally."
             )
             raise RuntimeError(msg) from exc
 

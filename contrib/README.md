@@ -25,6 +25,8 @@ agentseek follows Bub's extension conventions. `AGENTSEEK_*` environment variabl
 | [agentseek-langchain](agentseek-langchain/README.md) | `langchain` | Route Bub model turns through a user-provided LangChain `Runnable` or agent. |
 | [agentseek-schedule-sqlalchemy](agentseek-schedule-sqlalchemy/README.md) | `schedule` | Persist APScheduler jobs in a SQLAlchemy-backed store. |
 | [agentseek-contextseek](agentseek-contextseek/README.md) | `contextseek` | ContextSeek semantic context runtime plugin: retrieves context before model turns and writes responses back after turns. |
+| [agentseek-enterprise](agentseek-enterprise/README.md) | `enterprise` | Enterprise runtime context plugin: injects employee identity into turn state for WeCom, LangChain, DeepAgents, and MCP workflows. |
+| [agentseek-wecom](agentseek-wecom/README.md) | `wecom` | Enterprise WeChat intelligent robot callback channel with encrypted text and stream replies. |
 
 ## Documentation Boundary
 

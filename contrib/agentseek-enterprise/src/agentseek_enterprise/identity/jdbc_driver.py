@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import zipfile
 from pathlib import Path
@@ -13,7 +14,7 @@ def connect(user: str, password: str, server: str, port: int, **_: Any) -> Any:
         os.environ.setdefault("JAVA_HOME", java_home)
 
     try:
-        import jaydebeapi
+        jaydebeapi: Any = importlib.import_module("jaydebeapi")
     except ModuleNotFoundError as exc:
         msg = (
             "Missing optional JDBC bridge dependency 'jaydebeapi'. "

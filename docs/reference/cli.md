@@ -101,6 +101,12 @@ agentseek [OPTIONS] COMMAND [ARGS]...
 | --- | --- | --- | --- |
 | `--enable-channel` | text | all | Channel to enable; repeatable. |
 
+Example:
+
+```bash
+agentseek gateway --enable-channel wecom
+```
+
 ## Environment commands
 
 | Command | Description |

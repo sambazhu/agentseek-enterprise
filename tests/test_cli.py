@@ -59,6 +59,10 @@ def test_runtime_command_layout_replaces_and_regroups_bub_commands() -> None:
     def chat() -> None:
         pass
 
+    @app.command("gateway")
+    def gateway() -> None:
+        pass
+
     @app.command("onboard")
     def onboard() -> None:
         pass
@@ -75,6 +79,7 @@ def test_runtime_command_layout_replaces_and_regroups_bub_commands() -> None:
     # AgentSeek replacements present
     assert "turn" in root_commands
     assert "chat" in root_commands
+    assert "gateway" in root_commands
     assert "onboard" in root_commands
 
     # chat and onboard are AgentSeek's own implementations

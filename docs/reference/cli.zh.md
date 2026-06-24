@@ -101,6 +101,12 @@ agentseek [OPTIONS] COMMAND [ARGS]...
 | --- | --- | --- | --- |
 | `--enable-channel` | text | all | 要启用的 channel；可重复。 |
 
+示例：
+
+```bash
+agentseek gateway --enable-channel wecom
+```
+
 ## 环境命令
 
 | 命令 | 说明 |

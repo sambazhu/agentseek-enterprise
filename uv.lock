@@ -7,9 +7,11 @@ members = [
     "agentseek",
     "agentseek-ag-ui",
     "agentseek-contextseek",
+    "agentseek-enterprise",
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-tapestore-oceanbase",
+    "agentseek-wecom",
 ]
 
 [[package]]
@@ -55,9 +57,11 @@ dev = [
 plugins = [
     { name = "agentseek-ag-ui" },
     { name = "agentseek-contextseek" },
+    { name = "agentseek-enterprise" },
     { name = "agentseek-langchain" },
     { name = "agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase" },
+    { name = "agentseek-wecom" },
     { name = "bub-feishu" },
     { name = "bub-mcp" },
     { name = "bub-tapestore-otel" },
@@ -91,9 +95,11 @@ dev = [
 plugins = [
     { name = "agentseek-ag-ui", editable = "contrib/agentseek-ag-ui" },
     { name = "agentseek-contextseek", editable = "contrib/agentseek-contextseek" },
+    { name = "agentseek-enterprise", editable = "contrib/agentseek-enterprise" },
     { name = "agentseek-langchain", editable = "contrib/agentseek-langchain" },
     { name = "agentseek-schedule-sqlalchemy", editable = "contrib/agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase", editable = "contrib/agentseek-tapestore-oceanbase" },
+    { name = "agentseek-wecom", editable = "contrib/agentseek-wecom" },
     { name = "bub-feishu", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-feishu&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "bub-mcp", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-mcp&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "bub-tapestore-otel", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-tapestore-otel&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
@@ -133,6 +139,19 @@ requires-dist = [
     { name = "bub", specifier = "==0.3.9" },
     { name = "contextseek" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
+]
+
+[[package]]
+name = "agentseek-enterprise"
+version = "0.1.0"
+source = { editable = "contrib/agentseek-enterprise" }
+dependencies = [
+    { name = "bub" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bub", specifier = "==0.3.9" },
 ]
 
 [[package]]
@@ -194,6 +213,27 @@ requires-dist = [
     { name = "bub-tapestore-sqlalchemy", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-tapestore-sqlalchemy&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "pymysql", specifier = ">=1.1.0" },
     { name = "pyobvector", specifier = ">=0.2.22" },
+]
+
+[[package]]
+name = "agentseek-wecom"
+version = "0.1.0"
+source = { editable = "contrib/agentseek-wecom" }
+dependencies = [
+    { name = "bub" },
+    { name = "fastapi" },
+    { name = "pydantic-settings" },
+    { name = "pycryptodome" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bub", specifier = "==0.3.9" },
+    { name = "fastapi", specifier = ">=0.115.12" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pycryptodome", specifier = ">=3.20.0" },
+    { name = "uvicorn", specifier = ">=0.34.0" },
 ]
 
 [[package]]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agentseek.enterprise.identity import DmStaffIdentityProvider, IdentityDbSettings
+from agentseek_enterprise.identity import DmStaffIdentityProvider, IdentityDbSettings
 
 
 class FakeConnection:
@@ -26,7 +26,7 @@ class FakeCursor:
         self.rows: list[tuple[Any, ...]] = []
         self.closed = False
 
-    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
+    def execute(self, sql: str, params: Any = None) -> None:
         self.connection.executed.append((sql, params))
         columns, rows = self.connection.result_sets.pop(0)
         self.description = [(column,) for column in columns]

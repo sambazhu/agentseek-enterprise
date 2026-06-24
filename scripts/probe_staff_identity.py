@@ -29,10 +29,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+ENTERPRISE_SRC = ROOT / "contrib" / "agentseek-enterprise" / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(ENTERPRISE_SRC) not in sys.path:
+    sys.path.insert(0, str(ENTERPRISE_SRC))
 
-from agentseek.enterprise.identity import DmStaffIdentityProvider  # noqa: E402
+from agentseek_enterprise.identity import DmStaffIdentityProvider  # noqa: E402
 
 ENV_FILES = (
     ROOT / ".env",
