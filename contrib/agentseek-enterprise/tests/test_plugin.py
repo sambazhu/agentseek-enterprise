@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentseek_enterprise.identity import EmployeeContext
+from agentseek_enterprise.memory import SHORT_TERM_MEMORY_STATE_KEY
 from agentseek_enterprise.plugin import (
     EMPLOYEE_CONTEXT_STATE_KEY,
     EMPLOYEE_IDENTITY_STATE_KEY,
@@ -10,7 +11,7 @@ from agentseek_enterprise.plugin import (
     extract_oa_account,
     format_employee_context_for_prompt,
 )
-from agentseek_enterprise.memory import SHORT_TERM_MEMORY_STATE_KEY
+from bub.turn_admission import AdmitDecision, TurnSnapshot
 
 
 class FakeIdentityProvider:
@@ -146,3 +147,63 @@ def test_system_prompt_can_include_short_term_memory(monkeypatch: Any) -> None:
     assert prompt is not None
     assert "[ShortTermMemory]" in prompt
     assert "用户: 帮我记一下，我明天去深圳出差" in prompt
+
+
+def _turn_snapshot(
+    *,
+    is_running: bool = False,
+    pending_count: int = 0,
+    steering_count: int = 0,
+    session_id: str = "wecom:userA",
+) -> TurnSnapshot:
+    return TurnSnapshot(
+        session_id=session_id,
+        is_running=is_running,
+        running_count=1 if is_running else 0,
+        pending_count=pending_count,
+        steering_count=steering_count,
+    )
+
+
+def test_admit_message_returns_none_when_session_idle(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS", "true")
+    plugin = EnterprisePlugin()
+
+    assert plugin.admit_message("wecom:userA", {}, _turn_snapshot(is_running=False)) is None
+
+
+def test_admit_message_queues_follow_up_when_session_busy(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS", "true")
+    plugin = EnterprisePlugin()
+
+    decision = plugin.admit_message("wecom:userA", {}, _turn_snapshot(is_running=True))
+
+    assert isinstance(decision, AdmitDecision)
+    assert decision.action == "follow_up"
+
+
+def test_admit_message_queues_follow_up_when_pending_exists(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS", "true")
+    plugin = EnterprisePlugin()
+
+    decision = plugin.admit_message("wecom:userA", {}, _turn_snapshot(pending_count=2))
+
+    assert decision is not None
+    assert decision.action == "follow_up"
+
+
+def test_admit_message_serializes_by_default_when_env_unset(monkeypatch: Any) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS", raising=False)
+    plugin = EnterprisePlugin()
+
+    decision = plugin.admit_message("wecom:userA", {}, _turn_snapshot(is_running=True))
+
+    assert isinstance(decision, AdmitDecision)
+    assert decision.action == "follow_up"
+
+
+def test_admit_message_disabled_returns_none_even_when_busy(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS", "false")
+    plugin = EnterprisePlugin()
+
+    assert plugin.admit_message("wecom:userA", {}, _turn_snapshot(is_running=True)) is None

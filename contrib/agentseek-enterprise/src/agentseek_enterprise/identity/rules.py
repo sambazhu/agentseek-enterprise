@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
 BELONG_TO_LABELS = {
     "1": "公司总部",
     "2": "金通子公司",

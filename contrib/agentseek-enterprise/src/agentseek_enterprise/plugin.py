@@ -7,13 +7,14 @@ from typing import Any, Protocol
 
 from bub import hookimpl
 from bub.envelope import content_of, field_of
+from bub.turn_admission import AdmitDecision, TurnSnapshot
 from bub.types import Envelope, State
 
 from agentseek_enterprise.identity import DmStaffIdentityProvider, EmployeeContext
 from agentseek_enterprise.memory import (
     SHORT_TERM_MEMORY_STATE_KEY,
-    SQLiteShortTermMemoryStore,
     ShortTermMemorySettings,
+    SQLiteShortTermMemoryStore,
     format_short_term_memory_for_prompt,
     short_term_memory_enabled_from_env,
     short_term_memory_state,
@@ -75,6 +76,34 @@ class EnterprisePlugin:
         self._provider_initialized = False
         self._memory_store: ShortTermMemoryStore | None = None
         self._memory_store_initialized = False
+
+    @hookimpl
+    def admit_message(
+        self,
+        session_id: str,
+        message: Envelope,
+        turn: TurnSnapshot,
+    ) -> AdmitDecision | None:
+        """Serialize turns within one session.
+
+        Enterprise channels (e.g. WeCom) are 1:1 with an employee: messages from the
+        same employee must be processed in arrival order, otherwise concurrent turns
+        race on shared per-session state (short-term memory, identity, the WeCom
+        stream) and replies can overtake each other. Different sessions stay
+        concurrent because Bub schedules each in its own task and passes a
+        per-session ``TurnSnapshot``.
+
+        Returns ``follow_up`` when a turn is already running or queued for this
+        session; Bub parks the message in the session's pending queue and drains it
+        after the active turn finishes. Returns ``None`` when the session is idle so
+        Bub's default scheduling applies unchanged.
+        """
+        del session_id, message  # the decision is driven entirely by the snapshot
+        if not _serialize_turns_enabled():
+            return None
+        if turn.is_running or turn.pending_count > 0:
+            return AdmitDecision(action="follow_up", reason="serialize turns per session")
+        return None
 
     @hookimpl
     def load_state(self, message: Envelope, session_id: str) -> State:
@@ -248,6 +277,14 @@ def format_employee_context_for_prompt(context: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _serialize_turns_enabled() -> bool:
+    """Whether turns within a session are processed serially. Defaults to enabled."""
+    explicit = os.environ.get("AGENTSEEK_ENTERPRISE_SERIALIZE_TURNS")
+    if explicit is not None:
+        return _truthy(explicit)
+    return True
+
+
 def _identity_enabled() -> bool:
     explicit = os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_ENABLED")
     if explicit is not None:
@@ -266,10 +303,7 @@ def _truthy(value: str | None) -> bool:
 def _lookup_path(value: Any, path: tuple[str, ...]) -> Any:
     current = value
     for key in path:
-        if isinstance(current, Mapping):
-            current = current.get(key)
-        else:
-            current = getattr(current, key, None)
+        current = current.get(key) if isinstance(current, Mapping) else getattr(current, key, None)
         if current is None:
             return None
     return current

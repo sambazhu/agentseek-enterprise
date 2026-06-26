@@ -23,7 +23,7 @@ class ShortTermMemorySettings:
     max_content_chars: int = 4000
 
     @classmethod
-    def from_env(cls) -> "ShortTermMemorySettings":
+    def from_env(cls) -> ShortTermMemorySettings:
         _load_dotenv_if_present(Path.cwd() / ".env")
         return cls(
             enabled=_truthy(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED")),
@@ -46,10 +46,9 @@ class SQLiteShortTermMemoryStore:
     def load_recent_messages(self, session_id: str) -> list[dict[str, Any]]:
         self.prune_expired()
         limit = self.settings.recent_turns * 2
-        with closing(self._connect()) as connection:
-            with connection:
-                rows = connection.execute(
-                    """
+        with closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                """
                     SELECT role, content, created_at
                     FROM (
                         SELECT role, content, created_at, id
@@ -60,8 +59,8 @@ class SQLiteShortTermMemoryStore:
                     )
                     ORDER BY id ASC
                     """,
-                    (session_id, limit),
-                ).fetchall()
+                (session_id, limit),
+            ).fetchall()
         return [
             {
                 "role": row["role"],
@@ -78,38 +77,35 @@ class SQLiteShortTermMemoryStore:
             return
 
         now = int(time.time())
-        with closing(self._connect()) as connection:
-            with connection:
-                self._prune_expired(connection, now)
-                if user_content:
-                    connection.execute(
-                        """
+        with closing(self._connect()) as connection, connection:
+            self._prune_expired(connection, now)
+            if user_content:
+                connection.execute(
+                    """
                         INSERT INTO enterprise_short_term_messages (session_id, role, content, created_at)
                         VALUES (?, ?, ?, ?)
                         """,
-                        (session_id, "user", user_content, now),
-                    )
-                if assistant_content:
-                    connection.execute(
-                        """
+                    (session_id, "user", user_content, now),
+                )
+            if assistant_content:
+                connection.execute(
+                    """
                         INSERT INTO enterprise_short_term_messages (session_id, role, content, created_at)
                         VALUES (?, ?, ?, ?)
                         """,
-                        (session_id, "assistant", assistant_content, now),
-                    )
+                    (session_id, "assistant", assistant_content, now),
+                )
 
     def prune_expired(self) -> None:
         if self.settings.ttl_seconds <= 0:
             return
-        with closing(self._connect()) as connection:
-            with connection:
-                self._prune_expired(connection, int(time.time()))
+        with closing(self._connect()) as connection, connection:
+            self._prune_expired(connection, int(time.time()))
 
     def _ensure_schema(self) -> None:
-        with closing(self._connect()) as connection:
-            with connection:
-                connection.execute(
-                    """
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
                     CREATE TABLE IF NOT EXISTS enterprise_short_term_messages (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id TEXT NOT NULL,
@@ -118,19 +114,19 @@ class SQLiteShortTermMemoryStore:
                         created_at INTEGER NOT NULL
                     )
                     """
-                )
-                connection.execute(
-                    """
+            )
+            connection.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_enterprise_short_term_messages_session_id
                     ON enterprise_short_term_messages (session_id, id)
                     """
-                )
-                connection.execute(
-                    """
+            )
+            connection.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_enterprise_short_term_messages_created_at
                     ON enterprise_short_term_messages (created_at)
                     """
-                )
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.path), timeout=10)
