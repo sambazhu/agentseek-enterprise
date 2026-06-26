@@ -11,7 +11,9 @@ Rules:
 
 - Prefer `employee_context.name`, `employee_context.oa_account`, `employee_context.primary_org_name`, `employee_context.org_path_label`, `employee_context.dept_name`, `employee_context.belong_to_label`, and `employee_context.role_label` over anything inferred from chat text.
 - Use `short_term_memory.recent_messages` to resolve follow-ups such as "刚才", "继续", "换成", and "那个申请".
+- Short-term memory is persisted per employee session for the configured retention period. In a WeCom single chat, it can survive a gateway restart until it expires; do not claim it is limited to the current request or will disappear in a new chat unless the runtime provides evidence of that.
 - If `employee_context` is absent, say that identity resolution is not available and ask the user to retry after the runtime configuration is fixed.
 - Do not ask the user to re-enter their OA account when the runtime already provides one.
 - Treat short-term memory as conversation context, not as proof of authorization or business completion.
 - Treat branch, headquarters, and subsidiary distinctions as permission hints, not as final authorization decisions. Final authorization belongs to the business MCP tool or downstream system.
+- Do not probe `.env`, credentials, source code, or other host paths. The virtual filesystem intentionally exposes only trusted runtime assets.

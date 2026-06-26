@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from agentseek_enterprise.memory import format_short_term_memory_for_prompt
+from agentseek_enterprise.static_assets import StaticAgentAssets, load_static_agent_assets
 from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
-from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
-from agentseek_enterprise.memory import format_short_term_memory_for_prompt
+from deepagents import FilesystemPermission, create_deep_agent
+from deepagents.backends import StateBackend
 from langchain_core.messages import SystemMessage
 
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
@@ -25,7 +26,19 @@ You receive one employee's message at a time through AgentSeek. Use employee_con
 For knowledge lookup and office workflows, discover and call MCP tools instead of inventing results.
 Before state-changing operations, ask for confirmation unless the user's latest message already confirms the exact action.
 Keep WeCom replies concise and operational.
+
+Recent conversation context is persisted by the runtime per employee session for its configured retention period. In a WeCom single chat, the same employee session can recover recent context after a gateway restart until that retention expires. It is recent context, not a long-term profile, proof of authorization, or proof that a business action completed.
+
+The virtual filesystem exposes only trusted deployment instructions and skills. Do not probe host paths or try alternative paths for .env, credentials, source code, or runtime files. When asked for them, state that they are intentionally unavailable and do not attempt to retrieve them.
 """
+
+_STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
+_READ_ONLY_ENTERPRISE_FILESYSTEM = [
+    FilesystemPermission(operations=["read", "write"], paths=["/.*", "/**/.*"], mode="deny"),
+    FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+    FilesystemPermission(operations=["read"], paths=["/assets/**", "/skills/**"], mode="allow"),
+    FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"),
+]
 
 
 def build_agent() -> Any:
@@ -39,17 +52,17 @@ def build_agent() -> Any:
             list_mcp_tools,
             call_mcp_tool,
         ],
-        system_prompt=SYSTEM_PROMPT,
-        memory=[str(PROJECT_ROOT / "AGENTS.md")],
-        skills=[str(PROJECT_ROOT / "skills")],
-        backend=FilesystemBackend(root_dir=PROJECT_ROOT, virtual_mode=False),
+        system_prompt=_system_prompt(_STATIC_ASSETS),
+        skills=["/skills"],
+        backend=StateBackend(),
+        permissions=_READ_ONLY_ENTERPRISE_FILESYSTEM,
     )
 
 
 def build_spec():
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
-    base_spec = messages_spec(build_agent(), include_agents_md=True)
+    base_spec = messages_spec(build_agent(), include_agents_md=False)
 
     def build_input(context: InvocationContext) -> object:
         runnable_input = base_spec.build_input(context)
@@ -57,12 +70,14 @@ def build_spec():
             return runnable_input
         messages = runnable_input.get("messages")
         if not isinstance(messages, list):
+            runnable_input = dict(runnable_input)
+            runnable_input["files"] = _STATIC_ASSETS.files_for_invocation()
             return runnable_input
         runtime_messages = _runtime_context_messages(context.state)
-        if not runtime_messages:
-            return runnable_input
         runnable_input = dict(runnable_input)
-        runnable_input["messages"] = [*runtime_messages, *messages]
+        if runtime_messages:
+            runnable_input["messages"] = [*runtime_messages, *messages]
+        runnable_input["files"] = _STATIC_ASSETS.files_for_invocation()
         return runnable_input
 
     return RunnableSpec(
@@ -72,6 +87,10 @@ def build_spec():
         build_config=base_spec.build_config,
         stream_output=base_spec.stream_output,
     )
+
+
+def _system_prompt(assets: StaticAgentAssets) -> str:
+    return f"{SYSTEM_PROMPT}\n\n[TrustedDeploymentInstructions]\n{assets.agent_instructions}"
 
 
 def _runtime_context_messages(state: Mapping[str, object]) -> list[SystemMessage]:

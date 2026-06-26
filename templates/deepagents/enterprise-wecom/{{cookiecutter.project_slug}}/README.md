@@ -65,6 +65,7 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
 - `src/{{ cookiecutter.project_slug }}/agent.py` exports `build_spec()` for `AGENTSEEK_LANGCHAIN_SPEC`.
 - `src/{{ cookiecutter.project_slug }}/tools.py` adds a lightweight MCP list/call adapter.
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
+- DeepAgents uses an isolated `StateBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
 - `pyproject.toml` depends on AgentSeek runtime plugins: `agentseek-langchain`, `agentseek-wecom`, `agentseek-enterprise`, `agentseek-schedule-sqlalchemy`, and `bub-mcp`.
 
 Author: {{ cookiecutter.author }}
