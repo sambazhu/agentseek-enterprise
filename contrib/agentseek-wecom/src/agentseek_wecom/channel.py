@@ -65,7 +65,6 @@ class WeComChannel(Channel):
         self._server_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._streams: dict[str, StreamReply] = {}
-        self._latest_stream_by_session: dict[str, str] = {}
         self.app = self._build_app()
 
     @property
@@ -293,7 +292,6 @@ class WeComChannel(Channel):
         )
         async with self._lock:
             self._streams[stream_id] = stream
-            self._latest_stream_by_session[session_id] = stream_id
         return stream
 
     async def _get_stream(self, stream_id: str) -> StreamReply | None:
@@ -307,9 +305,15 @@ class WeComChannel(Channel):
         async with self._lock:
             if isinstance(stream_id, str) and stream_id in self._streams:
                 return self._streams[stream_id]
-            latest = self._latest_stream_by_session.get(message.session_id)
-            if latest:
-                return self._streams.get(latest)
+            # The framework rebuilds outbound messages without the inbound stream id,
+            # so a reply cannot be correlated to its stream by attribute. Turns are
+            # serialized per session (admit_message), which means replies complete in
+            # the same order their streams were created: route to the oldest still-open
+            # stream for this session. Routing to the newest stream would write an
+            # earlier turn's reply onto a later turn's stream and lose the later reply.
+            for stream in self._streams.values():
+                if stream.session_id == message.session_id and not stream.finish:
+                    return stream
         return None
 
     async def _wait_for_first_update(self, stream_id: str) -> None:
@@ -326,9 +330,7 @@ class WeComChannel(Channel):
         async with self._lock:
             expired = [stream_id for stream_id, stream in self._streams.items() if now - stream.created_at > ttl]
             for stream_id in expired:
-                stream = self._streams.pop(stream_id, None)
-                if stream is not None and self._latest_stream_by_session.get(stream.session_id) == stream_id:
-                    self._latest_stream_by_session.pop(stream.session_id, None)
+                self._streams.pop(stream_id, None)
 
     def _require_crypto(self) -> WeComJsonCrypto:
         if self._crypto is not None:

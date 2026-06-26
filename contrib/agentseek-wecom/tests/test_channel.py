@@ -173,7 +173,7 @@ def test_stream_events_appends_text_chunks() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
     message = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="hi")
-    setattr(message, "_agentseek_wecom_stream_id", stream.stream_id)
+    message._agentseek_wecom_stream_id = stream.stream_id
 
     async def events():
         yield StreamEvent("text", {"delta": "你"})
@@ -254,3 +254,47 @@ def test_http_callback_decrypts_dispatches_and_encrypts_stream_response() -> Non
     assert stream_payload["stream"]["content"] == "HTTP处理完成"
     assert stream_payload["stream"]["finish"] is True
     assert received[0].content == "测试HTTP回调"
+
+
+def test_outbound_routes_to_oldest_unfinished_stream_per_session() -> None:
+    """A reply must land on the stream of the turn that produced it.
+
+    The framework rebuilds outbound messages without the inbound stream id, so
+    routing cannot correlate by attribute. Turns are serialized per session, so
+    replies complete in the same order their streams were created: the reply for
+    the oldest running turn must reach the oldest still-open stream. Routing to
+    the newest stream instead would write an earlier turn's reply onto a later
+    turn's stream and lose the later reply.
+    """
+    channel = _channel()
+    stream_a = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
+    stream_b = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
+
+    # Outbound carries no stream id, mirroring bub's render_outbound rebuild.
+    reply_first = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="第一条回复")
+    asyncio.run(channel.send(reply_first))
+
+    assert stream_a.content == "第一条回复"
+    assert stream_a.finish is True
+    assert stream_b.content != "第一条回复"
+
+    reply_second = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="第二条回复")
+    asyncio.run(channel.send(reply_second))
+
+    assert stream_b.content == "第二条回复"
+    assert stream_b.finish is True
+
+
+def test_outbound_with_stream_id_attr_routes_to_that_stream() -> None:
+    """When the outbound carries the stream id, it routes to that exact stream
+    regardless of creation order — the attribute path is authoritative."""
+    channel = _channel()
+    stream_a = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
+    stream_b = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
+
+    reply = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="定向回复")
+    reply._agentseek_wecom_stream_id = stream_a.stream_id
+    asyncio.run(channel.send(reply))
+
+    assert stream_a.content == "定向回复"
+    assert stream_b.content != "定向回复"
