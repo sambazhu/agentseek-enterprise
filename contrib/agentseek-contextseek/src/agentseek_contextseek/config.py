@@ -34,6 +34,11 @@ class ContextSeekPluginSettings(BaseSettings):
 
     TENANT: str = "default"
     RETRIEVAL_DEFAULT_K: int = 5
+    SCOPE_MODE: str = "session"
+    INJECTION_MODE: str = "prompt"
+    STORE_USER_TURNS: bool = False
+    STORE_MAX_CONTENT_CHARS: int = 4000
+    SKIP_SENSITIVE_CONTENT: bool = True
 
 
 def apply_contextseek_env_aliases(

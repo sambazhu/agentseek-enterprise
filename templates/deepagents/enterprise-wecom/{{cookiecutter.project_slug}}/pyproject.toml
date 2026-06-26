@@ -3,14 +3,16 @@ name = "{{ cookiecutter.project_slug }}"
 version = "0.1.0"
 description = "{{ cookiecutter.project_name }} — Enterprise WeCom digital employee over AgentSeek and DeepAgents."
 authors = [{ name = "{{ cookiecutter.author }}" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "agentseek",
+    "agentseek-contextseek",
     "agentseek-enterprise",
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-wecom",
     "bub-mcp",
+    "contextseek[seekdb]",
     "deepagents>=0.5.3",
     "fastmcp>=2.0",
     "jaydebeapi>=1.2.3",
@@ -33,12 +35,14 @@ where = ["src"]
 [tool.uv.sources]
 {% if cookiecutter._agentseek_source_path %}
 agentseek = { path = "{{ cookiecutter._agentseek_source_path }}", editable = true }
+agentseek-contextseek = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-contextseek", editable = true }
 agentseek-enterprise = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-enterprise", editable = true }
 agentseek-langchain = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-langchain", editable = true }
 agentseek-schedule-sqlalchemy = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-schedule-sqlalchemy", editable = true }
 agentseek-wecom = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-wecom", editable = true }
 {% else %}
 agentseek = { git = "{{ cookiecutter._agentseek_source_url }}" }
+agentseek-contextseek = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-contextseek" }
 agentseek-enterprise = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-enterprise" }
 agentseek-langchain = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-langchain" }
 agentseek-schedule-sqlalchemy = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-schedule-sqlalchemy" }
