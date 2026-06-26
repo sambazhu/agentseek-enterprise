@@ -55,6 +55,33 @@ class WeComSettings(BaseSettings):
         default=3600,
         validation_alias=AliasChoices("BUB_WECOM_CACHE_TTL_SECONDS", "AGENTSEEK_WECOM_CACHE_TTL_SECONDS"),
     )
+    corp_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUB_WECOM_CORP_ID", "AGENTSEEK_WECOM_CORP_ID"),
+    )
+    app_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUB_WECOM_APP_SECRET", "AGENTSEEK_WECOM_APP_SECRET"),
+    )
+    api_base_url: str = Field(
+        default="https://qyapi.weixin.qq.com",
+        validation_alias=AliasChoices("BUB_WECOM_API_BASE_URL", "AGENTSEEK_WECOM_API_BASE_URL"),
+    )
+    userid_resolve_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUB_WECOM_USERID_RESOLVE_MODE", "AGENTSEEK_WECOM_USERID_RESOLVE_MODE"),
+    )
+    userid_cache_ttl_seconds: int = Field(
+        default=3600,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_USERID_CACHE_TTL_SECONDS",
+            "AGENTSEEK_WECOM_USERID_CACHE_TTL_SECONDS",
+        ),
+    )
+    api_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("BUB_WECOM_API_TIMEOUT_SECONDS", "AGENTSEEK_WECOM_API_TIMEOUT_SECONDS"),
+    )
     welcome_text: str = Field(
         default="你好，我是你的企业数字员工。",
         validation_alias=AliasChoices("BUB_WECOM_WELCOME_TEXT", "AGENTSEEK_WECOM_WELCOME_TEXT"),

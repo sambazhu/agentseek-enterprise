@@ -12,7 +12,7 @@ class FakeConnection:
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
 
-    def cursor(self) -> "FakeCursor":
+    def cursor(self) -> FakeCursor:
         return FakeCursor(self)
 
     def close(self) -> None:
@@ -75,8 +75,17 @@ def test_dm_staff_identity_provider_normalizes_employee_context() -> None:
                         "财富管理研发团队",
                         "CN=陈康,OU=财富管理研发团队,OU=信息技术部,OU=公司总部,OU=五矿证券",
                         "dept-1",
-                        "hierarchy-1",
+                        "xrootxcompanyxinfo-techxdept-1xperson-1x",
                     )
+                ],
+            ),
+            (
+                ["fd_id", "fd_no", "fd_name", "fd_parent_id", "fd_org_type"],
+                [
+                    ("dept-1", "DEPT-RD", "财富管理研发团队", "info-tech", "2"),
+                    ("root", "ROOT", "五矿证券", None, "2"),
+                    ("info-tech", "DEPT-IT", "信息技术部", "company", "2"),
+                    ("company", "HQ", "公司总部", "root", "2"),
                 ],
             ),
             (
@@ -108,6 +117,9 @@ def test_dm_staff_identity_provider_normalizes_employee_context() -> None:
     assert context.sex == "1"
     assert context.dept_id == "dept-1"
     assert context.dept_name == "财富管理研发团队"
+    assert context.primary_org_name == "公司总部"
+    assert context.org_path_label == "公司总部 / 信息技术部 / 财富管理研发团队"
+    assert [node["name"] for node in context.org_path] == ["公司总部", "信息技术部", "财富管理研发团队"]
     assert context.post == "软件开发岗"
     assert context.belong_to == "1"
     assert context.belong_to_label == "公司总部"
@@ -116,7 +128,9 @@ def test_dm_staff_identity_provider_normalizes_employee_context() -> None:
     assert context.traveler_type == "0"
     assert context.traveler_investment == "0"
     assert context.to_java_api_record()["fdLoginName"] == "chenkang2"
+    assert context.to_java_api_record()["orgPathLabel"] == "公司总部 / 信息技术部 / 财富管理研发团队"
     assert connection.executed[0][1] == ("chenkang2",)
+    assert connection.executed[1][1] == ("root", "company", "info-tech", "dept-1")
 
 
 def test_dm_staff_identity_provider_returns_none_when_employee_missing() -> None:

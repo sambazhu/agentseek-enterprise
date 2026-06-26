@@ -21,6 +21,7 @@ from republic import StreamEvent
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.messages import make_text, make_text_stream
+from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
 
@@ -49,9 +50,16 @@ class StreamReply:
 class WeComChannel(Channel):
     name = "wecom"
 
-    def __init__(self, on_receive: Any, *, settings: WeComSettings) -> None:
+    def __init__(
+        self,
+        on_receive: Any,
+        *,
+        settings: WeComSettings,
+        userid_resolver: UseridResolver | None = None,
+    ) -> None:
         self._on_receive = on_receive
         self.settings = settings
+        self._userid_resolver = userid_resolver if userid_resolver is not None else make_userid_resolver(settings)
         self._crypto: WeComJsonCrypto | None = None
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task[None] | None = None
@@ -209,8 +217,10 @@ class WeComChannel(Channel):
 
     async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
         from_userid = _extract_from_userid(data)
-        session_id = f"wecom:{from_userid or 'unknown'}"
-        chat_id = from_userid or session_id
+        resolved_userid = await self._resolve_userid(from_userid)
+        userid = resolved_userid or from_userid
+        session_id = f"wecom:{userid or 'unknown'}"
+        chat_id = userid or session_id
         stream = await self._create_stream(
             session_id=session_id,
             chat_id=chat_id,
@@ -224,13 +234,16 @@ class WeComChannel(Channel):
             is_active=True,
             context={
                 "from_userid": from_userid,
-                "userid": from_userid,
-                "oa_account": from_userid,
+                "userid": userid,
+                "oa_account": userid,
                 "msgtype": data.get("msgtype"),
                 "wecom": {
                     "from_userid": from_userid,
+                    "open_userid": from_userid if resolved_userid else None,
+                    "resolved_userid": resolved_userid,
+                    "userid": userid,
                     "msgtype": data.get("msgtype"),
-                    "raw": data,
+                    "raw": _safe_wecom_payload(data),
                 },
             },
         )
@@ -243,6 +256,15 @@ class WeComChannel(Channel):
             (current.content if current else "") or "已收到，正在处理...",
             bool(current.finish if current else False),
         )
+
+    async def _resolve_userid(self, from_userid: str | None) -> str | None:
+        if not from_userid or self._userid_resolver is None:
+            return None
+        try:
+            return await asyncio.to_thread(self._userid_resolver.resolve, from_userid)
+        except Exception as exc:
+            logger.warning("wecom.userid_resolve failed for open_userid={}: {}", from_userid, exc)
+            return None
 
     async def _handle_stream_poll(self, data: dict[str, Any]) -> str:
         stream_id = str((data.get("stream") or {}).get("id") or "")
@@ -342,3 +364,35 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the prompt-safe subset of a WeCom callback payload."""
+
+    safe: dict[str, Any] = {}
+    for key in ("msgid", "aibotid", "chattype", "msgtype"):
+        value = data.get(key)
+        if value:
+            safe[key] = value
+
+    raw_from = data.get("from")
+    if isinstance(raw_from, dict) and raw_from.get("userid"):
+        safe["from"] = {"userid": str(raw_from["userid"])}
+
+    msgtype = str(data.get("msgtype") or "")
+    if msgtype == "text":
+        text = data.get("text")
+        if isinstance(text, dict) and text.get("content") is not None:
+            safe["text"] = {"content": str(text["content"])}
+    elif msgtype == "voice":
+        voice = data.get("voice")
+        if isinstance(voice, dict) and voice.get("content") is not None:
+            safe["voice"] = {"content": str(voice["content"])}
+    elif msgtype == "event":
+        event = data.get("event")
+        if isinstance(event, dict):
+            safe_event = {key: event[key] for key in ("eventtype",) if key in event}
+            if safe_event:
+                safe["event"] = safe_event
+
+    return safe

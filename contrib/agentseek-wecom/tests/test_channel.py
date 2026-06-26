@@ -4,16 +4,25 @@ import asyncio
 import json
 from typing import Any
 
+from agentseek_wecom.channel import WeComChannel
+from agentseek_wecom.config import WeComSettings
+from agentseek_wecom.crypto import WeComJsonCrypto
 from bub.channels.message import ChannelMessage
 from fastapi.testclient import TestClient
 from republic import StreamEvent
 
-from agentseek_wecom.channel import WeComChannel
-from agentseek_wecom.config import WeComSettings
-from agentseek_wecom.crypto import WeComJsonCrypto
+
+class FakeUseridResolver:
+    def __init__(self, userid: str | None) -> None:
+        self.userid = userid
+        self.calls: list[str] = []
+
+    def resolve(self, open_userid: str) -> str | None:
+        self.calls.append(open_userid)
+        return self.userid
 
 
-def _channel() -> WeComChannel:
+def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     return WeComChannel(
         on_receive=None,
         settings=WeComSettings(
@@ -22,7 +31,9 @@ def _channel() -> WeComChannel:
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
             callback_path="/callback/{botid}",
             initial_wait_seconds=0,
+            userid_resolve_mode="",
         ),
+        userid_resolver=userid_resolver,
     )
 
 
@@ -60,6 +71,89 @@ def test_text_message_creates_stream_and_emits_channel_message() -> None:
     assert received[0].session_id == "wecom:chenkang2"
     assert received[0].context["oa_account"] == "chenkang2"
     assert received[0].content == "帮我查一下制度"
+
+
+def test_text_message_resolves_open_userid_before_dispatch() -> None:
+    received: list[ChannelMessage] = []
+    resolver = FakeUseridResolver("zhuchunlin")
+    channel = _channel(userid_resolver=resolver)
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="处理完成",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+
+    plain = asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgtype": "text",
+                "from": {"userid": "encrypted-open-userid"},
+                "text": {"content": "你好"},
+            }
+        )
+    )
+    payload = json.loads(plain or "{}")
+
+    assert resolver.calls == ["encrypted-open-userid"]
+    assert payload["stream"]["content"] == "处理完成"
+    assert received[0].session_id == "wecom:zhuchunlin"
+    assert received[0].chat_id == "zhuchunlin"
+    assert received[0].context["from_userid"] == "encrypted-open-userid"
+    assert received[0].context["userid"] == "zhuchunlin"
+    assert received[0].context["oa_account"] == "zhuchunlin"
+    assert received[0].context["wecom"]["open_userid"] == "encrypted-open-userid"
+    assert received[0].context["wecom"]["resolved_userid"] == "zhuchunlin"
+
+
+def test_text_message_sanitizes_wecom_raw_payload() -> None:
+    received: list[ChannelMessage] = []
+    channel = _channel()
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="处理完成",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+
+    asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgid": "m1",
+                "aibotid": "bot-1",
+                "chattype": "single",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=secret",
+                "text": {"content": "你好"},
+            }
+        )
+    )
+
+    raw = received[0].context["wecom"]["raw"]
+    assert raw == {
+        "msgid": "m1",
+        "aibotid": "bot-1",
+        "chattype": "single",
+        "msgtype": "text",
+        "from": {"userid": "chenkang2"},
+        "text": {"content": "你好"},
+    }
+    assert "responseurl" not in raw
 
 
 def test_stream_poll_returns_latest_content() -> None:

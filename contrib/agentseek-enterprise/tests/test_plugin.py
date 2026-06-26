@@ -29,6 +29,14 @@ def _employee_context() -> EmployeeContext:
         name="陈康",
         dept_id="dept-1",
         dept_name="财富管理研发团队",
+        primary_org_id="company",
+        primary_org_name="公司总部",
+        org_path=[
+            {"id": "company", "no": "HQ", "name": "公司总部", "parent_id": "root", "org_type": "2"},
+            {"id": "info-tech", "no": "DEPT-IT", "name": "信息技术部", "parent_id": "company", "org_type": "2"},
+            {"id": "dept-1", "no": "DEPT-RD", "name": "财富管理研发团队", "parent_id": "info-tech", "org_type": "2"},
+        ],
+        org_path_label="公司总部 / 信息技术部 / 财富管理研发团队",
         post="软件开发岗",
         belong_to="1",
         belong_to_label="公司总部",
@@ -55,6 +63,7 @@ def test_load_state_injects_employee_context(monkeypatch: Any) -> None:
     assert provider.queries == ["chenkang2"]
     assert state[EMPLOYEE_CONTEXT_STATE_KEY]["oa_account"] == "chenkang2"
     assert state[EMPLOYEE_CONTEXT_STATE_KEY]["belong_to_label"] == "公司总部"
+    assert state[EMPLOYEE_CONTEXT_STATE_KEY]["org_path_label"] == "公司总部 / 信息技术部 / 财富管理研发团队"
     assert state[EMPLOYEE_IDENTITY_STATE_KEY]["status"] == "found"
 
 
@@ -84,3 +93,4 @@ def test_format_employee_context_for_prompt() -> None:
     assert "[EmployeeContext]" in prompt
     assert "姓名: 陈康" in prompt
     assert "组织主体: 公司总部" in prompt
+    assert "组织路径: 公司总部 / 信息技术部 / 财富管理研发团队" in prompt

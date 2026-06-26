@@ -160,6 +160,8 @@ def format_employee_context_for_prompt(context: Mapping[str, Any]) -> str:
         ("name", "姓名"),
         ("oa_account", "OA账号"),
         ("belong_to_label", "组织主体"),
+        ("primary_org_name", "一级组织"),
+        ("org_path_label", "组织路径"),
         ("role_label", "角色"),
         ("dept_name", "部门"),
         ("post", "岗位"),

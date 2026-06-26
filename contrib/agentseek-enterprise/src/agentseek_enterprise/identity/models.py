@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,10 @@ class EmployeeContext:
     sex: str | None = None
     dept_id: str | None = None
     dept_name: str | None = None
+    org_path: list[dict[str, str | None]] = field(default_factory=list)
+    org_path_label: str | None = None
+    primary_org_id: str | None = None
+    primary_org_name: str | None = None
     post: str | None = None
     ladp_dn: str | None = None
     hierarchy_id: str | None = None
@@ -47,6 +51,10 @@ class EmployeeContext:
             "deptName": self.dept_name,
             "parentId": self.dept_id,
             "deptId": self.dept_id,
+            "orgPath": self.org_path,
+            "orgPathLabel": self.org_path_label,
+            "primaryOrgId": self.primary_org_id,
+            "primaryOrgName": self.primary_org_name,
             "ladpDn": self.ladp_dn,
             "hierarchyId": self.hierarchy_id,
             "role": self.role,
@@ -71,7 +79,7 @@ class IdentityDbSettings:
     paramstyle: str = "qmark"
 
     @classmethod
-    def from_env(cls) -> "IdentityDbSettings":
+    def from_env(cls) -> IdentityDbSettings:
         _load_dotenv_if_present(Path.cwd() / ".env")
         password = _required_env("AGENTSEEK_IDENTITY_DM_PASSWORD")
         return cls(

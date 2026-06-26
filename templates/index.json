@@ -2,6 +2,7 @@
   "deepagents/default": "Local create_deep_agent runnable bound to agentseek-langchain.",
   "deepagents/research": "Pure DeepAgents research agent with Tavily search and streamed tool/sub-agent UI.",
   "deepagents/content-builder": "DeepAgents content builder with brand memory, skills, subagents, image generation, and streamed UI.",
+  "deepagents/enterprise-wecom": "Enterprise WeCom digital employee with employee identity, MCP tools, and agentseek gateway runtime.",
   "langchain/default": "LangChain create_agent + CopilotKit middleware over agentseek-langchain.",
   "langchain/agentic-rag": "LangChain agentic RAG with langchain-oceanbase vector store and seekdb embed.",
   "langchain/agentic-rag-openvino": "LangChain agentic RAG running fully local with OpenVINO via langchain-huggingface, no cloud API keys.",

@@ -53,6 +53,14 @@ class DmStaffIdentityProvider:
             if staff is None:
                 return None
 
+            org_path = self._select_org_path(
+                connection,
+                hierarchy_id=staff.get("hierarchy_id"),
+                person_id=str(staff["id"]),
+                leaf_org_id=_optional_str(staff.get("parent_id")),
+            )
+            org_path_label = _format_org_path_label(org_path)
+            primary_org = org_path[0] if org_path else None
             positions = self._select_positions(connection, str(staff["id"]))
             department = self._select_department(connection, str(staff["parent_id"])) if staff.get("parent_id") else None
             config = self._select_base_config(connection, "businessTripsAllocation")
@@ -71,6 +79,10 @@ class DmStaffIdentityProvider:
                 sex=normalize_sex(staff.get("fd_sex")),
                 dept_id=_optional_str(staff.get("dept_id") or staff.get("parent_id")),
                 dept_name=_optional_str(staff.get("dept_name")),
+                org_path=org_path,
+                org_path_label=org_path_label,
+                primary_org_id=_optional_str(primary_org.get("id")) if primary_org else None,
+                primary_org_name=_optional_str(primary_org.get("name")) if primary_org else None,
                 post=_optional_str(staff.get("post")),
                 ladp_dn=_optional_str(staff.get("ladp_dn")),
                 hierarchy_id=_optional_str(staff.get("hierarchy_id")),
@@ -139,6 +151,59 @@ class DmStaffIdentityProvider:
               AND FD_ORG_TYPE = {self._placeholder(2)}
         """
         return self._fetch_one(connection, sql, (department_id, 2))
+
+    def _select_org_path(
+        self,
+        connection: DbConnection,
+        *,
+        hierarchy_id: Any,
+        person_id: str,
+        leaf_org_id: str | None,
+    ) -> list[dict[str, str | None]]:
+        hierarchy_ids = _parse_hierarchy_ids(hierarchy_id)
+        if hierarchy_ids:
+            org_ids = [org_id for org_id in hierarchy_ids if org_id != person_id]
+            path = self._select_org_path_by_ids(connection, org_ids)
+            if path:
+                return path
+        if leaf_org_id is None:
+            return []
+        return self._select_org_path_by_parent_chain(connection, leaf_org_id)
+
+    def _select_org_path_by_ids(self, connection: DbConnection, org_ids: list[str]) -> list[dict[str, str | None]]:
+        if not org_ids:
+            return []
+
+        placeholders = ", ".join(self._placeholder(index) for index in range(1, len(org_ids) + 1))
+        sql = f"""
+            SELECT
+                FD_ID AS fd_id,
+                FD_NO AS fd_no,
+                FD_NAME AS fd_name,
+                FD_PARENTID AS fd_parent_id,
+                FD_ORG_TYPE AS fd_org_type
+            FROM {self._table("SYS_ORG_ELEMENT")}
+            WHERE FD_ID IN ({placeholders})
+              AND FD_ORG_TYPE = 2
+        """
+        rows = self._fetch_all(connection, sql, tuple(org_ids))
+        rows_by_id = {str(row.get("fd_id")): _org_path_node(row) for row in rows if row.get("fd_id") is not None}
+        ordered = [rows_by_id[org_id] for org_id in org_ids if org_id in rows_by_id]
+        return _trim_org_root(ordered)
+
+    def _select_org_path_by_parent_chain(self, connection: DbConnection, leaf_org_id: str) -> list[dict[str, str | None]]:
+        path: list[dict[str, str | None]] = []
+        current_id: str | None = leaf_org_id
+        visited: set[str] = set()
+        while current_id and current_id not in visited and len(path) < 32:
+            visited.add(current_id)
+            row = self._select_department(connection, current_id)
+            if row is None:
+                break
+            path.append(_org_path_node(row))
+            current_id = _optional_str(row.get("fd_parent_id"))
+        path.reverse()
+        return _trim_org_root(path)
 
     def _select_positions(self, connection: DbConnection, person_id: str) -> list[dict[str, Any]]:
         sql = f"""
@@ -210,6 +275,35 @@ class DmStaffIdentityProvider:
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
     columns = [str(column[0]).lower() for column in description]
     return dict(zip(columns, row, strict=False))
+
+
+def _parse_hierarchy_ids(value: Any) -> list[str]:
+    text = _optional_str(value)
+    if text is None:
+        return []
+    return [part for part in text.split("x") if part]
+
+
+def _org_path_node(row: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        "id": _optional_str(row.get("fd_id")),
+        "no": _optional_str(row.get("fd_no")),
+        "name": _optional_str(row.get("fd_name")),
+        "parent_id": _optional_str(row.get("fd_parent_id")),
+        "org_type": _optional_str(row.get("fd_org_type")),
+    }
+
+
+def _trim_org_root(path: list[dict[str, str | None]]) -> list[dict[str, str | None]]:
+    trimmed = list(path)
+    while trimmed and (trimmed[0].get("parent_id") is None or trimmed[0].get("name") == "五矿证券"):
+        trimmed.pop(0)
+    return trimmed
+
+
+def _format_org_path_label(path: list[dict[str, str | None]]) -> str | None:
+    label = " / ".join(str(node["name"]) for node in path if node.get("name"))
+    return label or None
 
 
 def _optional_str(value: Any) -> str | None:
