@@ -4,7 +4,7 @@ Enterprise WeCom digital employee scaffolded from `deepagents/enterprise-wecom`.
 
 It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent robot callbacks, resolves the WeCom user to an employee context, and exposes business MCP tools from `.agents/mcp.json`.
 
-The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message.
+The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context.
 
 ## Setup
 
@@ -20,6 +20,7 @@ Fill `.env` with:
 - self-built WeCom app `corp_id` and app secret;
 - employee identity database settings;
 - short-term memory retention settings;
+- the tenant id, namespace secret, and durable store path;
 - MCP servers in `.agents/mcp.json`.
 
 ## Run
@@ -65,7 +66,7 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
 - `src/enterprise_wecom_digital_employee/agent.py` exports `build_spec()` for `AGENTSEEK_LANGCHAIN_SPEC`.
 - `src/enterprise_wecom_digital_employee/tools.py` adds a lightweight MCP list/call adapter.
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
-- DeepAgents uses an isolated `StateBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
+- DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
 - `pyproject.toml` depends on AgentSeek runtime plugins: `agentseek-langchain`, `agentseek-wecom`, `agentseek-enterprise`, `agentseek-schedule-sqlalchemy`, and `bub-mcp`.
 
 Author: Your Name

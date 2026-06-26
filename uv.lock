@@ -147,11 +147,13 @@ version = "0.1.0"
 source = { editable = "contrib/agentseek-enterprise" }
 dependencies = [
     { name = "bub" },
+    { name = "langgraph" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bub", specifier = "==0.3.9" },
+    { name = "langgraph", specifier = ">=1.0" },
 ]
 
 [[package]]

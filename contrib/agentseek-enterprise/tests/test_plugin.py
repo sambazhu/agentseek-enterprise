@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 from agentseek_enterprise.identity import EmployeeContext
+from agentseek_enterprise.langgraph_store import SQLiteStore
+from agentseek_enterprise.long_term_memory import employee_memory_tools
 from agentseek_enterprise.memory import SHORT_TERM_MEMORY_STATE_KEY
 from agentseek_enterprise.plugin import (
     EMPLOYEE_CONTEXT_STATE_KEY,
@@ -10,6 +14,12 @@ from agentseek_enterprise.plugin import (
     EnterprisePlugin,
     extract_oa_account,
     format_employee_context_for_prompt,
+)
+from agentseek_enterprise.runtime import (
+    LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY,
+    EnterpriseRuntimeSettings,
+    enterprise_filesystem_namespace,
+    enterprise_runtime_context,
 )
 from bub.turn_admission import AdmitDecision, TurnSnapshot
 
@@ -56,6 +66,8 @@ def test_extract_oa_account_reads_flat_and_nested_envelopes() -> None:
 def test_load_state_injects_employee_context(monkeypatch: Any) -> None:
     monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_TENANT_ID", "wkzq")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET", "test-secret")
     plugin = EnterprisePlugin()
     provider = FakeIdentityProvider(_employee_context())
     plugin._provider = provider
@@ -68,6 +80,10 @@ def test_load_state_injects_employee_context(monkeypatch: Any) -> None:
     assert state[EMPLOYEE_CONTEXT_STATE_KEY]["belong_to_label"] == "公司总部"
     assert state[EMPLOYEE_CONTEXT_STATE_KEY]["org_path_label"] == "公司总部 / 信息技术部 / 财富管理研发团队"
     assert state[EMPLOYEE_IDENTITY_STATE_KEY]["status"] == "found"
+    runtime_context = state[LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY]
+    assert runtime_context["enterprise"]["tenant_id"] == "wkzq"
+    assert "chenkang2" not in str(runtime_context)
+    assert "wecom:chenkang2" not in str(runtime_context)
 
 
 def test_load_state_skips_when_identity_disabled(monkeypatch: Any) -> None:
@@ -207,3 +223,84 @@ def test_admit_message_disabled_returns_none_even_when_busy(monkeypatch: Any) ->
     plugin = EnterprisePlugin()
 
     assert plugin.admit_message("wecom:userA", {}, _turn_snapshot(is_running=True)) is None
+
+
+def test_employee_namespace_is_stable_and_isolated() -> None:
+    settings = EnterpriseRuntimeSettings(tenant_id="wkzq", namespace_secret="test-secret")
+    employee = _employee_context().to_dict()
+    first = enterprise_runtime_context(employee, "wecom:chenkang2", settings=settings)
+    second = enterprise_runtime_context(employee, "wecom:another-session", settings=settings)
+    other_employee = dict(employee, oa_account="other-user")
+    third = enterprise_runtime_context(other_employee, "wecom:other-user", settings=settings)
+
+    assert first is not None
+    assert second is not None
+    assert third is not None
+    first_namespace = enterprise_filesystem_namespace(SimpleNamespace(context=first))
+    second_namespace = enterprise_filesystem_namespace(SimpleNamespace(context=second))
+    third_namespace = enterprise_filesystem_namespace(SimpleNamespace(context=third))
+    assert first_namespace == second_namespace
+    assert first_namespace != third_namespace
+    assert "chenkang2" not in "/".join(first_namespace)
+
+
+def test_sqlite_store_persists_and_isolates_namespaces(tmp_path: Any) -> None:
+    path = tmp_path / "enterprise-store.sqlite3"
+    store = SQLiteStore(path)
+    namespace_a = ("enterprise", "v1", "tenant-a", "user-a", "filesystem")
+    namespace_b = ("enterprise", "v1", "tenant-a", "user-b", "filesystem")
+    store.put(namespace_a, "/profile.md", {"content": "A", "kind": "profile"}, index=False)
+    store.put(namespace_b, "/profile.md", {"content": "B", "kind": "profile"}, index=False)
+
+    restarted = SQLiteStore(path)
+    first_item = restarted.get(namespace_a, "/profile.md")
+    assert first_item is not None
+    assert first_item.value["content"] == "A"
+    assert restarted.search(namespace_a, filter={"kind": "profile"})[0].value["content"] == "A"
+    second_item = restarted.get(namespace_b, "/profile.md")
+    assert second_item is not None
+    assert second_item.value["content"] == "B"
+    assert restarted.list_namespaces(prefix=("enterprise", "v1", "tenant-a")) == [namespace_a, namespace_b]
+
+
+def test_employee_memory_tools_use_only_the_authenticated_user_namespace(tmp_path: Any) -> None:
+    store = SQLiteStore(tmp_path / "enterprise-store.sqlite3")
+    settings = EnterpriseRuntimeSettings(tenant_id="wkzq", namespace_secret="test-secret")
+    first_context = enterprise_runtime_context(_employee_context().to_dict(), "wecom:chenkang2", settings=settings)
+    second_context = enterprise_runtime_context(
+        dict(_employee_context().to_dict(), oa_account="other-user"),
+        "wecom:other-user",
+        settings=settings,
+    )
+    assert first_context is not None
+    assert second_context is not None
+
+    tools: dict[str, Any] = {tool.name: tool for tool in employee_memory_tools()}
+    first_runtime = _tool_runtime(store, first_context)
+    second_runtime = _tool_runtime(store, second_context)
+    remembered = tools["remember_employee_memory"].func(
+        memory="Prefer concise WeCom replies.",
+        category="preference",
+        runtime=first_runtime,
+    )
+
+    assert "recorded" in remembered
+    assert "concise" in tools["recall_employee_memory"].func(runtime=first_runtime)
+    assert "No durable" in tools["recall_employee_memory"].func(runtime=second_runtime)
+    refused = tools["remember_employee_memory"].func(
+        memory="api key is private", category="preference", runtime=first_runtime
+    )
+    assert "Refused" in refused
+
+
+def _tool_runtime(store: SQLiteStore, context: Mapping[str, object]) -> Any:
+    from langgraph.prebuilt import ToolRuntime
+
+    return ToolRuntime(
+        state={},
+        context=context,
+        config={},
+        stream_writer=lambda _chunk: None,
+        tool_call_id=None,
+        store=store,
+    )

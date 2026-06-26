@@ -13,12 +13,13 @@
 
 ## When To Use It
 
-Use this plugin for enterprise-specific runtime context that should not live in the AgentSeek core package. Current capabilities include employee identity enrichment and per-session short-term memory:
+Use this plugin for enterprise-specific runtime context that should not live in the AgentSeek core package. Current capabilities include employee identity enrichment, per-session short-term memory, and user-scoped persistent memory:
 
 - reads an OA / WeCom user id from the inbound message envelope;
 - resolves it through the configured employee identity provider;
 - stores the normalized result in `state["employee_context"]` for LangChain, DeepAgents, skills, and MCP-aware templates.
 - stores recent user/assistant turns in SQLite and reloads them as `state["short_term_memory"]`.
+- creates non-PII LangGraph runtime context and resolves `StoreBackend` files into a per-tenant/per-employee SQLite namespace.
 
 This package owns runtime context only. Channel protocol handling belongs in a channel plugin such as `agentseek-wecom`, and business actions such as meeting room booking or travel requests should stay in MCP tools.
 
@@ -66,6 +67,20 @@ AGENTSEEK_ENTERPRISE_MEMORY_TTL_SECONDS=604800
 AGENTSEEK_ENTERPRISE_MEMORY_MAX_CONTENT_CHARS=4000
 ```
 
+The enterprise DeepAgents template also uses a separate durable StoreBackend:
+
+```env
+AGENTSEEK_ENTERPRISE_TENANT_ID=wkzq
+# Use a high-entropy value in production. Without it, namespace keys are SHA-256 digests.
+AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET=
+AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH=./runtime/enterprise-long-term-store.sqlite3
+```
+
+The template does not grant generic filesystem tools access to `/memories`. Only its narrow
+`remember_employee_memory`, `recall_employee_memory`, and `forget_employee_memory` tools can
+reach the authenticated employee's namespace. This keeps durable preferences and work context
+isolated while avoiding arbitrary prompt content becoming a writable filesystem.
+
 ## Runtime Behavior
 
 The plugin implements `load_state()` and adds:
@@ -73,6 +88,7 @@ The plugin implements `load_state()` and adds:
 - `employee_context`: normalized public employee identity for agent templates and graph state;
 - `_employee_identity`: internal lookup status, source, and diagnostics.
 - `short_term_memory`: recent messages for the same `session_id`, when enabled.
+- `_langgraph_runtime_context`: non-model state carrying tenant, employee, and session digest keys for LangGraph runtime-aware components.
 
 The plugin also exposes a disabled-by-default `system_prompt()` hook. Set `AGENTSEEK_ENTERPRISE_IDENTITY_SYSTEM_PROMPT=true` and/or `AGENTSEEK_ENTERPRISE_MEMORY_SYSTEM_PROMPT=true` only when the model adapter consumes Bub system prompts. The `enterprise-wecom` template injects these state blocks into its LangChain message list directly.
 
@@ -93,4 +109,4 @@ uv run --with jaydebeapi --with JPype1 python scripts/probe_staff_identity.py --
 
 - The Mac JDBC bridge requires a local JDK plus `jaydebeapi` and `JPype1`.
 - The identity provider currently resolves employees by OA / WeCom userid only.
-- Long-term semantic memory and WeCom callback handling are intentionally separate modules.
+- `SQLiteStore` is a deterministic persistent store, not semantic/vector retrieval. A production OceanBase or vector-store adapter should implement the same LangGraph `BaseStore` interface rather than reuse the Bub TapeStore interface.

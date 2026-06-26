@@ -53,6 +53,10 @@ class ProjectSettings(BaseSettings):
         default="{{ cookiecutter.mcp_config_path }}",
         validation_alias=AliasChoices("AGENTSEEK_MCP_CONFIG_PATH", "BUB_MCP_CONFIG_PATH"),
     )
+    enterprise_store_sqlite_path: str = Field(
+        default="./runtime/enterprise-long-term-store.sqlite3",
+        validation_alias=AliasChoices("AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH"),
+    )
 
     def require_model(self) -> str:
         model = self.model.strip()
@@ -90,6 +94,12 @@ class ProjectSettings(BaseSettings):
 
     def resolved_mcp_config_path(self) -> Path:
         path = Path(self.mcp_config_path.strip() or "{{ cookiecutter.mcp_config_path }}")
+        if path.is_absolute():
+            return path
+        return PROJECT_ROOT / path
+
+    def resolved_enterprise_store_path(self) -> Path:
+        path = Path(self.enterprise_store_sqlite_path.strip() or "./runtime/enterprise-long-term-store.sqlite3")
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path

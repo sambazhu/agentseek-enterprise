@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from agentseek_langchain.shapes import HumanMessageContent, ObjectDict, StrMapping, as_str_mapping, copy_str_mapping
 
 AG_UI_INPUT_STATE_KEY = "_ag_ui"
+LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY = "_langgraph_runtime_context"
 _MESSAGES_FIELD = "messages"
 _TOOLS_FIELD = "tools"
 _CONTEXT_FIELD = "context"
@@ -54,10 +55,13 @@ def ag_ui_context_items_from_state(state: Mapping[str, object]) -> list[tuple[st
 
 
 def runtime_context_from_state(state: Mapping[str, object]) -> Mapping[str, object] | None:
+    runtime_context = copy_str_mapping(state.get(LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY)) or {}
     items = ag_ui_context_items_from_state(state)
-    if not items:
+    if not runtime_context and not items:
         return None
-    return dict(items)
+    for description, value in items:
+        runtime_context.setdefault(description, value)
+    return runtime_context
 
 
 def copilotkit_state_from_state(state: Mapping[str, object]) -> dict[str, object] | None:

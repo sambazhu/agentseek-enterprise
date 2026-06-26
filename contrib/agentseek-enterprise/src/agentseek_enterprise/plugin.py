@@ -19,6 +19,7 @@ from agentseek_enterprise.memory import (
     short_term_memory_enabled_from_env,
     short_term_memory_state,
 )
+from agentseek_enterprise.runtime import LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY, enterprise_runtime_context
 
 EMPLOYEE_CONTEXT_STATE_KEY = "employee_context"
 EMPLOYEE_IDENTITY_STATE_KEY = "_employee_identity"
@@ -109,7 +110,13 @@ class EnterprisePlugin:
     def load_state(self, message: Envelope, session_id: str) -> State:
         state: State = {}
         state.update(self._load_short_term_memory_state(session_id))
-        state.update(self._load_employee_state(message))
+        employee_state = self._load_employee_state(message)
+        state.update(employee_state)
+        employee_context = employee_state.get(EMPLOYEE_CONTEXT_STATE_KEY)
+        if isinstance(employee_context, Mapping):
+            runtime_context = enterprise_runtime_context(employee_context, session_id)
+            if runtime_context is not None:
+                state[LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY] = runtime_context
         return state
 
     @hookimpl
