@@ -9,6 +9,7 @@ from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from agentseek_enterprise.memory import format_short_term_memory_for_prompt
 from langchain_core.messages import SystemMessage
 
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
@@ -57,11 +58,11 @@ def build_spec():
         messages = runnable_input.get("messages")
         if not isinstance(messages, list):
             return runnable_input
-        employee_message = _employee_context_message(context.state)
-        if employee_message is None:
+        runtime_messages = _runtime_context_messages(context.state)
+        if not runtime_messages:
             return runnable_input
         runnable_input = dict(runnable_input)
-        runnable_input["messages"] = [employee_message, *messages]
+        runnable_input["messages"] = [*runtime_messages, *messages]
         return runnable_input
 
     return RunnableSpec(
@@ -71,6 +72,15 @@ def build_spec():
         build_config=base_spec.build_config,
         stream_output=base_spec.stream_output,
     )
+
+
+def _runtime_context_messages(state: Mapping[str, object]) -> list[SystemMessage]:
+    messages: list[SystemMessage] = []
+    if employee_message := _employee_context_message(state):
+        messages.append(employee_message)
+    if memory_message := _short_term_memory_message(state):
+        messages.append(memory_message)
+    return messages
 
 
 def _employee_context_message(state: Mapping[str, object]) -> SystemMessage | None:
@@ -105,6 +115,13 @@ def _employee_context_message(state: Mapping[str, object]) -> SystemMessage | No
             return SystemMessage(content="\n".join(lines))
 
     return None
+
+
+def _short_term_memory_message(state: Mapping[str, object]) -> SystemMessage | None:
+    content = format_short_term_memory_for_prompt(state.get("short_term_memory"))
+    if not content:
+        return None
+    return SystemMessage(content=content)
 
 
 def _clean(value: object) -> str:

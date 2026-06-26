@@ -6,10 +6,18 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from bub import hookimpl
-from bub.envelope import field_of
+from bub.envelope import content_of, field_of
 from bub.types import Envelope, State
 
 from agentseek_enterprise.identity import DmStaffIdentityProvider, EmployeeContext
+from agentseek_enterprise.memory import (
+    SHORT_TERM_MEMORY_STATE_KEY,
+    SQLiteShortTermMemoryStore,
+    ShortTermMemorySettings,
+    format_short_term_memory_for_prompt,
+    short_term_memory_enabled_from_env,
+    short_term_memory_state,
+)
 
 EMPLOYEE_CONTEXT_STATE_KEY = "employee_context"
 EMPLOYEE_IDENTITY_STATE_KEY = "_employee_identity"
@@ -52,6 +60,12 @@ class StaffIdentityProvider(Protocol):
     def get_employee_context(self, oa_account: str) -> EmployeeContext | None: ...
 
 
+class ShortTermMemoryStore(Protocol):
+    def load_recent_messages(self, session_id: str) -> list[dict[str, Any]]: ...
+
+    def append_turn(self, session_id: str, user_content: str, assistant_content: str) -> None: ...
+
+
 class EnterprisePlugin:
     """Bub plugin that injects enterprise runtime context into AgentSeek turns."""
 
@@ -59,10 +73,33 @@ class EnterprisePlugin:
         del framework
         self._provider: StaffIdentityProvider | None = None
         self._provider_initialized = False
+        self._memory_store: ShortTermMemoryStore | None = None
+        self._memory_store_initialized = False
 
     @hookimpl
     def load_state(self, message: Envelope, session_id: str) -> State:
-        del session_id
+        state: State = {}
+        state.update(self._load_short_term_memory_state(session_id))
+        state.update(self._load_employee_state(message))
+        return state
+
+    @hookimpl
+    def save_state(self, session_id: str, state: State, message: Envelope, model_output: str) -> None:
+        del state
+        store = self._get_short_term_memory_store()
+        if store is None:
+            return
+
+        user_content = content_of(message).strip()
+        assistant_content = str(model_output or "").strip()
+        if not user_content and not assistant_content:
+            return
+        try:
+            store.append_turn(session_id, user_content, assistant_content)
+        except Exception as exc:
+            _LOG.warning("Short-term memory save failed for %s: %s", session_id, exc)
+
+    def _load_employee_state(self, message: Envelope) -> State:
         if not _identity_enabled():
             return {}
 
@@ -112,15 +149,37 @@ class EnterprisePlugin:
             },
         }
 
+    def _load_short_term_memory_state(self, session_id: str) -> State:
+        store = self._get_short_term_memory_store()
+        if store is None:
+            return {}
+        try:
+            messages = store.load_recent_messages(session_id)
+        except Exception as exc:
+            _LOG.warning("Short-term memory load failed for %s: %s", session_id, exc)
+            return {"_short_term_memory": {"status": "error", "error_type": type(exc).__name__}}
+        if not messages:
+            return {}
+        return {SHORT_TERM_MEMORY_STATE_KEY: short_term_memory_state(session_id, messages)}
+
     @hookimpl
     def system_prompt(self, prompt: str | list[dict[str, Any]], state: State) -> str | None:
         del prompt
-        if not _truthy(os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_SYSTEM_PROMPT", "false")):
+        lines: list[str] = []
+
+        if _truthy(os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_SYSTEM_PROMPT", "false")):
+            context = state.get(EMPLOYEE_CONTEXT_STATE_KEY)
+            if isinstance(context, Mapping):
+                lines.append(format_employee_context_for_prompt(context))
+
+        if _truthy(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_SYSTEM_PROMPT", "false")):
+            memory_prompt = format_short_term_memory_for_prompt(state.get(SHORT_TERM_MEMORY_STATE_KEY))
+            if memory_prompt:
+                lines.append(memory_prompt)
+
+        if not lines:
             return None
-        context = state.get(EMPLOYEE_CONTEXT_STATE_KEY)
-        if not isinstance(context, Mapping):
-            return None
-        return format_employee_context_for_prompt(context)
+        return "\n\n".join(lines)
 
     def _get_identity_provider(self) -> StaffIdentityProvider | None:
         if self._provider_initialized:
@@ -135,6 +194,23 @@ class EnterprisePlugin:
             _LOG.warning("Employee identity provider initialization failed: %s", exc)
             self._provider = None
         return self._provider
+
+    def _get_short_term_memory_store(self) -> ShortTermMemoryStore | None:
+        if self._memory_store_initialized:
+            return self._memory_store
+        self._memory_store_initialized = True
+
+        if not short_term_memory_enabled_from_env():
+            return None
+        try:
+            settings = ShortTermMemorySettings.from_env()
+            if not settings.enabled:
+                return None
+            self._memory_store = SQLiteShortTermMemoryStore(settings)
+        except Exception as exc:
+            _LOG.warning("Short-term memory store initialization failed: %s", exc)
+            self._memory_store = None
+        return self._memory_store
 
 
 def main(framework: object | None = None) -> EnterprisePlugin:

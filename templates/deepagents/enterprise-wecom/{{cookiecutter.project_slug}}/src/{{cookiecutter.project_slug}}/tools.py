@@ -16,7 +16,8 @@ def describe_employee_context_contract() -> str:
     return (
         "Runtime may provide employee_context with fields such as name, oa_account, "
         "primary_org_name, org_path_label, dept_name, post, belong_to_label, and role_label. "
-        "Use it as identity context, not as final authorization."
+        "Runtime may also provide short_term_memory.recent_messages for same-session follow-ups. "
+        "Use these as context, not as final authorization."
     )
 
 
