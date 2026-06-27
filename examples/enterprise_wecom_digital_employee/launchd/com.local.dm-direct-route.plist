@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Forces DM traffic (192.10.50.26) to bypass FlClash/clash TUN by adding a /32
+  host route via the real LAN gateway. The /32 route wins longest-prefix-match
+  over clash's TUN split routes (0/1 + 128/1), so the DM connects direct while
+  FlClash keeps proxying everything else. See DEPLOYMENT_NOTES.md.
+
+  Install:
+    sudo cp com.local.dm-direct-route.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.local.dm-direct-route.plist
+    sudo launchctl load -w /Library/LaunchDaemons/com.local.dm-direct-route.plist
+
+  Adjust the gateway IP below if the DM lives behind a different router.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.dm-direct-route</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/sbin/route</string>
+        <string>add</string>
+        <string>-host</string>
+        <string>192.10.50.26</string>
+        <string>172.20.199.254</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/dm-direct-route.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/dm-direct-route.log</string>
+</dict>
+</plist>
