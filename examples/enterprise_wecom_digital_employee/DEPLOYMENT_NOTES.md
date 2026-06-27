@@ -38,9 +38,11 @@ What was tested and the outcome, so the next session knows the current state:
   (`112.95.215.20`, allowlisted). Resolved (TUN off). PASS.
 - **JVM + ONNX crash:** SIGBUS (exit 138) when both `libjvm` and
   `onnxruntime` are in-process. Workaround: `STORAGE_BACKEND=memory`.
-  OPEN (JVM subprocess isolation is the TODO).
+  Mitigation implemented after this test log: set
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` and switch ContextSeek back
+  to `seekdb`, then verify live on the Mac mini.
 - **NOT yet tested:** `seekdb`/ONNX semantic memory coexisting with identity
-  (blocked by the JVM/ONNX crash — needs the subprocess-isolation work).
+  with the new subprocess identity mode.
 
 ## The DM connection root cause + fix (the big one)
 
@@ -116,8 +118,12 @@ sudo launchctl load -w /Library/LaunchDaemons/com.local.dm-direct-route.plist
 - `AGENTSEEK_IDENTITY_DM_JDBC_JAVA_HOME=/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home`
   — **must be Java 11.** JPype 1.7.1 + Java 21 throws
   `ExceptionInInitializerError` on `java.sql.Types`.
-- `AGENTSEEK_CTX_STORAGE_BACKEND=memory` — **temporary**, to avoid the
-  JVM+ONNX crash (see below). Revert to `seekdb` once JVM isolation is done.
+- `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` — run the JDBC lookup in a
+  child process so the gateway process does not load `libjvm`.
+- `AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30`.
+- `AGENTSEEK_CTX_STORAGE_BACKEND=seekdb` — target configuration after
+  subprocess isolation. Use `memory` only as a temporary rollback if the Mac
+  mini still shows a JVM/ONNX crash.
 - `AGENTSEEK_IDENTITY_DM_HOST=192.10.50.26`, port `5236`, user `dbo`.
 - Root `.env` contains ONLY `AGENTSEEK_ENV_FILE=examples/enterprise_wecom_digital_employee/.env`.
 
@@ -152,8 +158,10 @@ uv run --env-file examples/enterprise_wecom_digital_employee/.env \
    ContextSeek's `onnxruntime` (seekdb embedding) in the **same Python
    process** crash with SIGBUS (exit 138) on every message that touches both.
    Confirmed via macOS DiagnosticReports (both `libjvm.dylib` and
-   `onnxruntime_pybind11_state.so` loaded). Workaround: `STORAGE_BACKEND=memory`
-   (keyword-only, no ONNX). Proper fix = JVM subprocess isolation (see below).
+   `onnxruntime_pybind11_state.so` loaded). The fix is implemented as
+   subprocess identity mode: the child process loads JPype/JDBC; the gateway
+   process can load SeekDB/ONNX. Roll back to `STORAGE_BACKEND=memory` only if
+   live testing still shows a crash.
 2. **JPype + Java 21 incompatible** → use Java 11 (above).
 3. **WeCom retry churn.** Fixed in `agentseek-wecom`: text/voice retries with
    the same WeCom `msgid` reuse the original stream response instead of
@@ -199,23 +207,25 @@ generation >5 s, triggering WeCom retries).
 
 ## Next steps / TODO (priority order)
 
-### 1. JVM subprocess isolation — restore `seekdb` semantic memory (highest value)
-Currently `STORAGE_BACKEND=memory` to avoid the JVM+ONNX crash. Goal: run the
-DM JDBC access in a **separate subprocess** (a small Java sidecar, or a Python
-child using jaydebeapi) so the main gateway process never loads `libjvm` →
-ONNX/seekdb can coexist with identity. Then revert `STORAGE_BACKEND` to `seekdb`.
-Touch points:
-- `contrib/agentseek-enterprise/src/agentseek_enterprise/identity/dm_staff_provider.py`
-  and `jdbc_driver.py` — replace the in-process `jaydebeapi.connect` with an RPC
-  to the sidecar (stdin/JSON or a local HTTP socket).
-- Ship a tiny sidecar entrypoint (Java `main` or a Python script) that takes an
-  OA account and returns the employee-context JSON.
-- Verify: gateway with `seekdb` + identity, no SIGBUS, `我是谁` still resolves.
+### 1. Verify subprocess identity + `seekdb`
+Pull the subprocess-isolation commit, set:
+
+```env
+AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
+AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+```
+
+Then restart the gateway and verify:
+
+- `我是谁` still resolves the employee identity.
+- a semantic-memory prompt stores/retrieves after restart.
+- no SIGBUS / exit 138 appears in macOS DiagnosticReports.
 
 ### 2. DM connection robustness
 Each identity lookup currently opens a new DM connection (slow; re-triggers the
-JVM/JDBC path every message). Consider pooling, or caching `employee_context`
-per `(tenant, user)` for a short TTL once JPype warmup cost is isolated.
+JVM/JDBC path in the child process every message). Consider a long-lived sidecar,
+pooling inside that sidecar, or caching `employee_context` per `(tenant, user)`
+for a short TTL once subprocess mode is verified.
 
 ### 3. Production hardening
 - Run the gateway under a process supervisor (launchd / systemd-equivalent), not
@@ -235,5 +245,9 @@ than running out of the monorepo example.
   — the route-persistence daemon template.
 - `vendor/dameng/DmJdbcDriver18-8.1.3.62.jar` — newer DM JDBC driver (optional;
   8.1.2.192 also works once FlClash isn't intercepting).
-- No Python/source code was modified. The `.env` files are gitignored (secrets);
-  copy the working `.env` to the Mac Pro manually if you want the same config.
+- `agentseek-enterprise` now supports
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` via
+  `agentseek_enterprise.identity.dm_staff_sidecar`, so the gateway process can
+  keep JPype/libjvm out of the main ContextSeek/ONNX process.
+- The `.env` files are gitignored (secrets); copy the working `.env` to the Mac
+  Pro manually if you want the same config.

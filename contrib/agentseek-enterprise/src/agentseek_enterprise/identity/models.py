@@ -81,6 +81,7 @@ class IdentityDbSettings:
     @classmethod
     def from_env(cls) -> IdentityDbSettings:
         _load_dotenv_if_present(Path.cwd() / ".env")
+        _load_project_env_file_if_configured()
         password = _required_env("AGENTSEEK_IDENTITY_DM_PASSWORD")
         return cls(
             host=os.environ.get("AGENTSEEK_IDENTITY_DM_HOST", "127.0.0.1"),
@@ -117,3 +118,13 @@ def _load_dotenv_if_present(path: Path) -> None:
             os.environ[key] = parsed[0] if parsed else ""
         except ValueError:
             os.environ[key] = value.strip().strip("'\"")
+
+
+def _load_project_env_file_if_configured() -> None:
+    env_file = os.environ.get("AGENTSEEK_ENV_FILE", "").strip()
+    if not env_file:
+        return
+    path = Path(env_file).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    _load_dotenv_if_present(path)

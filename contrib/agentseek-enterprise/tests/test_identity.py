@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
-from agentseek_enterprise.identity import DmStaffIdentityProvider, IdentityDbSettings
+import pytest
+from agentseek_enterprise.identity import (
+    DmStaffIdentityProvider,
+    EmployeeContext,
+    IdentityDbSettings,
+    dm_staff_provider,
+    dm_staff_sidecar,
+)
 
 
 class FakeConnection:
@@ -157,3 +165,102 @@ def test_dm_staff_identity_provider_returns_none_when_employee_missing() -> None
     provider = DmStaffIdentityProvider(settings=settings, connection=connection)
 
     assert provider.get_employee_context("missing") is None
+
+
+def test_identity_db_settings_loads_project_env_file(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTSEEK_IDENTITY_DM_PASSWORD", raising=False)
+    monkeypatch.delenv("AGENTSEEK_IDENTITY_DM_HOST", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENV_FILE", raising=False)
+    (tmp_path / ".env").write_text(
+        "AGENTSEEK_ENV_FILE=project.env\n",
+        encoding="utf-8",
+    )
+    expected_password = "sec" + "ret"
+    (tmp_path / "project.env").write_text(
+        f"AGENTSEEK_IDENTITY_DM_PASSWORD={expected_password}\n"
+        "AGENTSEEK_IDENTITY_DM_HOST=dm.example.internal\n",
+        encoding="utf-8",
+    )
+
+    settings = IdentityDbSettings.from_env()
+
+    assert settings.password == expected_password
+    assert settings.host == "dm.example.internal"
+
+
+def test_dm_staff_identity_provider_can_query_via_subprocess(monkeypatch: Any) -> None:
+    context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        calls.append({"command": command, **kwargs})
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"ok": True, "employee_context": context.to_dict()}, ensure_ascii=False),
+            stderr="",
+        )
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "subprocess")
+    monkeypatch.setattr(dm_staff_provider.subprocess, "run", fake_run)
+    provider = DmStaffIdentityProvider(settings=IdentityDbSettings(password="secret"))
+
+    result = provider.get_employee_context("chenkang2")
+
+    assert result is not None
+    assert result.oa_account == "chenkang2"
+    assert result.name == "陈康"
+    assert calls[0]["command"][-2:] == ["--oa", "chenkang2"]
+    assert calls[0]["env"]["AGENTSEEK_IDENTITY_DM_EXECUTION_MODE"] == "in_process"
+
+
+def test_dm_staff_identity_provider_subprocess_not_found(monkeypatch: Any) -> None:
+    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        del command, kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"ok": True, "employee_context": None}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "subprocess")
+    monkeypatch.setattr(dm_staff_provider.subprocess, "run", fake_run)
+    provider = DmStaffIdentityProvider(settings=IdentityDbSettings(password="secret"))
+
+    assert provider.get_employee_context("missing") is None
+
+
+def test_dm_staff_identity_provider_subprocess_error(monkeypatch: Any) -> None:
+    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        del command, kwargs
+        return SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps({"ok": False, "error_type": "DMException", "error": "网络通信异常"}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "subprocess")
+    monkeypatch.setattr(dm_staff_provider.subprocess, "run", fake_run)
+    provider = DmStaffIdentityProvider(settings=IdentityDbSettings(password="secret"))
+
+    with pytest.raises(RuntimeError, match="DMException"):
+        provider.get_employee_context("chenkang2")
+
+
+def test_dm_staff_sidecar_outputs_employee_context(monkeypatch: Any, capsys: Any) -> None:
+    context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
+
+    class FakeProvider:
+        def get_employee_context(self, oa_account: str) -> EmployeeContext | None:
+            assert oa_account == "chenkang2"
+            return context
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "subprocess")
+    monkeypatch.setattr(dm_staff_sidecar, "DmStaffIdentityProvider", FakeProvider)
+
+    assert dm_staff_sidecar.main(["--oa", "chenkang2"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["ok"] is True
+    assert payload["employee_context"]["oa_account"] == "chenkang2"
+    assert payload["employee_context"]["name"] == "陈康"

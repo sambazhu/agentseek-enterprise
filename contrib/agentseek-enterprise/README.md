@@ -50,10 +50,17 @@ For Mac local debugging, where `dmPython` wheels may be unavailable, use the JDB
 
 ```env
 AGENTSEEK_IDENTITY_DM_DRIVER_MODULE=agentseek_enterprise.identity.jdbc_driver
-AGENTSEEK_IDENTITY_DM_JDBC_JAR=vendor/dameng/DmJdbcDriver18-8.1.2.192.jar
+AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
+AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30
+AGENTSEEK_IDENTITY_DM_JDBC_JAR=vendor/dameng/DmJdbcDriver18-8.1.3.62.jar
 AGENTSEEK_IDENTITY_DM_JDBC_CLASS=dm.jdbc.driver.DmDriver
-AGENTSEEK_IDENTITY_DM_JDBC_JAVA_HOME=/path/to/jdk
+AGENTSEEK_IDENTITY_DM_JDBC_JAVA_HOME=/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home
 ```
+
+`AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` runs the JDBC lookup in a
+short-lived Python child process. The main gateway process does not load JPype
+or `libjvm`, so it can coexist with vector/ONNX runtimes such as ContextSeek
+SeekDB.
 
 The plugin only performs identity lookup when `AGENTSEEK_IDENTITY_PROVIDER=dm`, or when `AGENTSEEK_ENTERPRISE_IDENTITY_ENABLED=true` is set explicitly.
 
@@ -108,5 +115,7 @@ uv run --with jaydebeapi --with JPype1 python scripts/probe_staff_identity.py --
 ## Limitations
 
 - The Mac JDBC bridge requires a local JDK plus `jaydebeapi` and `JPype1`.
+- On macOS, prefer `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` when the
+  gateway also loads ONNX/vector runtimes in the main process.
 - The identity provider currently resolves employees by OA / WeCom userid only.
 - `SQLiteStore` is a deterministic persistent store, not semantic/vector retrieval. A production OceanBase or vector-store adapter should implement the same LangGraph `BaseStore` interface rather than reuse the Bub TapeStore interface.

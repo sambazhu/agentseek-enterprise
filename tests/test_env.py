@@ -104,6 +104,7 @@ def test_agentseek_dotenv_fills_missing_bub_env(monkeypatch, tmp_path) -> None:
 
 def test_agentseek_env_file_fills_missing_bub_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTSEEK_ENV_FILE", raising=False)
     (tmp_path / ".env").write_text(
         "AGENTSEEK_ENV_FILE=project.env\n",
         encoding="utf-8",
@@ -124,6 +125,7 @@ def test_agentseek_env_file_fills_missing_bub_env(monkeypatch, tmp_path) -> None
 
 def test_explicit_env_takes_precedence_over_agentseek_env_file(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTSEEK_ENV_FILE", raising=False)
     (tmp_path / ".env").write_text(
         "AGENTSEEK_ENV_FILE=project.env\n",
         encoding="utf-8",

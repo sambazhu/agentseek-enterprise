@@ -19,9 +19,10 @@ Fill `.env` with:
 - WeCom callback `Token` and `EncodingAESKey`;
 - self-built WeCom app `corp_id` and app secret;
 - employee identity database settings;
-- macOS DM access uses the committed JDBC driver plus Java 11; see
-  `DEPLOYMENT_NOTES.md` for the FlClash/TUN route workaround and the temporary
-  ContextSeek `memory` setting used before JVM subprocess isolation;
+- macOS DM access uses the committed JDBC driver plus Java 11. Enable
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` so the gateway can use
+  ContextSeek `seekdb` without loading JPype/libjvm in the main process. See
+  `DEPLOYMENT_NOTES.md` for the FlClash/TUN route workaround;
 - short-term memory retention settings;
 - the tenant id, namespace secret, and durable store path;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;

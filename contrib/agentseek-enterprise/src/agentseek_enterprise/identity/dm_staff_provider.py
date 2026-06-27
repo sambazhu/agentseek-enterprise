@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import re
+import subprocess
+import sys
 from typing import Any, Protocol
 
 from agentseek_enterprise.identity.models import EmployeeContext, IdentityDbSettings
@@ -45,6 +49,8 @@ class DmStaffIdentityProvider:
         oa_account = oa_account.strip()
         if not oa_account:
             return None
+        if self._should_use_subprocess():
+            return self._get_employee_context_subprocess(oa_account)
 
         connection = self._connection or self._connect()
         should_close = self._connection is None
@@ -95,6 +101,64 @@ class DmStaffIdentityProvider:
         finally:
             if should_close:
                 connection.close()
+
+    def _should_use_subprocess(self) -> bool:
+        if self._connection is not None:
+            return False
+        mode = os.environ.get("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "in_process").strip().lower()
+        return mode in {"subprocess", "process", "sidecar"}
+
+    def _get_employee_context_subprocess(self, oa_account: str) -> EmployeeContext | None:
+        command = [
+            _subprocess_python(),
+            "-m",
+            "agentseek_enterprise.identity.dm_staff_sidecar",
+            "--oa",
+            oa_account,
+        ]
+        env = os.environ.copy()
+        env["AGENTSEEK_IDENTITY_DM_EXECUTION_MODE"] = "in_process"
+        timeout = _subprocess_timeout_seconds()
+        try:
+            completed = subprocess.run(  # noqa: S603 - command is fixed, args are not shell-expanded.
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"DM identity subprocess timed out after {timeout:g}s"
+            raise RuntimeError(msg) from exc
+
+        stdout = completed.stdout.strip()
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            if completed.returncode != 0:
+                stderr = completed.stderr.strip()
+                detail = stderr or stdout or f"exit code {completed.returncode}"
+                msg = f"DM identity subprocess failed: {detail}"
+                raise RuntimeError(msg) from exc
+            msg = "DM identity subprocess returned invalid JSON"
+            raise RuntimeError(msg) from exc
+        if not isinstance(payload, dict):
+            msg = "DM identity subprocess returned non-object JSON"
+            raise TypeError(msg)
+        if not payload.get("ok", False):
+            error_type = str(payload.get("error_type") or "RuntimeError")
+            error = str(payload.get("error") or "unknown error")
+            msg = f"DM identity subprocess error ({error_type}): {error}"
+            raise RuntimeError(msg)
+
+        context_data = payload.get("employee_context")
+        if context_data is None:
+            return None
+        if not isinstance(context_data, dict):
+            msg = "DM identity subprocess returned invalid employee_context"
+            raise TypeError(msg)
+        return EmployeeContext(**context_data)
 
     def _connect(self) -> DbConnection:
         try:
@@ -311,3 +375,16 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _subprocess_python() -> str:
+    return os.environ.get("AGENTSEEK_IDENTITY_DM_SUBPROCESS_PYTHON", "").strip() or sys.executable
+
+
+def _subprocess_timeout_seconds() -> float:
+    value = os.environ.get("AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS", "30").strip()
+    try:
+        timeout = float(value)
+    except ValueError:
+        return 30.0
+    return max(1.0, timeout)
