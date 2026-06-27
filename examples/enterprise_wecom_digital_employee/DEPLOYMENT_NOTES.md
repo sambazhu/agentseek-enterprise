@@ -104,11 +104,9 @@ uv run --env-file examples/enterprise_wecom_digital_employee/.env \
    `onnxruntime_pybind11_state.so` loaded). Workaround: `STORAGE_BACKEND=memory`
    (keyword-only, no ONNX). Proper fix = JVM subprocess isolation (see below).
 2. **JPype + Java 21 incompatible** → use Java 11 (above).
-3. **WeCom retry churn.** When a reply is slow (>~5 s, e.g. the first message
-   downloading the seekdb ONNX model), the WeCom intelligent robot retries the
-   callback and each retry spawns a new turn (no MsgId dedup). WeCom delivers
-   only 1 to the user, but it wastes server-side compute. Fix = MsgId dedup
-   (see below).
+3. **WeCom retry churn.** Fixed in `agentseek-wecom`: text/voice retries with
+   the same WeCom `msgid` reuse the original stream response instead of
+   launching duplicate agent turns.
 4. **`uv` + FlClash system-proxy residue.** Killing FlClash leaves the macOS
    system HTTP/SOCKS proxy pointing at a dead `127.0.0.1:7890`; uv (Rust/reqwest)
    honors it and fails to fetch. `curl` does NOT honor it (so direct endpoints
@@ -129,24 +127,18 @@ Touch points:
   OA account and returns the employee-context JSON.
 - Verify: gateway with `seekdb` + identity, no SIGBUS, `我是谁` still resolves.
 
-### 2. MsgId dedup in the WeCom channel
-Add a short-TTL seen-set of WeCom `msgid` in
-`contrib/agentseek-wecom/src/agentseek_wecom/channel.py` (`_dispatch_user_message`)
-so retried callbacks are skipped instead of reprocessed. Stops the retry churn.
-`msgid` is already extracted into the prompt-safe payload (`_safe_wecom_payload`).
-
-### 3. DM connection robustness
+### 2. DM connection robustness
 Each identity lookup currently opens a new DM connection (slow; re-triggers the
 JVM/JDBC path every message). Consider pooling, or caching `employee_context`
 per `(tenant, user)` for a short TTL once JPype warmup cost is isolated.
 
-### 4. Production hardening
+### 3. Production hardening
 - Run the gateway under a process supervisor (launchd / systemd-equivalent), not
   just the route under launchd.
 - Confirm `LANGSMITH_TRACING=true` is intended for prod (or gate it by env).
 - `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` is set — keep it secret, rotate for prod.
 
-### 5. `agentseek create` for a clean standalone project
+### 4. `agentseek create` for a clean standalone project
 Once the template (and the JVM-isolation fix) is stable, generate a clean
 standalone project via `agentseek create` for formal deployment/handoff, rather
 than running out of the monorepo example.

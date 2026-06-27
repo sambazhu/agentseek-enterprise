@@ -156,6 +156,96 @@ def test_text_message_sanitizes_wecom_raw_payload() -> None:
     assert "responseurl" not in raw
 
 
+def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> None:
+    received: list[ChannelMessage] = []
+    channel = _channel()
+
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        proceed = asyncio.Event()
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message)
+            await proceed.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="处理完成",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        data = {
+            "msgid": "retry-msg-1",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "帮我查一下制度"},
+        }
+
+        first_task = asyncio.create_task(channel._handle_plain_message(data))
+        while not received:
+            await asyncio.sleep(0)
+
+        duplicate_plain = await channel._handle_plain_message(data)
+        proceed.set()
+        first_plain = await first_task
+        return json.loads(first_plain or "{}"), json.loads(duplicate_plain or "{}")
+
+    first_payload, duplicate_payload = asyncio.run(scenario())
+
+    assert len(received) == 1
+    assert duplicate_payload["stream"]["id"] == first_payload["stream"]["id"]
+    assert duplicate_payload["stream"]["finish"] is False
+    assert first_payload["stream"]["finish"] is True
+    assert first_payload["stream"]["content"] == "处理完成"
+
+
+def test_duplicate_msgid_can_reprocess_after_stream_cache_ttl() -> None:
+    received: list[ChannelMessage] = []
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            callback_path="/callback/{botid}",
+            initial_wait_seconds=0,
+            cache_ttl_seconds=0,
+            userid_resolve_mode="",
+        ),
+        userid_resolver=None,
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content=f"处理完成{len(received)}",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+    data = {
+        "msgid": "retry-msg-2",
+        "msgtype": "text",
+        "from": {"userid": "chenkang2"},
+        "text": {"content": "你好"},
+    }
+
+    first_plain = asyncio.run(channel._handle_plain_message(data))
+    second_plain = asyncio.run(channel._handle_plain_message(data))
+    first_payload = json.loads(first_plain or "{}")
+    second_payload = json.loads(second_plain or "{}")
+
+    assert len(received) == 2
+    assert first_payload["stream"]["id"] != second_payload["stream"]["id"]
+    assert second_payload["stream"]["content"] == "处理完成2"
+
+
 def test_stream_poll_returns_latest_content() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))

@@ -19,6 +19,9 @@ Fill `.env` with:
 - WeCom callback `Token` and `EncodingAESKey`;
 - self-built WeCom app `corp_id` and app secret;
 - employee identity database settings;
+- macOS DM access uses the committed JDBC driver plus Java 11; see
+  `DEPLOYMENT_NOTES.md` for the FlClash/TUN route workaround and the temporary
+  ContextSeek `memory` setting used before JVM subprocess isolation;
 - short-term memory retention settings;
 - the tenant id, namespace secret, and durable store path;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
@@ -81,6 +84,9 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
 - ContextSeek only stores final conversation turns, not MCP calls or tool output. Retrieved history is marked as untrusted context and injected as a system message. SeekDB is the local vector backend; production storage is chosen through ContextSeek configuration, so it can later move to OceanBase or an adapter for Milvus without changing the employee scope contract.
+- The WeCom channel deduplicates intelligent-robot retries by `msgid` and
+  reuses the original stream response, so slow first replies do not launch
+  duplicate agent turns.
 - `pyproject.toml` depends on AgentSeek runtime plugins: `agentseek-langchain`, `agentseek-wecom`, `agentseek-enterprise`, `agentseek-schedule-sqlalchemy`, and `bub-mcp`.
 
 Author: Your Name

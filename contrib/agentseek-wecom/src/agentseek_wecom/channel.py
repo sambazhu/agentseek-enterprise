@@ -65,6 +65,7 @@ class WeComChannel(Channel):
         self._server_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._streams: dict[str, StreamReply] = {}
+        self._stream_ids_by_msgid: dict[str, str] = {}
         self.app = self._build_app()
 
     @property
@@ -220,11 +221,16 @@ class WeComChannel(Channel):
         userid = resolved_userid or from_userid
         session_id = f"wecom:{userid or 'unknown'}"
         chat_id = userid or session_id
-        stream = await self._create_stream(
+        stream, is_duplicate = await self._get_or_create_stream_for_message(
+            msgid=_extract_msgid(data),
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
         )
+        if is_duplicate:
+            logger.info("wecom.duplicate_msgid stream_id={}", stream.stream_id)
+            return await self._stream_response(stream.stream_id)
+
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -248,13 +254,7 @@ class WeComChannel(Channel):
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
         await self._on_receive(message)
-        await self._wait_for_first_update(stream.stream_id)
-        current = await self._get_stream(stream.stream_id)
-        return make_text_stream(
-            stream.stream_id,
-            (current.content if current else "") or "已收到，正在处理...",
-            bool(current.finish if current else False),
-        )
+        return await self._stream_response(stream.stream_id)
 
     async def _resolve_userid(self, from_userid: str | None) -> str | None:
         if not from_userid or self._userid_resolver is None:
@@ -280,7 +280,6 @@ class WeComChannel(Channel):
         return None
 
     async def _create_stream(self, *, session_id: str, chat_id: str, from_userid: str | None) -> StreamReply:
-        await self._prune_streams()
         stream_id = uuid4().hex
         stream = StreamReply(
             stream_id=stream_id,
@@ -291,14 +290,54 @@ class WeComChannel(Channel):
             finish=False,
         )
         async with self._lock:
+            self._prune_streams_locked(time.time())
             self._streams[stream_id] = stream
         return stream
+
+    async def _get_or_create_stream_for_message(
+        self,
+        *,
+        msgid: str | None,
+        session_id: str,
+        chat_id: str,
+        from_userid: str | None,
+    ) -> tuple[StreamReply, bool]:
+        stream = StreamReply(
+            stream_id=uuid4().hex,
+            session_id=session_id,
+            chat_id=chat_id,
+            from_userid=from_userid,
+            content="已收到，正在处理...",
+            finish=False,
+        )
+        async with self._lock:
+            self._prune_streams_locked(time.time())
+            if msgid:
+                existing_id = self._stream_ids_by_msgid.get(msgid)
+                existing = self._streams.get(existing_id or "")
+                if existing is not None:
+                    return existing, True
+                self._stream_ids_by_msgid.pop(msgid, None)
+
+            self._streams[stream.stream_id] = stream
+            if msgid:
+                self._stream_ids_by_msgid[msgid] = stream.stream_id
+        return stream, False
 
     async def _get_stream(self, stream_id: str) -> StreamReply | None:
         if not stream_id:
             return None
         async with self._lock:
             return self._streams.get(stream_id)
+
+    async def _stream_response(self, stream_id: str) -> str:
+        await self._wait_for_first_update(stream_id)
+        current = await self._get_stream(stream_id)
+        return make_text_stream(
+            stream_id,
+            (current.content if current else "") or "已收到，正在处理...",
+            bool(current.finish if current else False),
+        )
 
     async def _stream_for_outbound(self, message: ChannelMessage) -> StreamReply | None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
@@ -326,11 +365,21 @@ class WeComChannel(Channel):
 
     async def _prune_streams(self) -> None:
         now = time.time()
-        ttl = self.settings.cache_ttl_seconds
         async with self._lock:
-            expired = [stream_id for stream_id, stream in self._streams.items() if now - stream.created_at > ttl]
-            for stream_id in expired:
-                self._streams.pop(stream_id, None)
+            self._prune_streams_locked(now)
+
+    def _prune_streams_locked(self, now: float) -> None:
+        ttl = self.settings.cache_ttl_seconds
+        expired = [stream_id for stream_id, stream in self._streams.items() if now - stream.created_at > ttl]
+        for stream_id in expired:
+            self._streams.pop(stream_id, None)
+        if expired:
+            expired_ids = set(expired)
+            stale_msgids = [
+                msgid for msgid, stream_id in self._stream_ids_by_msgid.items() if stream_id in expired_ids
+            ]
+            for msgid in stale_msgids:
+                self._stream_ids_by_msgid.pop(msgid, None)
 
     def _require_crypto(self) -> WeComJsonCrypto:
         if self._crypto is not None:
@@ -365,6 +414,13 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         value = data.get(key)
         if value:
             return str(value)
+    return None
+
+
+def _extract_msgid(data: dict[str, Any]) -> str | None:
+    value = data.get("msgid")
+    if value:
+        return str(value)
     return None
 
 
