@@ -196,6 +196,7 @@ class WeComChannel(Channel):
 
     async def _handle_plain_message(self, data: dict[str, Any]) -> str | None:
         msgtype = data.get("msgtype")
+        logger.info("wecom.incoming msgtype={} msgid={}", msgtype, _extract_msgid(data))
         if msgtype == "text":
             return await self._handle_text(data)
         if msgtype == "voice":

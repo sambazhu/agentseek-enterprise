@@ -112,6 +112,40 @@ uv run --env-file examples/enterprise_wecom_digital_employee/.env \
    honors it and fails to fetch. `curl` does NOT honor it (so direct endpoints
    still work). Keep FlClash up, or use `--offline`, or clear the system proxy.
 
+## Verification: WeCom retry dedup (2026-06-27, Mac mini)
+
+**Goal:** confirm the retry-churn fix works live, and characterize when
+`wecom.duplicate_msgid` does/doesn't fire.
+
+**Method:** added a diagnostic log in `_handle_plain_message`
+(`wecom.incoming msgtype={} msgid={}`) to see the msgtype of every decrypted
+POST. Restarted the gateway, sent a slow-reply prompt (long-output request →
+generation >5 s, triggering WeCom retries).
+
+**Result — msgtype distribution for one slow-reply message:**
+- `1 × msgtype=text` (the original message; only one)
+- `14 × msgtype=stream` (WeCom polling the stream for the reply; each poll
+  carries its own msgid)
+- agent turns = 1, replies = 1, `wecom.duplicate_msgid` = 0
+
+**Conclusion:**
+- The flood is gone: 15 POSTs → 1 agent turn → 1 reply (vs ~10 replies before
+  the fix). WeCom now **polls** (`msgtype=stream` → `_handle_stream_poll`,
+  returns the in-progress stream content without a new turn) instead of
+  re-sending the message, because the gateway now returns a proper stream
+  response (`_stream_response`). This is the primary mechanism that fixed the
+  churn.
+- `wecom.duplicate_msgid` (the msgid→stream dedup in
+  `_get_or_create_stream_for_message`) fires only on a duplicate `msgtype=text`
+  POST with the same msgid **while the stream is alive** (TTL
+  `cache_ttl_seconds`, default 3600 s). Live, WeCom sends no duplicate text (it
+  polls), so this path isn't exercised in normal operation — it's a safety net
+  for the text-re-send edge case, covered by the two unit tests in
+  `contrib/agentseek-wecom/tests/test_channel.py` (in-flight duplicate reuses
+  the stream; after TTL expiry, reprocessing is allowed).
+- The `wecom.incoming msgtype=...` log is intentionally left in place as a
+  diagnostic for future WeCom-behavior investigations.
+
 ## Next steps / TODO (priority order)
 
 ### 1. JVM subprocess isolation — restore `seekdb` semantic memory (highest value)
