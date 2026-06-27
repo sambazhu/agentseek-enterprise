@@ -10,7 +10,37 @@ remaining work items.
 WeCom callback → signature verify/decrypt → `open_userid` → plaintext userid
 (e.g. `zhuchunlin`) → DM identity lookup (`朱春霖 / 数智产品研发团队 / 团队长兼数据架构师`)
 → model (`glm-5.2` via DashScope) → reply. Confirmed with `我是谁 → 你好，朱春霖！...`
-including full org path/role. FlClash running (TUN) the whole time.
+including full org path/role. Final verified state: FlClash in **system-proxy
+mode (TUN off)** — see the FlClash section for why TUN must stay off.
+
+## Test log (2026-06-27, Mac mini)
+
+What was tested and the outcome, so the next session knows the current state:
+
+- **End-to-end identity (live, WeCom):** `我是谁 → 你好，朱春霖！` with full
+  org path/role. Needs both the DM lookup (employee context) and the WeCom API
+  (`openuserid_to_userid`) to succeed. PASS with FlClash TUN off.
+- **DM JDBC connect (probe):** `scripts/probe_staff_identity.py --oa zhuchunlin
+  --source python-db` returns the full EmployeeContext (name/dept/post/org).
+  PASS with FlClash TUN off (or TUN on + the `/32` route).
+- **WeCom retry dedup (live):** a slow-reply message produces `1 × msgtype=text`
+  + `N × msgtype=stream` (polls); 1 agent turn, 1 reply, no flood.
+  `wecom.duplicate_msgid` is not exercised live (WeCom polls, doesn't re-send
+  text) — covered by unit tests. See "Verification: WeCom retry dedup". PASS.
+- **Unit tests:** `contrib/agentseek-wecom/tests/test_channel.py` — in-flight
+  duplicate reuses the stream; after TTL expiry reprocessing is allowed. PASS.
+- **FlClash/DM diagnosis:** tcpdump showed 0 packets for Java's DM SYN under
+  TUN; full handshake with FlClash quit. DBeaver (system proxy) connected, JDBC
+  (raw socket) didn't. Root cause = FlClash TUN interception. Resolved
+  (TUN off / `/32` route). PASS.
+- **FlClash/WeCom-API diagnosis:** `openuserid_to_userid` returns `60020` via
+  the proxy egress (`45.207.34.86`), returns `zhuchunlin` via direct
+  (`112.95.215.20`, allowlisted). Resolved (TUN off). PASS.
+- **JVM + ONNX crash:** SIGBUS (exit 138) when both `libjvm` and
+  `onnxruntime` are in-process. Workaround: `STORAGE_BACKEND=memory`.
+  OPEN (JVM subprocess isolation is the TODO).
+- **NOT yet tested:** `seekdb`/ONNX semantic memory coexisting with identity
+  (blocked by the JVM/ONNX crash — needs the subprocess-isolation work).
 
 ## The DM connection root cause + fix (the big one)
 
