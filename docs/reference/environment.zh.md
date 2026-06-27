@@ -32,6 +32,7 @@ sources:
 | --- | --- | --- |
 | `AGENTSEEK_HOME` | `BUB_HOME` | Runtime home 目录。 |
 | `AGENTSEEK_PROJECT` | `BUB_PROJECT` | Plugin environment 路径。 |
+| `AGENTSEEK_ENV_FILE` | `BUB_ENV_FILE` | Plugin 初始化前额外加载的 dotenv 文件。 |
 | `AGENTSEEK_WORKSPACE_PATH` | `BUB_WORKSPACE_PATH` | Workspace 根目录。 |
 | `AGENTSEEK_SKILLS_HOME` | `BUB_SKILLS_HOME` | Skills 目录。 |
 | `AGENTSEEK_MCP_CONFIG_PATH` | `BUB_MCP_CONFIG_PATH` | MCP 配置路径。 |
@@ -47,6 +48,7 @@ sources:
 | 变量 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `AGENTSEEK_CONSOLE` | boolean | `false` | 启用 Logfire console 输出。 |
+| `AGENTSEEK_ENV_FILE` | path | 未设置 | 在别名映射和 plugin 初始化前加载另一个 dotenv 文件。相对路径从当前工作目录解析。 |
 
 ## Docker 变量
 
@@ -66,13 +68,15 @@ sources:
 | --- | --- |
 | 1 | 进程环境中的 `BUB_*` 值。 |
 | 2 | 进程环境中的 `AGENTSEEK_*` 值，别名到 `BUB_*`。 |
-| 3 | `.env` 中的 `AGENTSEEK_*` 值，别名到 `BUB_*`。 |
-| 4 | AgentSeek 为 `BUB_HOME` 和 `BUB_PROJECT` 设置的默认值。 |
+| 3 | `AGENTSEEK_ENV_FILE` 指向的 dotenv 文件中的 `AGENTSEEK_*` 值，别名到 `BUB_*`。 |
+| 4 | `.env` 中的 `AGENTSEEK_*` 值，别名到 `BUB_*`。 |
+| 5 | AgentSeek 为 `BUB_HOME` 和 `BUB_PROJECT` 设置的默认值。 |
 
 ## `.env`
 
 | 行为 | 值 |
 | --- | --- |
 | 文件路径 | 当前工作目录下的 `.env`。 |
+| 项目文件 | 在进程环境或当前 `.env` 中设置 `AGENTSEEK_ENV_FILE=path/to/project.env`，即可在 plugin 启动前加载生成项目自己的 dotenv 文件。 |
 | 空值 | 忽略。 |
 | `.env` 中的 `BUB_*` 值 | 不由别名探测注入。 |

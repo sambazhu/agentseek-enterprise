@@ -102,6 +102,44 @@ def test_agentseek_dotenv_fills_missing_bub_env(monkeypatch, tmp_path) -> None:
         os.environ.pop("BUB_TAPESTORE_SQLALCHEMY_URL", None)
 
 
+def test_agentseek_env_file_fills_missing_bub_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "AGENTSEEK_ENV_FILE=project.env\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "project.env").write_text(
+        "AGENTSEEK_MODEL=openai:project-model\n"
+        "AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=[\"vector\"]\n",
+        encoding="utf-8",
+    )
+    target_environ: dict[str, str] = {}
+
+    apply_agentseek_env_aliases(target_environ)
+
+    assert target_environ["AGENTSEEK_MODEL"] == "openai:project-model"
+    assert target_environ["BUB_MODEL"] == "openai:project-model"
+    assert target_environ["AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES"] == '["vector"]'
+
+
+def test_explicit_env_takes_precedence_over_agentseek_env_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "AGENTSEEK_ENV_FILE=project.env\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "project.env").write_text(
+        "AGENTSEEK_MODEL=openai:project-model\n",
+        encoding="utf-8",
+    )
+    target_environ = {"AGENTSEEK_MODEL": "openai:explicit-model"}
+
+    apply_agentseek_env_aliases(target_environ)
+
+    assert target_environ["AGENTSEEK_MODEL"] == "openai:explicit-model"
+    assert target_environ["BUB_MODEL"] == "openai:explicit-model"
+
+
 def test_agentseek_settings_default_console_false(monkeypatch) -> None:
     monkeypatch.delenv("AGENTSEEK_CONSOLE", raising=False)
 

@@ -24,10 +24,21 @@ Fill `.env` with:
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
 - MCP servers in `.agents/mcp.json`.
 
+When running this example from the AgentSeek repository root, keep the root
+`.env` small and point it at this project's dotenv file:
+
+```bash
+AGENTSEEK_ENV_FILE=examples/enterprise_wecom_digital_employee/.env
+```
+
+The AgentSeek CLI loads that file before plugins are initialized, so the WeCom,
+enterprise identity, schedule, LangChain, and ContextSeek plugins all see the
+same project-scoped configuration.
+
 ## Run
 
 ```bash
-export PYTHONPATH=src
+export PYTHONPATH="$PWD/examples/enterprise_wecom_digital_employee/src"
 uv run agentseek gateway \
   --enable-channel wecom \
   --enable-channel mcp.lifecycle \

@@ -32,6 +32,7 @@ sources:
 | --- | --- | --- |
 | `AGENTSEEK_HOME` | `BUB_HOME` | Runtime home directory. |
 | `AGENTSEEK_PROJECT` | `BUB_PROJECT` | Plugin environment path. |
+| `AGENTSEEK_ENV_FILE` | `BUB_ENV_FILE` | Additional dotenv file loaded before plugin initialization. |
 | `AGENTSEEK_WORKSPACE_PATH` | `BUB_WORKSPACE_PATH` | Workspace root. |
 | `AGENTSEEK_SKILLS_HOME` | `BUB_SKILLS_HOME` | Skills directory. |
 | `AGENTSEEK_MCP_CONFIG_PATH` | `BUB_MCP_CONFIG_PATH` | MCP config path. |
@@ -47,6 +48,7 @@ sources:
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
 | `AGENTSEEK_CONSOLE` | boolean | `false` | Enable Logfire console output. |
+| `AGENTSEEK_ENV_FILE` | path | unset | Load another dotenv file before aliasing and plugin initialization. Relative paths resolve from the current working directory. |
 
 ## Docker variables
 
@@ -66,13 +68,15 @@ sources:
 | --- | --- |
 | 1 | Process environment `BUB_*` value. |
 | 2 | Process environment `AGENTSEEK_*` value, aliased to `BUB_*`. |
-| 3 | `.env` `AGENTSEEK_*` value, aliased to `BUB_*`. |
-| 4 | AgentSeek defaults for `BUB_HOME` and `BUB_PROJECT`. |
+| 3 | `AGENTSEEK_ENV_FILE` dotenv `AGENTSEEK_*` value, aliased to `BUB_*`. |
+| 4 | `.env` `AGENTSEEK_*` value, aliased to `BUB_*`. |
+| 5 | AgentSeek defaults for `BUB_HOME` and `BUB_PROJECT`. |
 
 ## `.env`
 
 | Behavior | Value |
 | --- | --- |
 | File path | `.env` in the current working directory. |
+| Project file | Set `AGENTSEEK_ENV_FILE=path/to/project.env` in the process environment or current `.env` to load a generated project's dotenv file before plugins start. |
 | Empty values | Ignored. |
 | `.env` `BUB_*` values | Not imported by the alias probe. |
