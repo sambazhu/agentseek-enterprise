@@ -33,20 +33,40 @@ schema/database/SSL/compatibleMode URL params, `--add-opens`, IPv4/IPv6 stack,
 SOCKS proxy, concurrent-session limit, MAC randomization, the Bash sandbox.
 The cause was FlClash, full stop.
 
-**Fix (confirmed in production):** add a `/32` static host route that overrides
-FlClash's TUN split routes (`0/1` + `128/1`) by longest-prefix match, forcing
-DM traffic direct via `en1` while FlClash keeps proxying everything else:
+**Fix — keep FlClash TUN OFF (system-proxy mode).** This is the practical
+resolution on this machine. TUN mode intercepts *all* of the gateway's traffic,
+and two destinations cannot go through FlClash's proxy egress:
 
+1. **The DM (`192.10.50.26:5236`)** — FlClash swallows Java's raw TCP to it
+   (tcpdump: 0 packets). Fixed by TUN-off, or — if TUN must be on — a `/32`
+   static host route that overrides FlClash's split routes by longest-prefix
+   match: `sudo route add -host 192.10.50.26 172.20.199.254` (persisted via the
+   launchd daemon below).
+2. **The WeCom self-built-app API (`qyapi.weixin.qq.com`, `openuserid_to_userid`)**
+   — the app has an IP allowlist. Through FlClash's proxy the egress is the
+   proxy node's IP (e.g. `45.207.34.86`), which is NOT allowlisted →
+   `errcode=60020 "not allow to access from your ip"` → `open_userid` can't be
+   resolved → identity fails. This is a *domain* (FlClash fake-ip), so a `/32`
+   route does NOT bypass it — **only TUN-off does** (direct egress = the Mac
+   mini's real public IP, which is allowlisted; verified returning `zhuchunlin`).
+
+With FlClash **TUN off (system-proxy mode)**, the gateway's traffic (DM raw TCP,
+WeCom API via urllib, the model) all go **direct** — they don't use the macOS
+system proxy — so DM + WeCom API + model all work; FlClash still proxies
+system-proxy-aware apps (browser, etc.). Verified end-to-end:
+`我是谁 → 你好，朱春霖！` (full employee context) with FlClash running in
+system-proxy mode. **Recommendation: on this machine, never enable FlClash TUN.**
+
+If TUN absolutely must stay on (some app needs it): the DM is handled by the
+`/32` route below, but the WeCom API additionally needs an OS-level bypass —
+pin `qyapi.weixin.qq.com` to a real IP in `/etc/hosts` and add a `/32` route
+for it (same mechanism as the DM, to defeat FlClash's fake-ip). A FlClash
+`DIRECT` *rule* does not work (tested — it failed to merge into the active
+config, and even merged, TUN still captures the packet first).
+
+`/32` DM route + launchd persistence (only needed if TUN is on):
 ```bash
 sudo route add -host 192.10.50.26 172.20.199.254
-```
-
-Persist across reboots with a launchd LaunchDaemon
-(`RunAtLoad` + `StartInterval 60`) at
-`/Library/LaunchDaemons/com.local.dm-direct-route.plist` running that `route add`.
-Template is committed at `examples/enterprise_wecom_digital_employee/launchd/com.local.dm-direct-route.plist`
-— install with:
-```bash
 sudo cp examples/enterprise_wecom_digital_employee/launchd/com.local.dm-direct-route.plist /Library/LaunchDaemons/
 sudo chown root:wheel /Library/LaunchDaemons/com.local.dm-direct-route.plist
 sudo launchctl load -w /Library/LaunchDaemons/com.local.dm-direct-route.plist
@@ -54,9 +74,9 @@ sudo launchctl load -w /Library/LaunchDaemons/com.local.dm-direct-route.plist
 
 > Note for other machines: the FlClash interception is Mac-mini-specific (the
 > dev Mac Pro, wired/without FlClash, never had this). On any machine running
-> FlClash/clash TUN, either add the static host route or put `192.10.50.0/24`
-> in TUN `route-exclude-address` (a `DIRECT` *rule* is NOT enough — TUN still
-> captures the packet first).
+> FlClash/clash TUN, prefer TUN-off for the gateway; if TUN is required, add
+> `192.10.50.0/24` to TUN `route-exclude-address` AND pin the WeCom API domain
+> direct (a `DIRECT` rule is NOT enough).
 
 ## Working configuration (this example's `.env`)
 
@@ -84,9 +104,10 @@ uv run --offline --with jaydebeapi --with JPype1 agentseek gateway \
   --enable-channel wecom --enable-channel mcp.lifecycle --enable-channel skills.lifecycle
 ```
 
-`--offline` because with FlClash off, the macOS system proxy it leaves behind
-(dead `127.0.0.1:7890`) makes uv's package fetch fail; the deps are cached.
-With FlClash TUN on (+ route), plain `uv run --with ...` also works.
+`--offline` is a safe fallback (deps are cached). With FlClash in system-proxy
+mode (the recommended TUN-off setup), uv can also fetch normally through the
+live proxy at `127.0.0.1:7890`; `--offline` is only required when FlClash is
+fully quit (the dead system proxy then breaks uv's fetch).
 
 Probe one identity without the gateway:
 ```bash
