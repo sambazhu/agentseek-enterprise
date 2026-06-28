@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import atexit
 import importlib
 import json
+import logging
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 from typing import Any, Protocol
 
 from agentseek_enterprise.identity.models import EmployeeContext, IdentityDbSettings
@@ -17,6 +21,8 @@ from agentseek_enterprise.identity.rules import (
     normalize_sex,
     parse_config_map,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 class DbCursor(Protocol):
@@ -40,17 +46,31 @@ class DbConnection(Protocol):
 class DmStaffIdentityProvider:
     """Read employee identity directly from the OA DM database."""
 
-    def __init__(self, settings: IdentityDbSettings | None = None, connection: DbConnection | None = None):
+    def __init__(
+        self,
+        settings: IdentityDbSettings | None = None,
+        connection: DbConnection | None = None,
+        *,
+        keep_connection: bool = False,
+    ):
         self.settings = settings or IdentityDbSettings.from_env()
         self._connection = connection
         self._schema = self._validate_identifier(self.settings.schema_name)
+        self._owns_connection = False
+        self._sidecar_client: _DmIdentitySidecarClient | None = None
+        if keep_connection and self._connection is None:
+            self._connection = self._connect()
+            self._owns_connection = True
 
     def get_employee_context(self, oa_account: str) -> EmployeeContext | None:
         oa_account = oa_account.strip()
         if not oa_account:
             return None
-        if self._should_use_subprocess():
+        execution_mode = self._execution_mode()
+        if execution_mode in {"subprocess", "process"}:
             return self._get_employee_context_subprocess(oa_account)
+        if execution_mode in {"sidecar", "persistent_subprocess", "pooled_subprocess"}:
+            return self._get_employee_context_sidecar(oa_account)
 
         connection = self._connection or self._connect()
         should_close = self._connection is None
@@ -102,11 +122,26 @@ class DmStaffIdentityProvider:
             if should_close:
                 connection.close()
 
-    def _should_use_subprocess(self) -> bool:
+    def close(self) -> None:
+        if self._sidecar_client is not None:
+            self._sidecar_client.close()
+            self._sidecar_client = None
+        if self._connection is not None and self._owns_connection:
+            self._connection.close()
+            self._connection = None
+            self._owns_connection = False
+
+    def reset_connection(self) -> None:
+        if not self._owns_connection:
+            return
         if self._connection is not None:
-            return False
-        mode = os.environ.get("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "in_process").strip().lower()
-        return mode in {"subprocess", "process", "sidecar"}
+            self._connection.close()
+        self._connection = self._connect()
+
+    def _execution_mode(self) -> str:
+        if self._connection is not None:
+            return "in_process"
+        return os.environ.get("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "in_process").strip().lower()
 
     def _get_employee_context_subprocess(self, oa_account: str) -> EmployeeContext | None:
         command = [
@@ -159,6 +194,11 @@ class DmStaffIdentityProvider:
             msg = "DM identity subprocess returned invalid employee_context"
             raise TypeError(msg)
         return EmployeeContext(**context_data)
+
+    def _get_employee_context_sidecar(self, oa_account: str) -> EmployeeContext | None:
+        if self._sidecar_client is None:
+            self._sidecar_client = _DmIdentitySidecarClient()
+        return self._sidecar_client.lookup(oa_account)
 
     def _connect(self) -> DbConnection:
         try:
@@ -388,3 +428,150 @@ def _subprocess_timeout_seconds() -> float:
     except ValueError:
         return 30.0
     return max(1.0, timeout)
+
+
+class _DmIdentitySidecarClient:
+    """Line-oriented local worker that keeps JPype/JDBC out of the gateway process."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._responses: queue.Queue[tuple[subprocess.Popen[str], str]] = queue.Queue()
+        atexit.register(self.close)
+
+    def lookup(self, oa_account: str) -> EmployeeContext | None:
+        with self._lock:
+            return self._lookup_locked(oa_account)
+
+    def close(self) -> None:
+        with self._lock:
+            self._stop_process()
+
+    def _lookup_locked(self, oa_account: str) -> EmployeeContext | None:
+        timeout = _subprocess_timeout_seconds()
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            process = self._ensure_process()
+            self._drain_stale_responses()
+            try:
+                stdin = _sidecar_stdin(process)
+                stdin.write(json.dumps({"oa": oa_account}, ensure_ascii=False))
+                stdin.write("\n")
+                stdin.flush()
+            except (BrokenPipeError, OSError, RuntimeError) as exc:
+                last_error = exc
+                self._stop_process()
+                continue
+
+            try:
+                line = self._read_response_line(process, timeout)
+            except TimeoutError as exc:
+                self._stop_process()
+                raise RuntimeError(f"DM identity sidecar timed out after {timeout:g}s") from exc
+
+            try:
+                return _employee_context_from_sidecar_line(line, label="DM identity sidecar")
+            except (json.JSONDecodeError, RuntimeError, TypeError) as exc:
+                last_error = exc
+                if process.poll() is not None:
+                    self._stop_process()
+                    continue
+                raise
+
+        detail = f": {last_error}" if last_error is not None else ""
+        msg = f"DM identity sidecar failed{detail}"
+        raise RuntimeError(msg)
+
+    def _ensure_process(self) -> subprocess.Popen[str]:
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+
+        env = os.environ.copy()
+        env["AGENTSEEK_IDENTITY_DM_EXECUTION_MODE"] = "in_process"
+        command = [
+            _subprocess_python(),
+            "-m",
+            "agentseek_enterprise.identity.dm_staff_sidecar",
+            "--server",
+        ]
+        process = subprocess.Popen(  # noqa: S603 - command is fixed, args are not shell-expanded.
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        self._process = process
+        threading.Thread(target=self._read_stdout, args=(process,), daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(process,), daemon=True).start()
+        _LOG.info("DM identity sidecar started pid=%s", process.pid)
+        return process
+
+    def _read_response_line(self, process: subprocess.Popen[str], timeout: float) -> str:
+        while True:
+            try:
+                response_process, line = self._responses.get(timeout=timeout)
+            except queue.Empty as exc:
+                raise TimeoutError from exc
+            if response_process is process:
+                return line
+
+    def _read_stdout(self, process: subprocess.Popen[str]) -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            self._responses.put((process, line))
+
+    def _read_stderr(self, process: subprocess.Popen[str]) -> None:
+        if process.stderr is None:
+            return
+        for line in process.stderr:
+            _LOG.debug("DM identity sidecar stderr pid=%s: %s", process.pid, line.rstrip())
+
+    def _drain_stale_responses(self) -> None:
+        while True:
+            try:
+                self._responses.get_nowait()
+            except queue.Empty:
+                return
+
+    def _stop_process(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
+
+def _employee_context_from_sidecar_line(line: str, *, label: str) -> EmployeeContext | None:
+    payload = json.loads(line.strip())
+    if not isinstance(payload, dict):
+        msg = f"{label} returned non-object JSON"
+        raise TypeError(msg)
+    if not payload.get("ok", False):
+        error_type = str(payload.get("error_type") or "RuntimeError")
+        error = str(payload.get("error") or "unknown error")
+        msg = f"{label} error ({error_type}): {error}"
+        raise RuntimeError(msg)
+
+    context_data = payload.get("employee_context")
+    if context_data is None:
+        return None
+    if not isinstance(context_data, dict):
+        msg = f"{label} returned invalid employee_context"
+        raise TypeError(msg)
+    return EmployeeContext(**context_data)
+
+
+def _sidecar_stdin(process: subprocess.Popen[str]) -> Any:
+    if process.stdin is None:
+        msg = "DM identity sidecar stdin is unavailable"
+        raise RuntimeError(msg)
+    return process.stdin

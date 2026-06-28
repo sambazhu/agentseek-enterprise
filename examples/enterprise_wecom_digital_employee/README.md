@@ -21,8 +21,10 @@ Fill `.env` with:
 - employee identity database settings;
 - macOS DM access uses the committed JDBC driver plus Java 11. Enable
   `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` so the gateway can use
-  ContextSeek `seekdb` without loading JPype/libjvm in the main process. See
-  `DEPLOYMENT_NOTES.md` for the FlClash/TUN route workaround;
+  ContextSeek `seekdb` without loading JPype/libjvm in the main process. After
+  that is stable, `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` can be used to
+  keep a local DM worker and connection warm. See `DEPLOYMENT_NOTES.md` for the
+  FlClash/TUN route workaround;
 - short-TTL employee identity cache settings, so repeated messages from the
   same resolved employee do not reopen the DM/JDBC path on every turn;
 - short-term memory retention settings;

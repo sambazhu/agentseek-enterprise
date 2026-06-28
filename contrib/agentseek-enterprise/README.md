@@ -65,6 +65,13 @@ short-lived Python child process. The main gateway process does not load JPype
 or `libjvm`, so it can coexist with vector/ONNX runtimes such as ContextSeek
 SeekDB.
 
+`AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` uses the same isolation boundary,
+but keeps one local JSON-lines worker alive behind the gateway process. The
+worker holds the DM/JDBC connection and serves lookups over stdin/stdout, so it
+does not open a network port and still keeps `libjvm` out of the gateway
+process. `AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS` also controls each
+sidecar request timeout.
+
 The optional identity cache stores successful `EmployeeContext` lookups in the
 gateway process for a short TTL. It does not cache lookup failures or missing
 employees, so temporary DM issues and newly synced users can recover on the next
@@ -123,7 +130,9 @@ uv run --with jaydebeapi --with JPype1 python scripts/probe_staff_identity.py --
 ## Limitations
 
 - The Mac JDBC bridge requires a local JDK plus `jaydebeapi` and `JPype1`.
-- On macOS, prefer `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` when the
-  gateway also loads ONNX/vector runtimes in the main process.
+- On macOS, prefer `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` or
+  `sidecar` when the gateway also loads ONNX/vector runtimes in the main
+  process. Use `subprocess` as the conservative rollback mode; use `sidecar`
+  after validating the long-lived worker in the target network environment.
 - The identity provider currently resolves employees by OA / WeCom userid only.
 - `SQLiteStore` is a deterministic persistent store, not semantic/vector retrieval. A production OceanBase or vector-store adapter should implement the same LangGraph `BaseStore` interface rather than reuse the Bub TapeStore interface.

@@ -230,39 +230,37 @@ generation >5 s, triggering WeCom retries).
 
 ## Next steps / TODO (priority order)
 
-### 1. Verify short-TTL identity cache in the live gateway
-Pull the identity-cache commit, set:
+### 1. Verify long-lived DM sidecar / connection pooling
+The short-TTL cache removes repeated DM lookups for active users, but
+`subprocess` mode still starts a short-lived child process and opens a new DM
+connection on every cache miss.
+
+The code now has an opt-in long-lived local worker:
 
 ```env
-AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
-AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
-AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true
-AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600
-AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_MAX_ENTRIES=1024
+AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar
+AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30
 ```
 
-Then restart the gateway and verify:
+This mode keeps the JVM/JDBC driver in a child process, but keeps that process
+alive and serves requests over stdin/stdout JSON lines. It does **not** open a
+network port. Verify on the Mac mini before making it the default:
 
-- First `我是谁` still resolves the employee identity.
-- A second `我是谁` within 10 minutes resolves without a second DM child-process
-  lookup. Enable debug logging if you need to see
-  `Employee identity cache hit...` explicitly.
-- Missing users and lookup errors are **not** cached, so temporary DM failures
-  can recover on the next request.
+- restart the gateway with `EXECUTION_MODE=sidecar`;
+- send `我是谁` twice;
+- confirm only one `DM identity sidecar started pid=...` appears for the
+  gateway process and the second request still benefits from identity cache;
+- wait for cache TTL or temporarily lower TTL to force a second lookup, and
+  confirm it reuses the same sidecar pid instead of starting a new child;
+- confirm no SIGBUS / exit 138 and no DM stale-connection errors.
 
-### 2. Long-lived DM sidecar / connection pooling
-The short-TTL cache removes repeated DM lookups for active users, but every
-cache miss still starts a short-lived child process and opens a new DM
-connection. For higher throughput, promote the subprocess bridge into a
-long-lived local sidecar with connection pooling and a small request protocol.
-
-### 3. Production hardening
+### 2. Production hardening
 - Run the gateway under a process supervisor (launchd / systemd-equivalent), not
   just the route under launchd.
 - Confirm `LANGSMITH_TRACING=true` is intended for prod (or gate it by env).
 - `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` is set — keep it secret, rotate for prod.
 
-### 4. `agentseek create` for a clean standalone project
+### 3. `agentseek create` for a clean standalone project
 Once the template (and the JVM-isolation fix) is stable, generate a clean
 standalone project via `agentseek create` for formal deployment/handoff, rather
 than running out of the monorepo example.
@@ -281,6 +279,10 @@ than running out of the monorepo example.
 - `agentseek-enterprise` now supports
   `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_*` for short-TTL successful
   `EmployeeContext` caching in the gateway process.
+- `agentseek-enterprise` now supports
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` for a long-lived local
+  JSON-lines worker that keeps the DM/JDBC connection warm while preserving
+  JVM isolation from the gateway process.
 - `agentseek-wecom` keeps `wecom.incoming msgtype=...` as a debug-level
   diagnostic, reducing normal gateway log noise.
 - The `.env` files are gitignored (secrets); copy the working `.env` to the Mac

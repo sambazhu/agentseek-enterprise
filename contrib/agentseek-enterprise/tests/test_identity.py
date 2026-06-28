@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -247,6 +248,39 @@ def test_dm_staff_identity_provider_subprocess_error(monkeypatch: Any) -> None:
         provider.get_employee_context("chenkang2")
 
 
+def test_dm_staff_identity_provider_can_query_via_persistent_sidecar(monkeypatch: Any) -> None:
+    context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
+    instances: list[Any] = []
+
+    class FakeSidecarClient:
+        def __init__(self) -> None:
+            self.lookups: list[str] = []
+            self.closed = False
+            instances.append(self)
+
+        def lookup(self, oa_account: str) -> EmployeeContext | None:
+            self.lookups.append(oa_account)
+            return context
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "sidecar")
+    monkeypatch.setattr(dm_staff_provider, "_DmIdentitySidecarClient", FakeSidecarClient)
+    provider = DmStaffIdentityProvider(settings=IdentityDbSettings(password="secret"))
+
+    first = provider.get_employee_context("chenkang2")
+    second = provider.get_employee_context("chenkang2")
+    provider.close()
+
+    assert first is not None
+    assert second is not None
+    assert first.oa_account == "chenkang2"
+    assert len(instances) == 1
+    assert instances[0].lookups == ["chenkang2", "chenkang2"]
+    assert instances[0].closed is True
+
+
 def test_dm_staff_sidecar_outputs_employee_context(monkeypatch: Any, capsys: Any) -> None:
     context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
 
@@ -264,3 +298,47 @@ def test_dm_staff_sidecar_outputs_employee_context(monkeypatch: Any, capsys: Any
     assert payload["ok"] is True
     assert payload["employee_context"]["oa_account"] == "chenkang2"
     assert payload["employee_context"]["name"] == "陈康"
+
+
+def test_dm_staff_sidecar_server_handles_multiple_requests(monkeypatch: Any) -> None:
+    context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
+    instances: list[Any] = []
+
+    class FakeProvider:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            self.queries: list[str] = []
+            self.closed = False
+            instances.append(self)
+
+        def get_employee_context(self, oa_account: str) -> EmployeeContext | None:
+            self.queries.append(oa_account)
+            if oa_account == "missing":
+                return None
+            return context
+
+        def reset_connection(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_EXECUTION_MODE", "subprocess")
+    monkeypatch.setattr(dm_staff_sidecar, "DmStaffIdentityProvider", FakeProvider)
+    monkeypatch.setattr(
+        dm_staff_sidecar.sys,
+        "stdin",
+        io.StringIO('{"oa":"chenkang2"}\n{"oa":"missing"}\n'),
+    )
+    stdout = io.StringIO()
+    monkeypatch.setattr(dm_staff_sidecar.sys, "stdout", stdout)
+
+    assert dm_staff_sidecar.main(["--server"]) == 0
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    assert responses[0]["ok"] is True
+    assert responses[0]["employee_context"]["oa_account"] == "chenkang2"
+    assert responses[1]["ok"] is True
+    assert responses[1]["employee_context"] is None
+    assert instances[0].queries == ["chenkang2", "missing"]
+    assert instances[0].closed is True
