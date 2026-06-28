@@ -36,13 +36,24 @@ What was tested and the outcome, so the next session knows the current state:
 - **FlClash/WeCom-API diagnosis:** `openuserid_to_userid` returns `60020` via
   the proxy egress (`45.207.34.86`), returns `zhuchunlin` via direct
   (`112.95.215.20`, allowlisted). Resolved (TUN off). PASS.
-- **JVM + ONNX crash:** SIGBUS (exit 138) when both `libjvm` and
-  `onnxruntime` are in-process. Workaround: `STORAGE_BACKEND=memory`.
-  Mitigation implemented after this test log: set
-  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` and switch ContextSeek back
-  to `seekdb`, then verify live on the Mac mini.
-- **NOT yet tested:** `seekdb`/ONNX semantic memory coexisting with identity
-  with the new subprocess identity mode.
+- **JVM + ONNX crash — FIXED via subprocess isolation (commit 6eb8f4f).**
+  Previously SIGBUS (exit 138) when both `libjvm` and `onnxruntime` were
+  in-process. The DM JDBC lookup now runs in a child process
+  (`AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` → `dm_staff_sidecar`), so
+  the gateway process loads only `onnxruntime`, never `libjvm`.
+  **Verified live on the Mac mini (2026-06-28), FlClash TUN off:**
+  1. `probe_staff_identity.py --oa zhuchunlin` (subprocess mode) → full
+     EmployeeContext (朱春霖 / 数智产品研发团队). PASS.
+  2. Gateway `我是谁` → `你好，朱春霖！` (identity via subprocess + seekdb ONNX
+     loaded in-process). No SIGBUS. PASS.
+  3. `请长期记住：我偏好简洁的企微回复，最多三条要点。` → stored to seekdb
+     (`已长期记住：…`). No crash. PASS.
+  4. `我的长期偏好是什么？` → answered correctly. PASS.
+  5. **Restart gateway (clear session) → `我的长期偏好是什么？` again → still
+     answered correctly** → seekdb persistence confirmed (not session memory).
+     PASS.
+  Zero SIGBUS / exit 138 across all steps. `STORAGE_BACKEND=seekdb` is now the
+  production setting; `memory` is only a rollback if a crash reappears.
 
 ## The DM connection root cause + fix (the big one)
 
