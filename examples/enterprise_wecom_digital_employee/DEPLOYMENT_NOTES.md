@@ -54,6 +54,14 @@ What was tested and the outcome, so the next session knows the current state:
      PASS.
   Zero SIGBUS / exit 138 across all steps. `STORAGE_BACKEND=seekdb` is now the
   production setting; `memory` is only a rollback if a crash reappears.
+- **Employee identity cache (commit f391775) — VERIFIED live (2026-06-28).**
+  `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true`, TTL 600 s, max 1024
+  entries. Only successful EmployeeContext is cached. Verified by monitoring the
+  DM sidecar subprocess: 1st `我是谁` → `SIDECAR_SPAWNED` (cache miss → DM
+  subprocess ran) → 朱春霖; 2nd `我是谁` (within TTL) → **no new sidecar**
+  (cache hit → identity served from gateway memory) → 朱春霖. Zero SIGBUS.
+  TTL expiry / no-cache-on-failure are covered by the unit tests
+  (`contrib/agentseek-enterprise/tests/test_plugin.py`, 28 passed).
 
 ## The DM connection root cause + fix (the big one)
 
