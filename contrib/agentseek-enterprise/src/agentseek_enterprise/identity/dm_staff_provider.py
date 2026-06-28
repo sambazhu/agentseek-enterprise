@@ -3,7 +3,6 @@ from __future__ import annotations
 import atexit
 import importlib
 import json
-import logging
 import os
 import queue
 import re
@@ -21,8 +20,9 @@ from agentseek_enterprise.identity.rules import (
     normalize_sex,
     parse_config_map,
 )
+from agentseek_enterprise.runtime_logging import get_logger
 
-_LOG = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DbCursor(Protocol):
@@ -506,7 +506,7 @@ class _DmIdentitySidecarClient:
         self._process = process
         threading.Thread(target=self._read_stdout, args=(process,), daemon=True).start()
         threading.Thread(target=self._read_stderr, args=(process,), daemon=True).start()
-        _LOG.info("DM identity sidecar started pid=%s", process.pid)
+        logger.info("DM identity sidecar started pid={}", process.pid)
         return process
 
     def _read_response_line(self, process: subprocess.Popen[str], timeout: float) -> str:
@@ -528,7 +528,7 @@ class _DmIdentitySidecarClient:
         if process.stderr is None:
             return
         for line in process.stderr:
-            _LOG.debug("DM identity sidecar stderr pid=%s: %s", process.pid, line.rstrip())
+            logger.debug("DM identity sidecar stderr pid={}: {}", process.pid, line.rstrip())
 
     def _drain_stale_responses(self) -> None:
         while True:
@@ -542,12 +542,14 @@ class _DmIdentitySidecarClient:
         self._process = None
         if process is None or process.poll() is not None:
             return
+        logger.info("DM identity sidecar stopping pid={}", process.pid)
         process.terminate()
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=2)
+            logger.warning("DM identity sidecar killed pid={}", process.pid)
 
 
 def _employee_context_from_sidecar_line(line: str, *, label: str) -> EmployeeContext | None:

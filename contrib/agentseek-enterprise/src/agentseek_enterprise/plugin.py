@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import time
 from collections.abc import Mapping
@@ -22,11 +21,12 @@ from agentseek_enterprise.memory import (
     short_term_memory_state,
 )
 from agentseek_enterprise.runtime import LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY, enterprise_runtime_context
+from agentseek_enterprise.runtime_logging import get_logger
 
 EMPLOYEE_CONTEXT_STATE_KEY = "employee_context"
 EMPLOYEE_IDENTITY_STATE_KEY = "_employee_identity"
 
-_LOG = logging.getLogger(__name__)
+logger = get_logger(__name__)
 _OA_ACCOUNT_FIELDS = (
     "oa_account",
     "fdLoginName",
@@ -142,7 +142,7 @@ class EnterprisePlugin:
         try:
             store.append_turn(session_id, user_content, assistant_content)
         except Exception as exc:
-            _LOG.warning("Short-term memory save failed for %s: %s", session_id, exc)
+            logger.warning("Short-term memory save failed for {}: {}", session_id, exc)
 
     def _load_employee_state(self, message: Envelope) -> State:
         if not _identity_enabled():
@@ -165,7 +165,7 @@ class EnterprisePlugin:
         try:
             context, cache_hit = self._get_employee_context(provider, oa_account)
         except Exception as exc:
-            _LOG.warning("Employee identity lookup failed for %s: %s", oa_account, exc)
+            logger.warning("Employee identity lookup failed for {}: {}", oa_account, exc)
             return {
                 EMPLOYEE_IDENTITY_STATE_KEY: {
                     "source": _identity_provider_name(),
@@ -208,9 +208,9 @@ class EnterprisePlugin:
         cached = self._identity_cache.get(key)
         if cached is not None:
             if cached.expires_at > now:
-                _LOG.debug("Employee identity cache hit for %s", oa_account)
+                logger.debug("Employee identity cache hit for {}", oa_account)
                 return cached.context, True
-            _LOG.debug("Employee identity cache expired for %s", oa_account)
+            logger.debug("Employee identity cache expired for {}", oa_account)
             self._identity_cache.pop(key, None)
 
         context = provider.get_employee_context(oa_account)
@@ -218,7 +218,7 @@ class EnterprisePlugin:
             ttl = _identity_cache_ttl_seconds()
             self._identity_cache[key] = _IdentityCacheEntry(context=context, expires_at=now + ttl)
             self._prune_identity_cache(now)
-            _LOG.debug("Employee identity cache stored for %s ttl=%ss", oa_account, ttl)
+            logger.debug("Employee identity cache stored for {} ttl={}s", oa_account, ttl)
         return context, False
 
     def _prune_identity_cache(self, now: float) -> None:
@@ -239,7 +239,7 @@ class EnterprisePlugin:
         try:
             messages = store.load_recent_messages(session_id)
         except Exception as exc:
-            _LOG.warning("Short-term memory load failed for %s: %s", session_id, exc)
+            logger.warning("Short-term memory load failed for {}: {}", session_id, exc)
             return {"_short_term_memory": {"status": "error", "error_type": type(exc).__name__}}
         if not messages:
             return {}
@@ -274,7 +274,7 @@ class EnterprisePlugin:
         try:
             self._provider = DmStaffIdentityProvider()
         except Exception as exc:
-            _LOG.warning("Employee identity provider initialization failed: %s", exc)
+            logger.warning("Employee identity provider initialization failed: {}", exc)
             self._provider = None
         return self._provider
 
@@ -291,7 +291,7 @@ class EnterprisePlugin:
                 return None
             self._memory_store = SQLiteShortTermMemoryStore(settings)
         except Exception as exc:
-            _LOG.warning("Short-term memory store initialization failed: %s", exc)
+            logger.warning("Short-term memory store initialization failed: {}", exc)
             self._memory_store = None
         return self._memory_store
 

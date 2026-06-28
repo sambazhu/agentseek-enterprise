@@ -46,11 +46,18 @@ same project-scoped configuration.
 ## Run
 
 ```bash
-export PYTHONPATH="$PWD/examples/enterprise_wecom_digital_employee/src"
-uv run agentseek gateway \
-  --enable-channel wecom \
-  --enable-channel mcp.lifecycle \
-  --enable-channel skills.lifecycle
+examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh
+```
+
+For Mac mini process supervision, edit the repo path in
+`launchd/com.local.agentseek-enterprise-wecom.plist`, then install it as a
+user LaunchAgent:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp examples/enterprise_wecom_digital_employee/launchd/com.local.agentseek-enterprise-wecom.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist 2>/dev/null || true
+launchctl load -w ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist
 ```
 
 The WeCom callback listens on port `12000` and path:

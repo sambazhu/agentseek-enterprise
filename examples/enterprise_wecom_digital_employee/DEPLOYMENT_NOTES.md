@@ -71,10 +71,10 @@ What was tested and the outcome, so the next session knows the current state:
   the same pid=97628** (started time unchanged, still only 1 sidecar process)
   → identity resolved, no cold JVM start. Zero SIGBUS / exit 138 / stale
   connection. (Cache-hit itself is mode-independent; see the cache entry above.)
-  **Minor finding for follow-up:** the `DM identity sidecar started pid=…` INFO
-  log in `dm_staff_provider` did not reach the gateway's loguru output (stdlib
-  `_LOG` not routed) — ops can't see sidecar start/restart in the log. Function
-  is unaffected; routing that logger to loguru would help visibility.
+  **Minor finding:** the `DM identity sidecar started pid=…` INFO log in
+  `dm_staff_provider` did not reach the gateway's loguru output (stdlib `_LOG`
+  not routed). Fixed in code by routing enterprise runtime logs through a
+  loguru-aware adapter; verify visibility on the next Mac mini pull.
   Mac mini now runs `sidecar` + TTL 600. Roll back to `subprocess` if a crash
   or stale-connection error reappears.
 
@@ -173,9 +173,7 @@ only way to reach the DM from a Mac.
 
 ```bash
 mkdir -p runtime   # one-time; the ./runtime/*.db paths need it
-PYTHONPATH="$PWD/examples/enterprise_wecom_digital_employee/src" \
-uv run --offline --with jaydebeapi --with JPype1 agentseek gateway \
-  --enable-channel wecom --enable-channel mcp.lifecycle --enable-channel skills.lifecycle
+examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh
 ```
 
 `--offline` is a safe fallback (deps are cached). With FlClash in system-proxy
@@ -259,7 +257,8 @@ AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30
 
 This mode keeps the JVM/JDBC driver in a child process, but keeps that process
 alive and serves requests over stdin/stdout JSON lines. It does **not** open a
-network port. Verify on the Mac mini before making it the default:
+network port. The mode is live-verified on the Mac mini; after pulling the
+logging fix, additionally confirm lifecycle log visibility:
 
 - restart the gateway with `EXECUTION_MODE=sidecar`;
 - send `我是谁` twice;
@@ -270,8 +269,10 @@ network port. Verify on the Mac mini before making it the default:
 - confirm no SIGBUS / exit 138 and no DM stale-connection errors.
 
 ### 2. Production hardening
-- Run the gateway under a process supervisor (launchd / systemd-equivalent), not
-  just the route under launchd.
+- A user LaunchAgent template now exists:
+  `launchd/com.local.agentseek-enterprise-wecom.plist`. Edit the repo path if
+  needed, then install it under `~/Library/LaunchAgents/` and confirm restart
+  behavior plus `/tmp/agentseek-enterprise-wecom.log`.
 - Confirm `LANGSMITH_TRACING=true` is intended for prod (or gate it by env).
 - `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` is set — keep it secret, rotate for prod.
 
@@ -285,6 +286,10 @@ than running out of the monorepo example.
 - `examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md` — this file.
 - `examples/enterprise_wecom_digital_employee/launchd/com.local.dm-direct-route.plist`
   — the route-persistence daemon template.
+- `examples/enterprise_wecom_digital_employee/launchd/com.local.agentseek-enterprise-wecom.plist`
+  — user LaunchAgent template for keeping the gateway process alive.
+- `examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh`
+  — shared gateway startup script for manual runs and launchd.
 - `vendor/dameng/DmJdbcDriver18-8.1.3.62.jar` — newer DM JDBC driver (optional;
   8.1.2.192 also works once FlClash isn't intercepting).
 - `agentseek-enterprise` now supports
@@ -298,6 +303,8 @@ than running out of the monorepo example.
   `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` for a long-lived local
   JSON-lines worker that keeps the DM/JDBC connection warm while preserving
   JVM isolation from the gateway process.
+- `agentseek-enterprise` runtime logs are routed through a loguru-aware adapter,
+  so gateway logs can show sidecar start/stop and identity-cache diagnostics.
 - `agentseek-wecom` keeps `wecom.incoming msgtype=...` as a debug-level
   diagnostic, reducing normal gateway log noise.
 - The `.env` files are gitignored (secrets); copy the working `.env` to the Mac
