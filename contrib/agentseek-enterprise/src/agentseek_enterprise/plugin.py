@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from bub import hookimpl
@@ -68,6 +70,12 @@ class ShortTermMemoryStore(Protocol):
     def append_turn(self, session_id: str, user_content: str, assistant_content: str) -> None: ...
 
 
+@dataclass(frozen=True)
+class _IdentityCacheEntry:
+    context: EmployeeContext
+    expires_at: float
+
+
 class EnterprisePlugin:
     """Bub plugin that injects enterprise runtime context into AgentSeek turns."""
 
@@ -75,6 +83,7 @@ class EnterprisePlugin:
         del framework
         self._provider: StaffIdentityProvider | None = None
         self._provider_initialized = False
+        self._identity_cache: dict[tuple[str, str], _IdentityCacheEntry] = {}
         self._memory_store: ShortTermMemoryStore | None = None
         self._memory_store_initialized = False
 
@@ -154,7 +163,7 @@ class EnterprisePlugin:
             }
 
         try:
-            context = provider.get_employee_context(oa_account)
+            context, cache_hit = self._get_employee_context(provider, oa_account)
         except Exception as exc:
             _LOG.warning("Employee identity lookup failed for %s: %s", oa_account, exc)
             return {
@@ -182,8 +191,46 @@ class EnterprisePlugin:
                 "status": "found",
                 "oa_account": context.oa_account,
                 "user_id": context.user_id,
+                "cache": "hit" if cache_hit else "miss",
             },
         }
+
+    def _get_employee_context(
+        self,
+        provider: StaffIdentityProvider,
+        oa_account: str,
+    ) -> tuple[EmployeeContext | None, bool]:
+        if not _identity_cache_enabled():
+            return provider.get_employee_context(oa_account), False
+
+        now = time.monotonic()
+        key = (_identity_provider_name(), _identity_cache_key(oa_account))
+        cached = self._identity_cache.get(key)
+        if cached is not None:
+            if cached.expires_at > now:
+                _LOG.debug("Employee identity cache hit for %s", oa_account)
+                return cached.context, True
+            _LOG.debug("Employee identity cache expired for %s", oa_account)
+            self._identity_cache.pop(key, None)
+
+        context = provider.get_employee_context(oa_account)
+        if context is not None:
+            ttl = _identity_cache_ttl_seconds()
+            self._identity_cache[key] = _IdentityCacheEntry(context=context, expires_at=now + ttl)
+            self._prune_identity_cache(now)
+            _LOG.debug("Employee identity cache stored for %s ttl=%ss", oa_account, ttl)
+        return context, False
+
+    def _prune_identity_cache(self, now: float) -> None:
+        max_entries = _identity_cache_max_entries()
+        expired_keys = [key for key, entry in self._identity_cache.items() if entry.expires_at <= now]
+        for key in expired_keys:
+            self._identity_cache.pop(key, None)
+        if len(self._identity_cache) <= max_entries:
+            return
+        ordered = sorted(self._identity_cache.items(), key=lambda item: item[1].expires_at)
+        for key, _entry in ordered[: len(self._identity_cache) - max_entries]:
+            self._identity_cache.pop(key, None)
 
     def _load_short_term_memory_state(self, session_id: str) -> State:
         store = self._get_short_term_memory_store()
@@ -301,6 +348,35 @@ def _identity_enabled() -> bool:
 
 def _identity_provider_name() -> str:
     return os.environ.get("AGENTSEEK_IDENTITY_PROVIDER", "").strip().lower()
+
+
+def _identity_cache_enabled() -> bool:
+    explicit = os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED")
+    if explicit is None:
+        return False
+    return _truthy(explicit)
+
+
+def _identity_cache_ttl_seconds() -> float:
+    value = os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS", "600").strip()
+    try:
+        ttl = float(value)
+    except ValueError:
+        return 600.0
+    return max(1.0, ttl)
+
+
+def _identity_cache_max_entries() -> int:
+    value = os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_MAX_ENTRIES", "1024").strip()
+    try:
+        max_entries = int(value)
+    except ValueError:
+        return 1024
+    return max(1, max_entries)
+
+
+def _identity_cache_key(oa_account: str) -> str:
+    return oa_account.strip().lower()
 
 
 def _truthy(value: str | None) -> bool:

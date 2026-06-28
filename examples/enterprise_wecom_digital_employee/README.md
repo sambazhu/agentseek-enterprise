@@ -23,6 +23,8 @@ Fill `.env` with:
   `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` so the gateway can use
   ContextSeek `seekdb` without loading JPype/libjvm in the main process. See
   `DEPLOYMENT_NOTES.md` for the FlClash/TUN route workaround;
+- short-TTL employee identity cache settings, so repeated messages from the
+  same resolved employee do not reopen the DM/JDBC path on every turn;
 - short-term memory retention settings;
 - the tenant id, namespace secret, and durable store path;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;

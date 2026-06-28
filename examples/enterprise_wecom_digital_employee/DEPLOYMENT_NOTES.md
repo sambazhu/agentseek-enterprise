@@ -132,6 +132,10 @@ sudo launchctl load -w /Library/LaunchDaemons/com.local.dm-direct-route.plist
 - `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` — run the JDBC lookup in a
   child process so the gateway process does not load `libjvm`.
 - `AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30`.
+- `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true` — cache successful
+  employee identity lookups in the gateway process.
+- `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600`.
+- `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_MAX_ENTRIES=1024`.
 - `AGENTSEEK_CTX_STORAGE_BACKEND=seekdb` — target configuration after
   subprocess isolation. Use `memory` only as a temporary rollback if the Mac
   mini still shows a JVM/ONNX crash.
@@ -213,30 +217,36 @@ generation >5 s, triggering WeCom retries).
   for the text-re-send edge case, covered by the two unit tests in
   `contrib/agentseek-wecom/tests/test_channel.py` (in-flight duplicate reuses
   the stream; after TTL expiry, reprocessing is allowed).
-- The `wecom.incoming msgtype=...` log is intentionally left in place as a
-  diagnostic for future WeCom-behavior investigations.
+- The `wecom.incoming msgtype=...` diagnostic is intentionally left in place at
+  debug level for future WeCom-behavior investigations.
 
 ## Next steps / TODO (priority order)
 
-### 1. Verify subprocess identity + `seekdb`
-Pull the subprocess-isolation commit, set:
+### 1. Verify short-TTL identity cache in the live gateway
+Pull the identity-cache commit, set:
 
 ```env
 AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
 AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_MAX_ENTRIES=1024
 ```
 
 Then restart the gateway and verify:
 
-- `我是谁` still resolves the employee identity.
-- a semantic-memory prompt stores/retrieves after restart.
-- no SIGBUS / exit 138 appears in macOS DiagnosticReports.
+- First `我是谁` still resolves the employee identity.
+- A second `我是谁` within 10 minutes resolves without a second DM child-process
+  lookup. Enable debug logging if you need to see
+  `Employee identity cache hit...` explicitly.
+- Missing users and lookup errors are **not** cached, so temporary DM failures
+  can recover on the next request.
 
-### 2. DM connection robustness
-Each identity lookup currently opens a new DM connection (slow; re-triggers the
-JVM/JDBC path in the child process every message). Consider a long-lived sidecar,
-pooling inside that sidecar, or caching `employee_context` per `(tenant, user)`
-for a short TTL once subprocess mode is verified.
+### 2. Long-lived DM sidecar / connection pooling
+The short-TTL cache removes repeated DM lookups for active users, but every
+cache miss still starts a short-lived child process and opens a new DM
+connection. For higher throughput, promote the subprocess bridge into a
+long-lived local sidecar with connection pooling and a small request protocol.
 
 ### 3. Production hardening
 - Run the gateway under a process supervisor (launchd / systemd-equivalent), not
@@ -260,5 +270,10 @@ than running out of the monorepo example.
   `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` via
   `agentseek_enterprise.identity.dm_staff_sidecar`, so the gateway process can
   keep JPype/libjvm out of the main ContextSeek/ONNX process.
+- `agentseek-enterprise` now supports
+  `AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_*` for short-TTL successful
+  `EmployeeContext` caching in the gateway process.
+- `agentseek-wecom` keeps `wecom.incoming msgtype=...` as a debug-level
+  diagnostic, reducing normal gateway log noise.
 - The `.env` files are gitignored (secrets); copy the working `.env` to the Mac
   Pro manually if you want the same config.

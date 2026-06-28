@@ -52,6 +52,9 @@ For Mac local debugging, where `dmPython` wheels may be unavailable, use the JDB
 AGENTSEEK_IDENTITY_DM_DRIVER_MODULE=agentseek_enterprise.identity.jdbc_driver
 AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
 AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_MAX_ENTRIES=1024
 AGENTSEEK_IDENTITY_DM_JDBC_JAR=vendor/dameng/DmJdbcDriver18-8.1.3.62.jar
 AGENTSEEK_IDENTITY_DM_JDBC_CLASS=dm.jdbc.driver.DmDriver
 AGENTSEEK_IDENTITY_DM_JDBC_JAVA_HOME=/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home
@@ -61,6 +64,11 @@ AGENTSEEK_IDENTITY_DM_JDBC_JAVA_HOME=/opt/homebrew/opt/openjdk@11/libexec/openjd
 short-lived Python child process. The main gateway process does not load JPype
 or `libjvm`, so it can coexist with vector/ONNX runtimes such as ContextSeek
 SeekDB.
+
+The optional identity cache stores successful `EmployeeContext` lookups in the
+gateway process for a short TTL. It does not cache lookup failures or missing
+employees, so temporary DM issues and newly synced users can recover on the next
+request.
 
 The plugin only performs identity lookup when `AGENTSEEK_IDENTITY_PROVIDER=dm`, or when `AGENTSEEK_ENTERPRISE_IDENTITY_ENABLED=true` is set explicitly.
 

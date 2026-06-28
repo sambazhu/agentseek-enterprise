@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
+from agentseek_enterprise import plugin as enterprise_plugin
 from agentseek_enterprise.identity import EmployeeContext
 from agentseek_enterprise.langgraph_store import SQLiteStore
 from agentseek_enterprise.long_term_memory import employee_memory_tools
@@ -106,6 +107,59 @@ def test_load_state_marks_missing_employee(monkeypatch: Any) -> None:
 
     assert EMPLOYEE_CONTEXT_STATE_KEY not in state
     assert state[EMPLOYEE_IDENTITY_STATE_KEY]["status"] == "not_found"
+
+
+def test_load_state_caches_successful_employee_context(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS", "600")
+    plugin = EnterprisePlugin()
+    provider = FakeIdentityProvider(_employee_context())
+    plugin._provider = provider
+    plugin._provider_initialized = True
+
+    first = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+    second = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+
+    assert provider.queries == ["chenkang2"]
+    assert first[EMPLOYEE_IDENTITY_STATE_KEY]["cache"] == "miss"
+    assert second[EMPLOYEE_IDENTITY_STATE_KEY]["cache"] == "hit"
+    assert second[EMPLOYEE_CONTEXT_STATE_KEY]["oa_account"] == "chenkang2"
+
+
+def test_load_state_identity_cache_expires(monkeypatch: Any) -> None:
+    monotonic_values = iter([100.0, 101.5])
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS", "1")
+    monkeypatch.setattr(enterprise_plugin.time, "monotonic", lambda: next(monotonic_values))
+    plugin = EnterprisePlugin()
+    provider = FakeIdentityProvider(_employee_context())
+    plugin._provider = provider
+    plugin._provider_initialized = True
+
+    plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+    state = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+
+    assert provider.queries == ["chenkang2", "chenkang2"]
+    assert state[EMPLOYEE_IDENTITY_STATE_KEY]["cache"] == "miss"
+
+
+def test_load_state_does_not_cache_missing_employee(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED", "true")
+    plugin = EnterprisePlugin()
+    provider = FakeIdentityProvider(None)
+    plugin._provider = provider
+    plugin._provider_initialized = True
+
+    plugin.load_state({"from_userid": "missing"}, "s1")
+    plugin.load_state({"from_userid": "missing"}, "s1")
+
+    assert provider.queries == ["missing", "missing"]
 
 
 def test_format_employee_context_for_prompt() -> None:
