@@ -62,6 +62,21 @@ What was tested and the outcome, so the next session knows the current state:
   (cache hit → identity served from gateway memory) → 朱春霖. Zero SIGBUS.
   TTL expiry / no-cache-on-failure are covered by the unit tests
   (`contrib/agentseek-enterprise/tests/test_plugin.py`, 28 passed).
+- **Persistent DM sidecar mode (commit 40ffd81) — VERIFIED live (2026-06-28).**
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar`: a long-lived child process
+  holds the DM/JDBC connection; the gateway still never loads `libjvm`;
+  parent↔child via stdin/stdout JSON-lines (no network port). Verified by
+  watching the sidecar **process pid**: 1st `我是谁` started sidecar pid=97628;
+  a 2nd `我是谁` ~3 min later (cache TTL already expired → cache miss) **reused
+  the same pid=97628** (started time unchanged, still only 1 sidecar process)
+  → identity resolved, no cold JVM start. Zero SIGBUS / exit 138 / stale
+  connection. (Cache-hit itself is mode-independent; see the cache entry above.)
+  **Minor finding for follow-up:** the `DM identity sidecar started pid=…` INFO
+  log in `dm_staff_provider` did not reach the gateway's loguru output (stdlib
+  `_LOG` not routed) — ops can't see sidecar start/restart in the log. Function
+  is unaffected; routing that logger to loguru would help visibility.
+  Mac mini now runs `sidecar` + TTL 600. Roll back to `subprocess` if a crash
+  or stale-connection error reappears.
 
 ## The DM connection root cause + fix (the big one)
 
