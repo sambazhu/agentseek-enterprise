@@ -19,6 +19,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 | `wecom_port` | Local WeCom callback server port. |
 | `wecom_callback_path` | Callback path configured in the WeCom intelligent robot. |
 | `mcp_config_path` | MCP config path read by AgentSeek and the DeepAgents MCP adapter. |
+| `deployment_path` | Absolute path used in the generated macOS LaunchAgent template. |
 | `_agentseek_source_path` | Optional local editable AgentSeek source checkout. |
 | `_agentseek_source_url` | Git source used when `_agentseek_source_path` is empty. |
 
@@ -31,6 +32,10 @@ This template scaffolds a WeCom-facing enterprise digital employee:
   AGENTS.md
   README.md
   pyproject.toml
+  launchd/
+    com.local.{{ cookiecutter.project_slug }}.plist
+  scripts/
+    run_gateway.sh
   skills/
     enterprise-employee/SKILL.md
     office-workflow/SKILL.md
@@ -39,6 +44,9 @@ This template scaffolds a WeCom-facing enterprise digital employee:
     agent.py
     settings.py
     tools.py
+  vendor/dameng/
 ```
 
-The generated project is intentionally backend-first. It is meant to be run by `agentseek gateway --enable-channel wecom`.
+The generated project is intentionally backend-first. It is meant to be run by
+`scripts/run_gateway.sh`, which wraps `agentseek gateway --enable-channel wecom`
+with the DM JDBC bridge extras used by the enterprise runtime.

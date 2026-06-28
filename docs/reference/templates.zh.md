@@ -15,6 +15,7 @@ sources:
   - templates/deepagents/default/README.md
   - templates/deepagents/research/README.md
   - templates/deepagents/content-builder/README.md
+  - templates/deepagents/enterprise-wecom/README.md
 ---
 
 # 模板参考
@@ -32,6 +33,7 @@ sources:
 | `deepagents/default` | 绑定到 `agentseek-langchain` 的本地 `create_deep_agent` runnable。 |
 | `deepagents/research` | 带 Tavily 搜索和 streamed tool/sub-agent UI 的纯 DeepAgents research agent。 |
 | `deepagents/content-builder` | 带品牌记忆、skills、subagents、图片生成和 streamed UI 的 DeepAgents content builder。 |
+| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、MCP 工具、语义记忆和 gateway runtime。 |
 
 ## 选择入口
 
@@ -45,6 +47,7 @@ sources:
 | 远程 LangGraph service | `langchain/cli-remote` |
 | Deep research workflow | `deepagents/research` |
 | 带 memory、skills 和图片生成的 content workflow | `deepagents/content-builder` |
+| 企业微信数字员工 | `deepagents/enterprise-wecom` |
 
 ## `agentseek create` 形态
 
@@ -177,3 +180,18 @@ sources:
 | `tavily_topic` | Tavily topic filter。 |
 | `langgraph_port` | `langgraph dev` 后端端口。 |
 | `frontend_port` | Vite dev-server 端口。 |
+
+### `deepagents/enterprise-wecom`
+
+| 变量 | 说明 |
+| --- | --- |
+| `project_name` | 人类可读的项目名。 |
+| `project_slug` | Python package 和目录名。 |
+| `author` | 项目作者。 |
+| `default_model` | 默认 `AGENTSEEK_MODEL`。 |
+| `wecom_port` | 本地企业微信回调服务端口。 |
+| `wecom_callback_path` | 企业微信智能机器人中配置的回调路径。 |
+| `mcp_config_path` | AgentSeek 和 DeepAgents MCP adapter 读取的 MCP 配置路径。 |
+| `deployment_path` | 生成的 macOS LaunchAgent 模板使用的绝对部署路径。 |
+| `_agentseek_source_path` | 可选的本地可编辑 AgentSeek 源码 checkout。 |
+| `_agentseek_source_url` | `_agentseek_source_path` 为空时使用的 Git 源。 |

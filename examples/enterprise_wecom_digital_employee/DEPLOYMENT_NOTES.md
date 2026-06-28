@@ -277,9 +277,13 @@ logging fix, additionally confirm lifecycle log visibility:
 - `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` is set — keep it secret, rotate for prod.
 
 ### 3. `agentseek create` for a clean standalone project
-Once the template (and the JVM-isolation fix) is stable, generate a clean
-standalone project via `agentseek create` for formal deployment/handoff, rather
-than running out of the monorepo example.
+The bundled `deepagents/enterprise-wecom` template now carries the verified
+subprocess/sidecar identity settings, identity cache defaults, run script,
+LaunchAgent template, and DM JDBC vendor directory placeholder. Next Mac mini
+step: render a clean standalone project via `agentseek create
+deepagents/enterprise-wecom`, copy the working `.env` and DM JDBC jar into the
+generated project, then run `scripts/run_gateway.sh` and repeat the WeCom smoke
+tests before formal handoff.
 
 ## Files added/changed in this deployment session (for the Mac Pro pull)
 
