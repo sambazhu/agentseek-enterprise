@@ -52,7 +52,7 @@ class ContextSeekPlugin:
     def _scope_from_state(self, message: Envelope, session_id: str, state: State) -> str | None:
         if self._settings.SCOPE_MODE.strip().lower() != "enterprise_user":
             return self._scope_from_message(message, session_id)
-        return _enterprise_employee_scope(state)
+        return _enterprise_employee_scope(state, session_id)
 
     @hookimpl
     async def load_state(
@@ -149,12 +149,19 @@ class ContextSeekPlugin:
             logger.debug(f"ContextSeek add skipped: {exc}")
 
 
-def _enterprise_employee_scope(state: State) -> str | None:
+def _enterprise_employee_scope(state: State, session_id: str) -> str | None:
     runtime_context = state.get("_langgraph_runtime_context")
+    enterprise: Mapping[str, object] | None = None
     if not isinstance(runtime_context, Mapping):
-        return None
-    enterprise = runtime_context.get("enterprise")
-    if not isinstance(enterprise, Mapping):
+        employee_context = state.get("employee_context")
+        if isinstance(employee_context, Mapping):
+            enterprise = _enterprise_context_from_employee_context(employee_context, session_id)
+    else:
+        runtime_enterprise = runtime_context.get("enterprise")
+        if isinstance(runtime_enterprise, Mapping):
+            enterprise = runtime_enterprise
+
+    if enterprise is None:
         return None
 
     version = _clean(enterprise.get("version"))
@@ -163,6 +170,24 @@ def _enterprise_employee_scope(state: State) -> str | None:
     if version != "v1" or not _is_scoped_key(tenant_key) or not _is_scoped_key(user_key):
         return None
     return f"enterprise/{version}/{tenant_key}/{user_key}/semantic"
+
+
+def _enterprise_context_from_employee_context(
+    employee_context: Mapping[str, object],
+    session_id: str,
+) -> Mapping[str, object] | None:
+    try:
+        from agentseek_enterprise.runtime import enterprise_runtime_context
+    except ImportError:
+        return None
+
+    runtime_context = enterprise_runtime_context(employee_context, session_id)
+    if not isinstance(runtime_context, Mapping):
+        return None
+    enterprise = runtime_context.get("enterprise")
+    if not isinstance(enterprise, Mapping):
+        return None
+    return enterprise
 
 
 def _format_context_block(hits: Any) -> str:

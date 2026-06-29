@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from agentseek_contextseek.plugin import (
     ContextSeekPlugin,
+    _enterprise_employee_scope,
     _format_context_block,
     _inject_context,
 )
@@ -198,6 +199,28 @@ async def test_enterprise_scope_fails_closed_without_identity_state(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_build_prompt_derives_enterprise_scope_from_employee_context(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_TENANT_ID", "wkzq")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET", "secret")
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = []
+    plugin._client = mock_client
+    plugin._client_initialized = True
+    state = {"employee_context": {"oa_account": "employee-a", "name": "Alice"}}
+
+    result = await plugin.build_prompt(message={"content": "what did I ask you to remember?"}, session_id="wecom:a", state=state)
+
+    assert result is None
+    scope = mock_client.retrieve.call_args.kwargs["scope"]
+    assert scope.startswith("enterprise/v1/hmac-")
+    assert scope.endswith("/semantic")
+    assert "employee-a" not in scope
+    assert state["_contextseek_scope"] == scope
+
+
+@pytest.mark.anyio
 async def test_save_state_calls_add():
     plugin = ContextSeekPlugin()
     mock_client = MagicMock()
@@ -269,6 +292,45 @@ async def test_save_state_skips_sensitive_looking_turns(monkeypatch):
     )
 
     mock_client.add.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_save_state_derives_enterprise_scope_from_employee_context(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_TENANT_ID", "wkzq")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET", "secret")
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    plugin._client = mock_client
+    plugin._client_initialized = True
+    state = {"employee_context": {"oa_account": "employee-a", "name": "Alice"}}
+
+    await plugin.save_state(
+        session_id="wecom:a",
+        state=state,
+        message={"content": "remember my preference"},
+        model_output="Preference recorded.",
+    )
+
+    scope = mock_client.add.call_args.kwargs["scope"]
+    assert scope.startswith("enterprise/v1/hmac-")
+    assert scope.endswith("/semantic")
+    assert "employee-a" not in scope
+    assert mock_client.add.call_args.kwargs["source"] == f"agentseek://semantic/{scope}"
+
+
+def test_enterprise_scope_falls_back_to_employee_context_without_runtime_context(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_TENANT_ID", "wkzq")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET", "secret")
+    state = {"employee_context": {"oa_account": "employee-a", "name": "Alice"}}
+
+    scope = _enterprise_employee_scope(state, "wecom:employee-a")
+
+    assert isinstance(scope, str)
+    assert scope.startswith("enterprise/v1/hmac-")
+    assert scope.endswith("/semantic")
+    assert "employee-a" not in scope
+    assert "Alice" not in scope
 
 
 def _enterprise_state() -> dict[str, object]:

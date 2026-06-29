@@ -316,6 +316,27 @@ break is specifically the **scoped-key handoff into the ContextSeek scope**.
 Test status: identity ✅, model ✅, short-term memory ✅, **seekdb long-term ❌
 (scope=None)**. MCP not yet tested.
 
+**Follow-up fix:** `agentseek-contextseek` now treats
+`state["employee_context"]` as a trusted fallback source for enterprise scope
+derivation when `_langgraph_runtime_context` is missing. It calls the same
+`agentseek_enterprise.runtime.enterprise_runtime_context(...)` helper used by
+the enterprise plugin, so the resulting scope is still anonymous:
+`enterprise/v1/<tenant-key>/<user-key>/semantic`, with no OA account or employee
+name embedded. This fixes both ContextSeek hooks:
+
+- `build_prompt` can retrieve semantic memory once identity state exists.
+- `save_state` can store the final turn even if the LangGraph runtime-context
+  handoff was not present in Bub state.
+
+Validation on the Mac Pro:
+
+- `uv run pytest contrib/agentseek-contextseek/tests -q` -> `35 passed`.
+- `uv run pytest --import-mode=importlib contrib/agentseek-enterprise/tests
+  contrib/agentseek-wecom/tests contrib/agentseek-contextseek/tests
+  contrib/agentseek-langchain/tests -q` -> `93 passed, 1 warning`.
+- `uv run ruff check --no-fix contrib/agentseek-contextseek` -> all checks
+  passed.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
