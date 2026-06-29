@@ -284,6 +284,38 @@ Follow-up validation on the Mac Pro:
 - A ContextSeek probe confirmed escaped
   `AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES` resolves to `['vector']`.
 
+### v0.0.4 re-verification (after 3cda1e9) — model+init fixed, seekdb scope still broken
+
+Pulled 3cda1e9 and re-ran the full live sweep. The two regressions from the
+previous round are fixed:
+- **Model**: `我是谁 → 你好，朱春霖！` — glm-5.2/DashScope applies (no OpenRouter
+  fallback). The `AGENTSEEK_* → BUB_*` sync in `bub_gateway.py` works.
+- **ContextSeek init**: `seekdb has opened` + `ContextSeek client initialized`,
+  no `recall_routes` parse error.
+
+But the sweep exposed a **deeper ContextSeek regression** — seekdb semantic
+memory is non-functional (no store, no retrieve):
+
+- After `请长期记住：…数据架构`, the bot says "已长期记住" but **nothing is
+  written to seekdb** (the `store/` dir has no new data, only old Jun-27 data).
+- `我的工作职责是什么？` after a gateway restart (fresh session) returns a
+  generic `你好，朱春霖！` — no recall. Within the same session it "recalls",
+  but that's **session memory**, not seekdb.
+- The log shows **no ContextSeek retrieve or save activity** (only the client
+  init) — `build_prompt`/`save_state` appear to return early.
+
+**Likely root cause:** ContextSeek's `_enterprise_employee_scope(state)` returns
+`None` because the scoped keys (`tenant_key`/`user_key`) it reads from
+`state["_langgraph_runtime_context"]["enterprise"]` aren't present. The v0.0.4
+lifecycle refactor changed how the enterprise identity state is injected, so the
+scoped keys don't reach ContextSeek → scope=None → `build_prompt` sets
+`identity_required` and returns without retrieving; `save_state` returns without
+storing. Identity itself resolves fine (zhuchunlin + employee_context), so the
+break is specifically the **scoped-key handoff into the ContextSeek scope**.
+
+Test status: identity ✅, model ✅, short-term memory ✅, **seekdb long-term ❌
+(scope=None)**. MCP not yet tested.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
