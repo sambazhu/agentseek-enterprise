@@ -5,7 +5,7 @@ requires-python = ">=3.12, <3.14"
 [[package]]
 name = "agentseek"
 version = "0.0.4"
-source = { editable = "/Users/sambazhu/工作/agentseek" }
+source = { editable = "../.." }
 dependencies = [
     { name = "bub" },
     { name = "cookiecutter" },
@@ -61,7 +61,7 @@ plugins = [
 [[package]]
 name = "agentseek-contextseek"
 version = "0.1.0"
-source = { editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-contextseek" }
+source = { editable = "../../contrib/agentseek-contextseek" }
 dependencies = [
     { name = "bub" },
     { name = "contextseek", extra = ["seekdb"] },
@@ -78,7 +78,7 @@ requires-dist = [
 [[package]]
 name = "agentseek-enterprise"
 version = "0.1.0"
-source = { editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-enterprise" }
+source = { editable = "../../contrib/agentseek-enterprise" }
 dependencies = [
     { name = "bub" },
     { name = "langgraph" },
@@ -93,7 +93,7 @@ requires-dist = [
 [[package]]
 name = "agentseek-langchain"
 version = "0.1.0"
-source = { editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-langchain" }
+source = { editable = "../../contrib/agentseek-langchain" }
 dependencies = [
     { name = "bub" },
     { name = "langchain-core" },
@@ -112,7 +112,7 @@ requires-dist = [
 [[package]]
 name = "agentseek-schedule-sqlalchemy"
 version = "0.1.0"
-source = { editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-schedule-sqlalchemy" }
+source = { editable = "../../contrib/agentseek-schedule-sqlalchemy" }
 dependencies = [
     { name = "apscheduler" },
     { name = "bub" },
@@ -133,7 +133,7 @@ requires-dist = [
 [[package]]
 name = "agentseek-wecom"
 version = "0.1.0"
-source = { editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-wecom" }
+source = { editable = "../../contrib/agentseek-wecom" }
 dependencies = [
     { name = "bub" },
     { name = "fastapi" },
@@ -752,12 +752,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agentseek", editable = "/Users/sambazhu/工作/agentseek" },
-    { name = "agentseek-contextseek", editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-contextseek" },
-    { name = "agentseek-enterprise", editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-enterprise" },
-    { name = "agentseek-langchain", editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-langchain" },
-    { name = "agentseek-schedule-sqlalchemy", editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-schedule-sqlalchemy" },
-    { name = "agentseek-wecom", editable = "/Users/sambazhu/工作/agentseek/contrib/agentseek-wecom" },
+    { name = "agentseek", editable = "../.." },
+    { name = "agentseek-contextseek", editable = "../../contrib/agentseek-contextseek" },
+    { name = "agentseek-enterprise", editable = "../../contrib/agentseek-enterprise" },
+    { name = "agentseek-langchain", editable = "../../contrib/agentseek-langchain" },
+    { name = "agentseek-schedule-sqlalchemy", editable = "../../contrib/agentseek-schedule-sqlalchemy" },
+    { name = "agentseek-wecom", editable = "../../contrib/agentseek-wecom" },
     { name = "bub-mcp", git = "https://github.com/bubbuild/bub-contrib.git?subdirectory=packages%2Fbub-mcp&rev=d9f177145b45d67cc0ca4703a495f062df8e3c32" },
     { name = "contextseek", extras = ["seekdb"] },
     { name = "deepagents", specifier = ">=0.5.3" },

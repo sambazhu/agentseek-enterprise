@@ -50,7 +50,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 ```
 
 The generated project is intentionally backend-first. It is meant to be run by
-`scripts/run_gateway.sh`, which wraps `bub gateway --enable-channel wecom` with
-the DM JDBC bridge extras used by the enterprise runtime. The same process is
-declared in `.agentseek/lifecycle.toml`, so `agentseek dev` can also start it
-under the AgentSeek lifecycle toolkit.
+`scripts/run_gateway.sh`, which loads the project `.env`, installs the DM JDBC
+bridge extras, and starts `bub gateway --enable-channel wecom` through a small
+Logfire-safe wrapper. The same process is declared in `.agentseek/lifecycle.toml`,
+so `agentseek dev` can also start it under the AgentSeek lifecycle toolkit.

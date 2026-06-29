@@ -34,11 +34,11 @@ where = ["src"]
 
 [tool.uv.sources]
 
-agentseek = { path = "/Users/sambazhu/工作/agentseek", editable = true }
-agentseek-contextseek = { path = "/Users/sambazhu/工作/agentseek/contrib/agentseek-contextseek", editable = true }
-agentseek-enterprise = { path = "/Users/sambazhu/工作/agentseek/contrib/agentseek-enterprise", editable = true }
-agentseek-langchain = { path = "/Users/sambazhu/工作/agentseek/contrib/agentseek-langchain", editable = true }
-agentseek-schedule-sqlalchemy = { path = "/Users/sambazhu/工作/agentseek/contrib/agentseek-schedule-sqlalchemy", editable = true }
-agentseek-wecom = { path = "/Users/sambazhu/工作/agentseek/contrib/agentseek-wecom", editable = true }
+agentseek = { path = "../..", editable = true }
+agentseek-contextseek = { path = "../../contrib/agentseek-contextseek", editable = true }
+agentseek-enterprise = { path = "../../contrib/agentseek-enterprise", editable = true }
+agentseek-langchain = { path = "../../contrib/agentseek-langchain", editable = true }
+agentseek-schedule-sqlalchemy = { path = "../../contrib/agentseek-schedule-sqlalchemy", editable = true }
+agentseek-wecom = { path = "../../contrib/agentseek-wecom", editable = true }
 
 bub-mcp = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-mcp" }

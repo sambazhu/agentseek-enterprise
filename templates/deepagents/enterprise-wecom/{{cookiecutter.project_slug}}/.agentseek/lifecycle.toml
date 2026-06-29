@@ -11,6 +11,7 @@ required = [
   "pyproject.toml",
   ".agents/mcp.json",
   "scripts/run_gateway.sh",
+  "scripts/bub_gateway.py",
   "scripts/prod_check.py",
   "src/{{ cookiecutter.project_slug }}/agent.py",
   "vendor/dameng",

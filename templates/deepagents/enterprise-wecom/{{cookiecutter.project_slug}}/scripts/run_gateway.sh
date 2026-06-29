@@ -10,7 +10,8 @@ mkdir -p runtime
 export AGENTSEEK_ENV_FILE="${AGENTSEEK_ENV_FILE:-.env}"
 export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-exec uv run --offline --with jaydebeapi --with JPype1 bub gateway \
+exec uv run --offline --env-file "$AGENTSEEK_ENV_FILE" --with jaydebeapi --with JPype1 \
+  python scripts/bub_gateway.py gateway \
   --enable-channel wecom \
   --enable-channel mcp.lifecycle \
   --enable-channel skills.lifecycle

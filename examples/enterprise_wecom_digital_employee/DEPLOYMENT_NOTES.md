@@ -174,25 +174,30 @@ uv run agentseek dev --dry-run --skip-check
 uv run python scripts/prod_check.py --env-file .env
 ```
 
-### v0.0.4 Mac mini verification — 3 blocking issues found (2026-06-29)
+### v0.0.4 Mac mini verification — 3 blocking issues found and fixed (2026-06-29)
 
 The lifecycle CLI checks pass (`agentseek info` / `dev --dry-run` / `prod_check`
-all OK after the local workarounds below), but **`bub gateway` does not start** —
-3 integration issues surfaced by the upstream lifecycle merge:
+all OK after the local workarounds below), but the first Mac mini pull found
+that **`bub gateway` did not start**. Three integration issues surfaced by the
+upstream lifecycle merge; all three have follow-up fixes in this branch:
 
 1. **Leaked absolute path in example `pyproject.toml`** — `[tool.uv.sources]`
    has 6 hardcoded `/Users/sambazhu/工作/agentseek` (the Mac Pro repo path),
    which doesn't exist on the Mac mini → build fails. Worked around locally
-   (sed → `/Users/sambazhu/agentseek-enterprise`). **Fix:** use relative paths
-   (e.g. `../../..`) in `[tool.uv.sources]`, not machine-specific absolute paths.
+   (sed → `/Users/sambazhu/agentseek-enterprise`). **Fixed:** the checked-in
+   example now uses relative `[tool.uv.sources]` paths (`../..`,
+   `../../contrib/...`), and its checked-in `uv.lock` uses the same relative
+   editable sources instead of machine-specific absolute paths.
 
 2. **`bub` crashes when Logfire is not configured** — `bub/__main__.py`
    `_instrument_bub()` wraps `logfire.configure()` in `except ImportError` only;
    with logfire installed but no token, `logfire.configure()` raises
    `LogfireConfigError`, which is NOT caught → the bub CLI exits before the
    gateway starts. Worked around locally with `LOGFIRE_TOKEN=foo` (configure
-   passes, then 401 noise on span export). **Fix:** catch `LogfireConfigError`
-   (or `Exception`) in `_instrument_bub()` so unconfigured Logfire is non-fatal.
+   passes, then 401 noise on span export). **Fixed locally:** the enterprise
+   gateway now starts Bub through `scripts/bub_gateway.py`, which guards
+   `logfire.configure()` before importing `bub.__main__` and falls back to
+   `send_to_logfire=False` when Logfire is not configured.
 
 3. **Env not reaching plugins under `bub gateway` (most critical)** —
    `run_gateway.sh` runs `bub gateway` from `REPO_ROOT`; `lifecycle.toml`'s
@@ -203,11 +208,26 @@ all OK after the local workarounds below), but **`bub gateway` does not start** 
    not read), wecom channel does not bind port 12000. Note: `agentseek info` run
    **from the example dir** reads the example `.env` fine, so the config is
    correct — the break is specifically the `bub gateway` REPO_ROOT-relative
-   launch vs env-file resolution. **Fix needed:** confirm how `bub gateway` loads
-   env (lifecycle.toml `env_file` vs `AGENTSEEK_ENV_FILE` indirection) and
-   whether the REPO_ROOT-relative `run_gateway.sh` conflicts with it.
+   launch vs env-file resolution. **Fixed:** `run_gateway.sh` now passes
+   `--env-file "$AGENTSEEK_ENV_FILE"` directly to `uv run`, so the actual
+   example/project `.env` is loaded into the Bub process. The script still
+   exports `AGENTSEEK_ENV_FILE` for code that needs to resolve the same file.
 
-Priority: ③ → ② → ① (③ blocks the gateway from starting at all).
+Follow-up validation on the Mac Pro:
+
+- `env -u LOGFIRE_TOKEN uv run --offline --env-file examples/enterprise_wecom_digital_employee/.env --with jaydebeapi --with JPype1 python examples/enterprise_wecom_digital_employee/scripts/bub_gateway.py gateway --help`
+  exits 0, proving the wrapper loads the Bub gateway command without Logfire
+  credentials.
+- `uv run --offline --env-file examples/enterprise_wecom_digital_employee/.env
+  python -c ...` confirmed `AGENTSEEK_SCHEDULE_SQLALCHEMY_URL`,
+  `AGENTSEEK_WECOM_CALLBACK_PATH`, and the LangChain spec are present in the
+  child-process environment (only booleans were printed; no secrets).
+- `PYTHONPATH="$PWD" uv run pytest tests/cli_commands/test_templates_render.py
+  -q` -> `25 passed`.
+- From `examples/enterprise_wecom_digital_employee`,
+  `uv lock --check --offline` and
+  `uv sync --locked --offline --no-install-project` both passed against the
+  relative editable source paths.
 
 ## The DM connection root cause + fix (the big one)
 
