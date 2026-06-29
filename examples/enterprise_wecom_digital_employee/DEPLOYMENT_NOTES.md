@@ -229,6 +229,35 @@ Follow-up validation on the Mac Pro:
   `uv sync --locked --offline --no-install-project` both passed against the
   relative editable source paths.
 
+### v0.0.4 re-verification on Mac mini (after 70b44d8) — fixes confirmed, 2 new regressions
+
+After pulling 70b44d8, the 3 original blockers are fixed and `bub gateway`
+boots cleanly:
+- ① relative `[tool.uv.sources]` paths — build OK.
+- ② `bub_gateway.py` wrapper — no `LogfireConfigError` crash.
+- ③ `--env-file "$AGENTSEEK_ENV_FILE"` — env reaches plugins; **schedule channel
+  loads** (`schedule.start complete`) and **wecom binds port 12000**.
+- Identity works under the new lifecycle: sidecar starts (pid observed),
+  `zhuchunlin` resolved + cached. No SIGBUS.
+
+But the live `我是谁` turn exposed **2 new v0.0.4 regressions** (the upstream
+lifecycle refactor changed config handling):
+
+1. **ContextSeek init fails → semantic memory disabled.**
+   `error parsing value for field "recall_routes" from source "EnvSettingsSource"`.
+   The `.env` value `AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=["vector"]` (a JSON
+   array as a string) is no longer parsed correctly — likely a pydantic-settings
+   version/parsing change in v0.0.4. ContextSeek falls back to disabled.
+
+2. **Model defaults to OpenRouter → turn fails (no reply).** The turn errors
+   `[openrouter] No openrouter API key provided` even though `.env` has
+   `AGENTSEEK_MODEL=glm-5.2` + `AGENTSEEK_MODEL_PROVIDER=openai` + DashScope
+   key/base (and identity env IS loaded, so the `.env` reached the process).
+   v0.0.4's model resolution isn't applying the configured provider/model — it
+   falls back to the OpenRouter default. **This blocks replies entirely.**
+
+Priority: ② (model) > ① (ContextSeek) — no model = no reply.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
