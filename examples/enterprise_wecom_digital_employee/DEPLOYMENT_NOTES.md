@@ -447,6 +447,28 @@ content follows on subsequent lines that `grep | tail -1` misses). Always use
 6391994 is harmless (adds `_contextseek_enriched` dedup + explicit enrichment
 call) — Codex can decide whether to keep or simplify.
 
+### Production freeze baseline review (2026-06-29, tag enterprise-wecom-v0.0.4-prod-20260629)
+
+Checked out tag `enterprise-wecom-v0.0.4-prod-20260629` (commit `6cd8d41`,
+doc-only successor of verified `0c63850`). Full production baseline review on
+the Mac mini:
+
+**Preflight**: `prod_check.py --env-file .env` → passed (0 failures, 0
+warnings). `.env` confirmed: sidecar + seekdb + identity cache + LangSmith off.
+
+**Live smoke test (8 messages, all PASS)**:
+
+| Test | Messages | Result |
+|------|----------|--------|
+| A. Identity | `我是谁` | ✅ 朱春霖 + OA + 组织路径 + 岗位 |
+| B. Short-term (P1) | `帮我记一下…深圳出差` → `我刚才说我要去哪里？` | ✅ "明天去深圳出差" |
+| C. Explicit long-term (SQLiteStore) | `请长期记住：我偏好简洁、分点的回复方式` → `你记得我的回复偏好吗？` | ✅ "简洁/最多三条要点/分点" |
+| D. Semantic long-term (seekdb) | `请长期记住：我的职责是负责数据架构工作` → `我的工作职责是什么？` | ✅ "职责：负责数据架构工作" |
+| E. MCP tools | `列一下当前可用的 MCP 工具` | ✅ 4 services (gildata ×3 + tavily) |
+
+**Health**: alive ✓, sidecar PID stable ✓, 0 SIGBUS/exit 138, msgid dedup
+fired 2× (normal). The production freeze baseline is confirmed production-ready.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
