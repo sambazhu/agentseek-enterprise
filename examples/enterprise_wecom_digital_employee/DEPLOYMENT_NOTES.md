@@ -1,9 +1,11 @@
 # Enterprise WeCom Digital Employee — Deployment Notes (Mac mini)
 
 Handoff notes from deploying/verifying this example on a company Mac mini
-(branch `enterprise/wecom-runtime`, 2026-06-27 through 2026-06-29). Covers the
-DM-connection root cause, the working configuration, known-issue workarounds,
-and the production-ready operating state.
+(branch `enterprise/wecom-runtime`, then integration branch
+`enterprise/wecom-runtime-v0.0.4`, 2026-06-27 through 2026-06-29). Covers the
+DM-connection root cause, the upstream integration context, the working
+configuration, known-issue workarounds, and the production-ready operating
+state.
 
 ## Verified working (end-to-end)
 
@@ -106,6 +108,71 @@ What was tested and the outcome, so the next session knows the current state:
   gateway now runs under launchd (boot-start + crash-restart). Note: the plist
   defaults to `/opt/agentseek/<slug>`; override the cookiecutter
   `deployment_path` (or edit the plist) for other locations.
+
+## Upstream v0.0.4 integration branch (2026-06-29)
+
+Why this branch exists:
+
+- The internal enterprise work was first stabilized on
+  `enterprise/wecom-runtime` through commit `dcd06a2`.
+- Meanwhile upstream `main` advanced to AgentSeek `v0.0.4` (`12bd58f`), with
+  a large lifecycle-toolkit refactor (`e87460d`) that changed CLI/docs/template
+  expectations.
+- To avoid merging the enterprise runtime directly onto a stale base, the
+  integration branch `enterprise/wecom-runtime-v0.0.4` was created from
+  `upstream/main`, then `enterprise/wecom-runtime` was merged into it.
+  Resulting merge commit: `7eaa0fa`.
+
+Conflict-resolution policy:
+
+- Keep upstream `v0.0.4` lifecycle CLI, docs, and tests as source of truth.
+- Do not reintroduce the old direct `agentseek gateway` contract in generated
+  projects; the enterprise gateway startup script now calls `bub gateway`,
+  while lifecycle entrypoints are exposed through `.agentseek/lifecycle.toml`.
+- Add `.agentseek/lifecycle.toml` to both the enterprise template and the
+  checked-in example, and update `.gitignore` so that file is preserved while
+  other local `.agentseek` state remains ignored.
+- Register `deepagents/enterprise-wecom` in the new template registry/docs.
+- Keep this deployment note as internal handoff material. It is not intended
+  for a clean upstream PR as-is; later PRs should split out generic pieces and
+  remove company-specific deployment details.
+
+Validation on the integration branch:
+
+- `uv sync --locked --all-packages --all-extras --group plugins` passed.
+- Unified regression suite passed:
+  `PYTHONPATH="$PWD" uv run pytest --import-mode=importlib tests contrib/agentseek-enterprise/tests contrib/agentseek-wecom/tests contrib/agentseek-contextseek/tests contrib/agentseek-langchain/tests -q`
+  -> `174 passed, 1 warning`.
+- Template render tests passed:
+  `uv run pytest tests/cli_commands/test_templates_render.py -q`
+  -> `25 passed`.
+- Focused lint passed across enterprise/wecom/example/probe files with
+  `uv run ruff check --no-fix ...` -> `All checks passed!`.
+- Template registry check passed:
+  `uv run agentseek create deepagents --list-templates` shows
+  `deepagents/enterprise-wecom`.
+- Example lifecycle smoke passed from
+  `examples/enterprise_wecom_digital_employee`:
+  `uv run agentseek info` and
+  `uv run agentseek dev --dry-run --skip-check`.
+
+Mac mini update path for this branch:
+
+```bash
+git fetch origin
+git switch enterprise/wecom-runtime-v0.0.4
+git pull origin enterprise/wecom-runtime-v0.0.4
+uv sync --locked --all-packages --all-extras --group plugins
+```
+
+Then run the local preflight/lifecycle checks before live WeCom traffic:
+
+```bash
+cd examples/enterprise_wecom_digital_employee
+uv run agentseek info
+uv run agentseek dev --dry-run --skip-check
+uv run python scripts/prod_check.py --env-file .env
+```
 
 ## The DM connection root cause + fix (the big one)
 
@@ -283,6 +350,10 @@ generation >5 s, triggering WeCom retries).
   deepagents/enterprise-wecom` rendered a standalone project that passed live
   WeCom identity, short-term memory, seekdb long-term memory, restart
   persistence, MCP listing, retry dedup, and JVM-isolation checks.
+- **Upstream v0.0.4 integration:** `enterprise/wecom-runtime-v0.0.4` was
+  created from `upstream/main` (`v0.0.4`) and merged with the production-ready
+  enterprise branch. Lifecycle CLI/template compatibility was validated before
+  asking the Mac mini deployment to move to the new branch.
 
 ## Recommended next work
 
