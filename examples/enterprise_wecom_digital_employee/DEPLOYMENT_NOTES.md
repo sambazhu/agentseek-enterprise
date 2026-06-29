@@ -421,6 +421,32 @@ Mac mini live re-verification should focus on:
 4. confirm a repeated turn does not duplicate seekdb retrieve within the same
    agent turn.
 
+### v0.0.4 FULL VERIFICATION PASSED (2026-06-29, after 6391994)
+
+All integration issues resolved. Full live sweep on the Mac mini, all PASS:
+
+1. **Identity + model**: `我是谁 → 朱春霖` (sidecar DM + glm-5.2/DashScope). ✅
+2. **Short-term memory**: `帮我记一下…出差` → recalled. ✅
+3. **seekdb long-term store**: `请长期记住：…数据架构` → written to seekdb
+   (new sstable data). ✅
+4. **seekdb retrieve + enrichment**: `我的工作职责是什么？` → reply includes
+   "职责：**负责数据架构工作**" (the stored semantic memory, beyond the DM
+   employee_context). ✅
+5. **MCP tools**: `列一下当前可用的 MCP 工具` → listed gildata (9 aggregate
+   tools + 300+ API endpoints). ✅
+
+Zero SIGBUS throughout. The v0.0.4 branch is production-ready.
+
+**Note on the enrichment investigation:** the "build_prompt output not reaching
+model" diagnosis (which prompted commit 6391994) was likely a false alarm — the
+seekdb enrichment was probably working since the scope fix (448c6de). The
+appearance of failure was caused by **`grep` truncating multi-line loguru
+`content=` output** (the reply's first line is a greeting; the seekdb-enriched
+content follows on subsequent lines that `grep | tail -1` misses). Always use
+`grep -A N` when reading multi-line WeCom replies from the gateway log.
+6391994 is harmless (adds `_contextseek_enriched` dedup + explicit enrichment
+call) — Codex can decide whether to keep or simplify.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
