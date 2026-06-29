@@ -377,6 +377,50 @@ by the model's actual prompt. The retrieve + scope are fine; the break is the
 3. Wire ContextSeek's `_contextseek_block` (state mode) or `build_prompt`
    return (prompt mode) into v0.0.4's prompt builder.
 
+### v0.0.4 ContextSeek prompt handoff fix (after 8b66a2f)
+
+The final integration break was in the boundary between Bub prompt hooks and
+the LangChain runnable spec. Bub's `build_prompt` hook is **first-result wins**:
+it is useful for choosing a prompt, but it is not a composition point for
+multiple context-producing plugins. In v0.0.4, relying on ContextSeek's
+`build_prompt` return value meant the retrieved block could be computed yet
+never reach the enterprise template's actual `RunnableSpec.build_input`.
+
+Fix:
+
+- `agentseek-langchain` now receives the Bub framework instance and, immediately
+  before building `InvocationContext` / invoking the runnable spec, calls
+  `build_prompt` hooks in `call_many(...)` mode as a **state enrichment pass**.
+- ContextSeek's hook is idempotent per turn via `_contextseek_enriched`, so the
+  old Bub prompt path and the new LangChain state-enrichment path cannot cause
+  duplicate seekdb retrievals.
+- The enterprise WeCom template already consumes `state["_contextseek_block"]`
+  as a `SystemMessage` beside `employee_context` and short-term memory. That is
+  now the canonical path: `seekdb retrieve -> _contextseek_block -> SystemMessage
+  -> model`.
+- The old prompt-return path is still left intact for non-enterprise/simple
+  runtimes, but the enterprise runtime no longer depends on it.
+
+Validation on the Mac Pro:
+
+- `uv run pytest --import-mode=importlib
+  contrib/agentseek-langchain/tests/test_plugin.py
+  contrib/agentseek-contextseek/tests/test_plugin.py -q` -> `27 passed`.
+- `uv run pytest --import-mode=importlib contrib/agentseek-enterprise/tests
+  contrib/agentseek-wecom/tests contrib/agentseek-contextseek/tests
+  contrib/agentseek-langchain/tests -q` -> `95 passed, 1 warning`.
+- `uv run ruff check --no-fix contrib/agentseek-langchain
+  contrib/agentseek-contextseek` -> all checks passed.
+
+Mac mini live re-verification should focus on:
+
+1. ask a query that should hit seekdb, e.g. `我的工作职责是什么`;
+2. confirm logs still show `retrieve hits > 0`;
+3. confirm the answer uses retrieved semantic memory, not only
+   `employee_context`;
+4. confirm a repeated turn does not duplicate seekdb retrieve within the same
+   agent turn.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could

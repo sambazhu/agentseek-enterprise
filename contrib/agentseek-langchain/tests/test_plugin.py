@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import agentseek_langchain.plugin as plugin_module
 from agentseek_langchain.profiles import text_spec
 from agentseek_langchain.shapes import ObjectDict, copy_str_mapping
+from agentseek_langchain.spec import RunnableSpec
 
 
 class _AsyncRunnable:
@@ -31,6 +32,16 @@ class _AsyncRunnableWithContext:
     ) -> str:
         self.calls.append((runnable_input, config, context))
         return self.output
+
+
+class _HookRuntime:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object, str, ObjectDict]] = []
+
+    async def call_many(self, hook_name: str, *, message: object, session_id: str, state: ObjectDict) -> list[object]:
+        self.calls.append((hook_name, message, session_id, state))
+        state["_contextseek_block"] = "[RetrievedEmployeeSemanticMemory]\n- remembered preference"
+        return []
 
 
 def test_plugin_run_model_delegates_to_loaded_spec(monkeypatch, tmp_path) -> None:
@@ -59,6 +70,45 @@ def test_plugin_run_model_delegates_to_loaded_spec(monkeypatch, tmp_path) -> Non
         "workspace": str(tmp_path),
     }
     assert info_messages == ["Using LangChain spec entrypoint: dummy:SPEC"]
+
+
+def test_plugin_enriches_state_before_spec_build_input(monkeypatch, tmp_path) -> None:
+    runnable = _AsyncRunnable("delegated-output")
+
+    def build_input(context):
+        return {
+            "prompt": context.prompt,
+            "semantic_memory": context.state.get("_contextseek_block"),
+        }
+
+    spec = RunnableSpec(
+        runnable=runnable,
+        build_input=build_input,
+        parse_output=str,
+    )
+    hook_runtime = _HookRuntime()
+    framework = SimpleNamespace(_hook_runtime=hook_runtime)
+
+    monkeypatch.setattr(plugin_module, "get_langchain_settings", lambda: SimpleNamespace(SPEC="dummy:SPEC"))
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+
+    plugin = plugin_module.LangChainRunnablePlugin(framework)
+    result = asyncio.run(
+        plugin.run_model(
+            prompt="hello",
+            session_id="session-1",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+
+    assert result == "delegated-output"
+    assert hook_runtime.calls[0][0] == "build_prompt"
+    assert hook_runtime.calls[0][1] == {"content": "hello", "session_id": "session-1"}
+    assert runnable.calls[0][0] == {
+        "prompt": "hello",
+        "semantic_memory": "[RetrievedEmployeeSemanticMemory]\n- remembered preference",
+    }
+    assert hook_runtime.calls[0][3]["_contextseek_block"] == "[RetrievedEmployeeSemanticMemory]\n- remembered preference"
 
 
 def test_plugin_run_model_stream_wraps_single_result(monkeypatch, tmp_path) -> None:

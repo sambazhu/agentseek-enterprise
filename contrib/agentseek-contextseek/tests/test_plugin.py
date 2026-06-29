@@ -142,6 +142,37 @@ async def test_build_prompt_injects_context():
 
 
 @pytest.mark.anyio
+async def test_build_prompt_enriches_state_once_per_turn():
+    hit = MagicMock()
+    hit.item.stage.value = "knowledge"
+    hit.item.summary = "a relevant fact"
+
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = [hit]
+    plugin._client = mock_client
+    plugin._client_initialized = True
+    state = {}
+
+    first = await plugin.build_prompt(
+        message={"content": "what is OceanBase?"},
+        session_id="s1",
+        state=state,
+    )
+    second = await plugin.build_prompt(
+        message={"content": "what is OceanBase?"},
+        session_id="s1",
+        state=state,
+    )
+
+    assert first is not None
+    assert second is None
+    assert state["_contextseek_enriched"] is True
+    assert "a relevant fact" in state["_contextseek_block"]
+    mock_client.retrieve.assert_called_once()
+
+
+@pytest.mark.anyio
 async def test_build_prompt_returns_none_without_context():
     plugin = ContextSeekPlugin()
     mock_client = MagicMock()

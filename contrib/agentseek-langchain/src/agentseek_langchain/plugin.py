@@ -15,7 +15,8 @@ from agentseek_langchain.spec import InvocationContext
 
 
 class LangChainRunnablePlugin:
-    def __init__(self) -> None:
+    def __init__(self, framework: object | None = None) -> None:
+        self._framework = framework
         self._spec_cache = None
         self._spec_resolved = False
 
@@ -46,6 +47,28 @@ class LangChainRunnablePlugin:
             runtime_context=runtime_context_from_state(state),
         )
 
+    async def _enrich_state_from_prompt_hooks(
+        self,
+        prompt: str | list[dict[str, Any]],
+        session_id: str,
+        state: State,
+    ) -> None:
+        hook_runtime = getattr(self._framework, "_hook_runtime", None)
+        if hook_runtime is None:
+            return
+        call_many = getattr(hook_runtime, "call_many", None)
+        if call_many is None:
+            return
+        try:
+            await call_many(
+                "build_prompt",
+                message={"content": _prompt_text(prompt), "session_id": session_id},
+                session_id=session_id,
+                state=state,
+            )
+        except Exception as exc:
+            logger.debug(f"Prompt hook state enrichment skipped: {exc}")
+
     @staticmethod
     def _read_agents_md(workspace: Path) -> str | None:
         path = workspace / "AGENTS.md"
@@ -62,6 +85,7 @@ class LangChainRunnablePlugin:
         spec = self._get_spec()
         if spec is None:
             return None
+        await self._enrich_state_from_prompt_hooks(prompt, session_id, state)
         return await spec.invoke(self._build_context(prompt, session_id, state))
 
     @hookimpl(tryfirst=True)
@@ -75,6 +99,7 @@ class LangChainRunnablePlugin:
         if spec is None:
             return None
 
+        await self._enrich_state_from_prompt_hooks(prompt, session_id, state)
         context = self._build_context(prompt, session_id, state)
         stream_state = StreamState()
 
@@ -88,6 +113,16 @@ class LangChainRunnablePlugin:
         return AsyncStreamEvents(iterator(), state=stream_state)
 
 
+def _prompt_text(prompt: str | list[dict[str, Any]]) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    parts: list[str] = []
+    for item in prompt:
+        text = item.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
 def main(framework: object | None = None) -> LangChainRunnablePlugin:
-    del framework
-    return LangChainRunnablePlugin()
+    return LangChainRunnablePlugin(framework)

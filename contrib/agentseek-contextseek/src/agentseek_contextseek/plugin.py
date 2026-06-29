@@ -77,6 +77,10 @@ class ContextSeekPlugin:
         state: State,
     ) -> str | None:
         """Retrieve semantic context once the full enterprise runtime state is available."""
+        if state.get("_contextseek_enriched"):
+            return None
+        state["_contextseek_enriched"] = True
+
         scope = self._scope_from_state(message, session_id, state)
         if scope is None:
             state["_contextseek_scope_status"] = "identity_required"
