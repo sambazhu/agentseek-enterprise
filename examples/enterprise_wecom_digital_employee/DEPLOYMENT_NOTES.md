@@ -77,6 +77,24 @@ What was tested and the outcome, so the next session knows the current state:
   loguru-aware adapter; verify visibility on the next Mac mini pull.
   Mac mini now runs `sidecar` + TTL 600. Roll back to `subprocess` if a crash
   or stale-connection error reappears.
+- **`agentseek create` template — VERIFIED end-to-end on a rendered project
+  (commit ec3cc20, 2026-06-29).** Rendered a clean standalone project via
+  `agentseek create deepagents/enterprise-wecom`, copied in the working `.env`
+  + DM jar + `mcp.local.json`, `uv sync`, started with the template's
+  `scripts/run_gateway.sh`. Full live sweep, all PASS:
+  1. `我是谁` → 朱春霖 (identity via sidecar; sidecar pid stable, no new JVM).
+  2. Short-term memory: `帮我记一下…出差` → `我刚才说我要去哪里？` recalled.
+  3. Long-term seekdb: `请长期记住：…数据架构` → `我的工作职责是什么？`
+     retrieved.
+  4. **seekdb persistence**: restart gateway (fresh session) → still recalled.
+  5. MCP tools: `列一下当前可用的 MCP 工具` → listed 4 services (incl. Tavily
+     search/extract/crawl/map/research).
+  Plus: WeCom text-retry dedup fired (`wecom.duplicate_msgid`); zero SIGBUS.
+  The template (`run_gateway.sh`, `.env.example` defaults, launchd plist,
+  `vendor/.gitkeep`) produces a working project. Note: the first `uv sync` of a
+  fresh render needs network (numpy via PyPI, `bub-mcp` via git) — over FlClash's
+  proxy, set `git config --global http.version HTTP/1.1` first to avoid git
+  HTTP2 stalls.
 
 ## The DM connection root cause + fix (the big one)
 
