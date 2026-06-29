@@ -1,0 +1,137 @@
+# Enterprise WeCom Production Freeze
+
+This document freezes the first production-ready baseline for the enterprise
+WeCom digital employee runtime.
+
+## Baseline
+
+- Branch: `enterprise/wecom-runtime-v0.0.4`
+- Verified code commit: `0c63850`
+- Production tag: `enterprise-wecom-v0.0.4-prod-20260629`
+- Verification host: company-network Mac mini
+- Verification date: 2026-06-29
+
+The tag may point to a documentation-only successor of `0c63850`; runtime code
+must remain equivalent to the verified code unless a new freeze is created.
+
+## Verified Capabilities
+
+- WeCom intelligent robot callback on port `12000`.
+- Encrypted robot `open_userid` resolution through a self-built WeCom app.
+- Employee identity lookup through DM JDBC in an isolated `sidecar` process.
+- Employee identity cache with a 10 minute TTL.
+- Per-session short-term memory persistence.
+- Employee-scoped durable memory tools backed by SQLiteStore.
+- ContextSeek semantic long-term memory with local SeekDB.
+- ContextSeek retrieval enrichment reaches the model prompt.
+- MCP lifecycle channel with gildata and Tavily tools.
+- WeCom retry deduplication by `msgid`.
+- LaunchAgent supervision with auto-restart.
+- No SIGBUS with DM sidecar and SeekDB/ONNX in the main gateway process.
+
+## Required Runtime Settings
+
+Keep these settings explicit in the deployment `.env`; do not rely on shell
+defaults:
+
+```bash
+AGENTSEEK_ENV_FILE=examples/enterprise_wecom_digital_employee/.env
+AGENTSEEK_STREAM_OUTPUT=true
+AGENTSEEK_WECOM_ENABLED=true
+AGENTSEEK_WECOM_PORT=12000
+AGENTSEEK_WECOM_USERID_RESOLVE_MODE=openuserid_to_userid
+AGENTSEEK_IDENTITY_PROVIDER=dm
+AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true
+AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600
+AGENTSEEK_ENTERPRISE_MEMORY_ENABLED=true
+AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+AGENTSEEK_CTX_SCOPE_MODE=enterprise_user
+AGENTSEEK_CTX_INJECTION_MODE=state
+AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=["vector"]
+LANGSMITH_TRACING=false
+```
+
+The actual `.env` also needs model credentials, WeCom callback credentials,
+self-built WeCom app credentials, DM credentials, namespace secret, and MCP
+server configuration. Keep those values out of git.
+
+## Start Command
+
+From the repository root:
+
+```bash
+examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh
+```
+
+For LaunchAgent deployment, install:
+
+```text
+examples/enterprise_wecom_digital_employee/launchd/com.local.agentseek-enterprise-wecom.plist
+```
+
+Then manage it with:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist 2>/dev/null || true
+launchctl load -w ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist
+```
+
+## Preflight
+
+Before switching traffic or after changing `.env`, run:
+
+```bash
+examples/enterprise_wecom_digital_employee/scripts/prod_check.py \
+  --env-file examples/enterprise_wecom_digital_employee/.env
+```
+
+The preflight must pass before treating the deployment as production-ready.
+
+## Live Smoke Test
+
+After restart, verify these prompts from WeCom:
+
+1. `我是谁`
+   - Expected: resolves to the employee context, e.g. name, OA account,
+     organization path, role, and post.
+2. `帮我记一下，我明天下午去深圳出差`
+   then `我刚才说我要去哪里？`
+   - Expected: recalls short-term memory.
+3. `请长期记住：我的职责是负责数据架构工作`
+   then `我的工作职责是什么？`
+   - Expected: answer uses ContextSeek semantic memory, not only DM identity.
+4. `列一下当前可用的 MCP 工具`
+   - Expected: lists configured MCP services and tools.
+
+When reading logs, use enough trailing context for multi-line model replies.
+Avoid `grep | tail -1` for `content=` lines; use `grep -A N`.
+
+## Rollback
+
+If the DM sidecar becomes stale or unstable:
+
+```bash
+AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
+```
+
+If ContextSeek/SeekDB causes startup failures and service continuity is more
+important than semantic recall:
+
+```bash
+AGENTSEEK_CTX_STORAGE_BACKEND=memory
+```
+
+These rollbacks preserve the gateway and identity path but reduce performance
+or semantic-memory durability. Restore `sidecar` + `seekdb` after investigation.
+
+## Change Control
+
+Any code change after this freeze needs at least:
+
+- local regression tests for `agentseek-enterprise`, `agentseek-wecom`,
+  `agentseek-contextseek`, and `agentseek-langchain`;
+- Mac mini live smoke test for identity, short-term memory, ContextSeek
+  retrieval, MCP, and WeCom retry behavior;
+- a new freeze entry or tag if it changes production runtime behavior.
+

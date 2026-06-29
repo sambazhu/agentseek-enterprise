@@ -74,6 +74,10 @@ Generate a new namespace secret before formal production handoff:
 examples/enterprise_wecom_digital_employee/scripts/prod_check.py --generate-namespace-secret
 ```
 
+The first production-ready baseline is frozen in `PRODUCTION_FREEZE.md`. Use it
+to pin the verified commit/tag, required runtime switches, smoke-test prompts,
+and rollback knobs before changing production behavior.
+
 For Mac mini process supervision, edit the repo path in
 `launchd/com.local.agentseek-enterprise-wecom.plist`, then install it as a
 user LaunchAgent:
