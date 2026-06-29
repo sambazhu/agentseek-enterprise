@@ -174,6 +174,41 @@ uv run agentseek dev --dry-run --skip-check
 uv run python scripts/prod_check.py --env-file .env
 ```
 
+### v0.0.4 Mac mini verification — 3 blocking issues found (2026-06-29)
+
+The lifecycle CLI checks pass (`agentseek info` / `dev --dry-run` / `prod_check`
+all OK after the local workarounds below), but **`bub gateway` does not start** —
+3 integration issues surfaced by the upstream lifecycle merge:
+
+1. **Leaked absolute path in example `pyproject.toml`** — `[tool.uv.sources]`
+   has 6 hardcoded `/Users/sambazhu/工作/agentseek` (the Mac Pro repo path),
+   which doesn't exist on the Mac mini → build fails. Worked around locally
+   (sed → `/Users/sambazhu/agentseek-enterprise`). **Fix:** use relative paths
+   (e.g. `../../..`) in `[tool.uv.sources]`, not machine-specific absolute paths.
+
+2. **`bub` crashes when Logfire is not configured** — `bub/__main__.py`
+   `_instrument_bub()` wraps `logfire.configure()` in `except ImportError` only;
+   with logfire installed but no token, `logfire.configure()` raises
+   `LogfireConfigError`, which is NOT caught → the bub CLI exits before the
+   gateway starts. Worked around locally with `LOGFIRE_TOKEN=foo` (configure
+   passes, then 401 noise on span export). **Fix:** catch `LogfireConfigError`
+   (or `Exception`) in `_instrument_bub()` so unconfigured Logfire is non-fatal.
+
+3. **Env not reaching plugins under `bub gateway` (most critical)** —
+   `run_gateway.sh` runs `bub gateway` from `REPO_ROOT`; `lifecycle.toml`'s
+   `env_file = ".env"` resolves to the **repo-root `.env`** (which only contains
+   the `AGENTSEEK_ENV_FILE=examples/.../.env` pointer), and the real config at
+   `examples/.../.env` is NOT loaded. Result: schedule plugin disabled
+   (`Need either "engine" or "url" defined` — `AGENTSEEK_SCHEDULE_SQLALCHEMY_URL`
+   not read), wecom channel does not bind port 12000. Note: `agentseek info` run
+   **from the example dir** reads the example `.env` fine, so the config is
+   correct — the break is specifically the `bub gateway` REPO_ROOT-relative
+   launch vs env-file resolution. **Fix needed:** confirm how `bub gateway` loads
+   env (lifecycle.toml `env_file` vs `AGENTSEEK_ENV_FILE` indirection) and
+   whether the REPO_ROOT-relative `run_gateway.sh` conflicts with it.
+
+Priority: ③ → ② → ① (③ blocks the gateway from starting at all).
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
