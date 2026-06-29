@@ -337,6 +337,46 @@ Validation on the Mac Pro:
 - `uv run ruff check --no-fix contrib/agentseek-contextseek` -> all checks
   passed.
 
+### v0.0.4 seekdb deep-dive (after 448c6de) — scope+retrieve work, but build_prompt output doesn't reach the model
+
+Pulled 448c6de (scope fallback). Added temporary DEBUG logging (`CTXDBG`
+prefix, since reverted) to `build_prompt` to trace scope + retrieve. Findings:
+
+- **Scope IS computed** (non-None): `source=runtime_context`,
+  `enterprise/v1/hmac-9b9.../hmac-812.../semantic`. The scoped keys are present
+  in `_langgraph_runtime_context["enterprise"]` — the fallback wasn't needed.
+- **Retrieve works**: `query='我的工作职责是什么'` → `hits=5`. seekdb returned
+  5 matches.
+- **context_block is generated** from the 5 hits.
+- BUT the model's reply is still a generic `朱春霖，你好！` — the retrieved
+  context is NOT used.
+
+Tested both injection modes:
+- `INJECTION_MODE=state` (default): `build_prompt` puts context in
+  `state["_contextseek_block"]` + returns None. The model doesn't see it.
+- `INJECTION_MODE=prompt`: `build_prompt` returns the injected prompt text
+  (context_block + query). The model STILL doesn't use it.
+
+**Key contrast:** the enterprise plugin's `employee_context` DOES reach the
+model (reply addresses 朱春霖). ContextSeek's `build_prompt` output does NOT.
+They use different hooks/injection mechanisms — enterprise's works on v0.0.4,
+ContextSeek's doesn't.
+
+**Root cause:** v0.0.4's lifecycle refactor changed the prompt-building
+pipeline. ContextSeek's `build_prompt` hook (retrieves + injects semantic
+context) is not wired into the new prompt builder — its return value (prompt
+mode) and its state field `_contextseek_block` (state mode) are not consumed
+by the model's actual prompt. The retrieve + scope are fine; the break is the
+**hook-output → model-prompt connection**.
+
+**Fix direction for Codex:**
+1. Check how v0.0.4's prompt builder consumes `build_prompt` hook returns +
+   state fields.
+2. Compare enterprise plugin (employee_context reaches model) vs ContextSeek
+   (build_prompt doesn't) — find the hook/mechanism difference.
+3. Wire ContextSeek's `_contextseek_block` (state mode) or `build_prompt`
+   return (prompt mode) into v0.0.4's prompt builder.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
