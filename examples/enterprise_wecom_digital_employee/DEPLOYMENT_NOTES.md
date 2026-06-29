@@ -469,6 +469,28 @@ warnings). `.env` confirmed: sidecar + seekdb + identity cache + LangSmith off.
 **Health**: alive ✓, sidecar PID stable ✓, 0 SIGBUS/exit 138, msgid dedup
 fired 2× (normal). The production freeze baseline is confirmed production-ready.
 
+### Template rendered standalone project — VERIFIED (2026-06-29, v0.0.4)
+
+Rendered a clean standalone project via `agentseek create deepagents/enterprise-wecom`
+from the v0.0.4 template (commit `6ec9ff3`), copied in `.env` + DM jar +
+`mcp.local.json`, `uv sync`, ran `scripts/run_gateway.sh` (bub gateway via
+`bub_gateway.py` wrapper). Full A-E smoke test, all PASS:
+
+| Test | Result |
+|------|--------|
+| A. Identity | ✅ 朱春霖 + OA + 组织路径 + 岗位 + 角色 |
+| B. Short-term (P1) | ✅ "去深圳出差" recalled |
+| C. Explicit long-term (SQLiteStore) | ✅ "简洁、分点的回复方式" recalled |
+| D. Semantic long-term (seekdb) | ✅ "核心职责：负责数据架构工作" |
+| E. MCP tools | ✅ gildata (9 aggregate + 300+ API) |
+
+**Health**: alive ✓, sidecar PID 24320 stable ✓, 0 SIGBUS/exit 138, msgid
+dedup 28× (normal). Preflight passed (0 failures, 0 warnings).
+
+Both the Example (in-repo) and the rendered standalone project are fully
+verified on v0.0.4. The template produces a deployable standalone project
+under the new `bub gateway` lifecycle.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
