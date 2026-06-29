@@ -20,7 +20,11 @@ Fill `.env` with:
 - self-built WeCom app `corp_id` and app secret;
 - employee identity database settings. On macOS, copy the DM JDBC jar to
   `vendor/dameng/` and keep `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess`
-  first; switch to `sidecar` after the subprocess path is stable;
+  as the conservative rollback mode; switch to `sidecar` after the subprocess
+  path is stable and the long-lived worker has been validated in the target
+  network environment;
+- short-TTL employee identity cache settings, so repeated messages from the
+  same resolved employee do not reopen the DM/JDBC path on every turn;
 - short-term memory retention settings;
 - the tenant id, namespace secret, and durable store path;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
@@ -84,18 +88,64 @@ After configuring WeCom, send `你好` to the intelligent robot. A healthy first
 - follow-up questions can use recent messages stored under `short_term_memory`.
 - semantic retrieval is scoped to the resolved employee rather than the WeCom session.
 
-For short-term memory, send:
+Use these smoke tests to keep the memory layers distinct:
+
+### A. Identity
+
+```text
+我是谁
+```
+
+Expected: the answer uses `employee_context`, including name, OA account,
+organization path, role, and post when available.
+
+### B. Short-Term Memory (SQLite)
 
 ```text
 帮我记一下，我明天下午去深圳出差
 我刚才说我要去哪里？
 ```
 
-For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
+Expected: the answer recalls the recent Shenzhen trip from the short-term
+conversation memory database configured by
+`AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
+
+### C. Explicit Durable Memory (SQLiteStore)
+
+```text
+请长期记住：我偏好简洁、分点的回复方式
+你记得我的回复偏好吗？
+```
+
+Expected: the answer recalls the preference through the dedicated durable memory
+tools backed by `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`. This is explicit
+employee memory, not ContextSeek semantic recall.
+
+### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
+
+```text
+请长期记住：我的职责是负责数据架构工作
+我的工作职责是什么？
+```
+
+Expected: ContextSeek retrieves the semantically related historical turn from
+SeekDB and the model answer includes the data-architecture responsibility. This
+is semantic memory from `AGENTSEEK_CTX_SEEKDB_PATH`, not the SQLiteStore durable
+memory tool.
+
+### E. MCP
+
+After adding servers to `.agents/mcp.json`, restart the gateway, then ask:
 
 ```text
 列一下当前可用的 MCP 工具
 ```
+
+Expected: the answer lists the configured MCP services and tools.
+
+When reading gateway logs, remember that WeCom replies are often multi-line. Use
+enough trailing context such as `grep -A N`; `grep | tail -1` can truncate the
+reply and hide the relevant memory-enriched lines.
 
 ## What's Different Vs. Pure DeepAgents
 
