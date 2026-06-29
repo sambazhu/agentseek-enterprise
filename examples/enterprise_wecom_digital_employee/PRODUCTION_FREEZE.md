@@ -6,16 +6,24 @@ WeCom digital employee runtime.
 ## Baseline
 
 - Branch: `enterprise/wecom-runtime-v0.0.4`
-- Verified code commit: `0c63850`
-- Production tag: `enterprise-wecom-v0.0.4-prod-20260629`
+- Final GA tag: `enterprise-wecom-v0.0.4-ga-20260629`
+- Final GA tag commit: documentation-only successor of `7409444`
+- Final verified integration commit: `7409444`
+- Previous production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
+- Previous production freeze commit: `6cd8d41`
+- Initial full runtime verification commit: `0c63850`
 - Verification host: company-network Mac mini
 - Verification date: 2026-06-29
 
-The tag may point to a documentation-only successor of `0c63850`; runtime code
-must remain equivalent to the verified code unless a new freeze is created.
+The final GA tag points to a documentation-only successor of `7409444`.
+Runtime code must remain equivalent to `7409444` unless a new freeze is
+created. The older `prod` tag is kept immutable for audit history; use the GA
+tag for new deployments.
 
 ## Verified Capabilities
 
+- In-repository example deployment and a separately rendered standalone project
+  from `deepagents/enterprise-wecom` both passed the same live smoke tests.
 - WeCom intelligent robot callback on port `12000`.
 - Encrypted robot `open_userid` resolution through a self-built WeCom app.
 - Employee identity lookup through DM JDBC in an isolated `sidecar` process.
@@ -92,17 +100,52 @@ The preflight must pass before treating the deployment as production-ready.
 
 After restart, verify these prompts from WeCom:
 
-1. `我是谁`
-   - Expected: resolves to the employee context, e.g. name, OA account,
-     organization path, role, and post.
-2. `帮我记一下，我明天下午去深圳出差`
-   then `我刚才说我要去哪里？`
-   - Expected: recalls short-term memory.
-3. `请长期记住：我的职责是负责数据架构工作`
-   then `我的工作职责是什么？`
-   - Expected: answer uses ContextSeek semantic memory, not only DM identity.
-4. `列一下当前可用的 MCP 工具`
-   - Expected: lists configured MCP services and tools.
+### A. Identity
+
+```text
+我是谁
+```
+
+Expected: resolves to the employee context, e.g. name, OA account,
+organization path, role, and post.
+
+### B. Short-Term Memory (SQLite)
+
+```text
+帮我记一下，我明天下午去深圳出差
+我刚才说我要去哪里？
+```
+
+Expected: recalls the recent trip from the short-term conversation memory
+database configured by `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
+
+### C. Explicit Durable Memory (SQLiteStore)
+
+```text
+请长期记住：我偏好简洁、分点的回复方式
+你记得我的回复偏好吗？
+```
+
+Expected: recalls the preference through the dedicated durable memory tools
+backed by `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
+
+### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
+
+```text
+请长期记住：我的职责是负责数据架构工作
+我的工作职责是什么？
+```
+
+Expected: ContextSeek retrieves the semantically related historical turn from
+SeekDB and the model answer includes the data-architecture responsibility.
+
+### E. MCP
+
+```text
+列一下当前可用的 MCP 工具
+```
+
+Expected: lists configured MCP services and tools.
 
 When reading logs, use enough trailing context for multi-line model replies.
 Avoid `grep | tail -1` for `content=` lines; use `grep -A N`.
@@ -134,4 +177,3 @@ Any code change after this freeze needs at least:
 - Mac mini live smoke test for identity, short-term memory, ContextSeek
   retrieval, MCP, and WeCom retry behavior;
 - a new freeze entry or tag if it changes production runtime behavior.
-
