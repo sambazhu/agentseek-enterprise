@@ -1,0 +1,12 @@
+{
+  "project_name": "Enterprise WeCom Digital Employee",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '_').replace('-', '_') }}",
+  "author": "Your Name",
+  "default_model": "openai:gpt-4o-mini",
+  "wecom_port": "12000",
+  "wecom_callback_path": "/ai-bot/callback/demo/<botid>",
+  "mcp_config_path": ".agents/mcp.json",
+  "deployment_path": "/opt/agentseek/{{ cookiecutter.project_slug }}",
+  "_agentseek_source_path": "",
+  "_agentseek_source_url": "https://github.com/sambazhu/agentseek-enterprise.git"
+}

@@ -7,7 +7,7 @@ authors = [{ name = "Chojan Shang", email = "psiace@apache.org" }]
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "bub==0.3.9",
-    "contextseek",
+    "contextseek[seekdb]",
     "pydantic-settings>=2.0.0",
 ]
 

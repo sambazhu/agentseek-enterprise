@@ -1,4 +1,6 @@
 docs/source
+.DS_Store
+ai-bot/
 
 # JavaScript frontend dependencies
 node_modules/
@@ -145,6 +147,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.agents/mcp.local.json
 .venv
 env/
 venv/

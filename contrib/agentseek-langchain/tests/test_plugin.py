@@ -118,6 +118,35 @@ def test_plugin_passes_ag_ui_context_as_runtime_context(monkeypatch, tmp_path) -
     }
 
 
+def test_plugin_merges_enterprise_and_ag_ui_runtime_context(monkeypatch, tmp_path) -> None:
+    runnable = _AsyncRunnableWithContext("delegated-output")
+    spec = text_spec(runnable)
+
+    monkeypatch.setattr(plugin_module, "get_langchain_settings", lambda: SimpleNamespace(SPEC="dummy:SPEC"))
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+
+    plugin = plugin_module.LangChainRunnablePlugin()
+    result = asyncio.run(
+        plugin.run_model(
+            prompt="hello",
+            session_id="session-1",
+            state={
+                "_runtime_workspace": str(tmp_path),
+                "_langgraph_runtime_context": {
+                    "enterprise": {"tenant_key": "hmac-tenant", "user_key": "hmac-user"}
+                },
+                "_ag_ui": {"context": [{"description": "tenant", "value": "demo"}]},
+            },
+        )
+    )
+
+    assert result == "delegated-output"
+    assert runnable.calls[0][2] == {
+        "enterprise": {"tenant_key": "hmac-tenant", "user_key": "hmac-user"},
+        "tenant": "demo",
+    }
+
+
 def test_plugin_falls_back_to_default_model_entrypoint_without_spec(monkeypatch, tmp_path) -> None:
     warning_messages: list[str] = []
     load_calls: list[str] = []

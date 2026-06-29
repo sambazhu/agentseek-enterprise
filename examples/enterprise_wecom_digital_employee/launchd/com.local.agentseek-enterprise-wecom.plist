@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  User-level LaunchAgent for the Enterprise WeCom Digital Employee gateway.
+  It keeps the gateway process alive without embedding secrets in the plist.
+
+  Before installing, edit REPO_ROOT below if the Mac mini clone path differs.
+  The script reads examples/enterprise_wecom_digital_employee/.env via
+  AGENTSEEK_ENV_FILE and writes logs to /tmp/agentseek-enterprise-wecom.log.
+
+  Install for the current user:
+    mkdir -p ~/Library/LaunchAgents
+    cp examples/enterprise_wecom_digital_employee/launchd/com.local.agentseek-enterprise-wecom.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist 2>/dev/null || true
+    launchctl load -w ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist
+
+  Stop:
+    launchctl unload ~/Library/LaunchAgents/com.local.agentseek-enterprise-wecom.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.agentseek-enterprise-wecom</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/sambazhu/agentseek-enterprise &amp;&amp; exec examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sambazhu/agentseek-enterprise</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AGENTSEEK_ENV_FILE</key>
+        <string>examples/enterprise_wecom_digital_employee/.env</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agentseek-enterprise-wecom.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/agentseek-enterprise-wecom.log</string>
+</dict>
+</plist>

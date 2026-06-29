@@ -1,0 +1,22 @@
+[project]
+name = "agentseek-enterprise"
+version = "0.1.0"
+description = "Enterprise runtime context extensions for AgentSeek"
+readme = "README.md"
+authors = [{ name = "Chojan Shang", email = "psiace@apache.org" }]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "bub==0.3.9",
+    "langgraph>=1.0",
+]
+
+[project.entry-points."bub"]
+enterprise = "agentseek_enterprise.plugin:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_enterprise"]

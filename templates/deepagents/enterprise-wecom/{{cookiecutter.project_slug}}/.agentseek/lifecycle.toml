@@ -1,0 +1,121 @@
+version = 1
+template = "deepagents/enterprise-wecom"
+name = "{{ cookiecutter.project_name }}"
+env_file = ".env"
+
+[tools]
+required = ["uv"]
+
+[paths]
+required = [
+  "pyproject.toml",
+  ".agents/mcp.json",
+  "scripts/run_gateway.sh",
+  "scripts/prod_check.py",
+  "src/{{ cookiecutter.project_slug }}/agent.py",
+  "vendor/dameng",
+]
+
+[env.AGENTSEEK_MODEL_PROVIDER]
+required = true
+default = "openai"
+description = "LangChain model provider used by the enterprise WeCom agent."
+
+[env.AGENTSEEK_MODEL]
+required = true
+default = "{{ cookiecutter.default_model }}"
+description = "Model id used by the enterprise WeCom agent."
+aliases = ["BUB_MODEL", "DEEPAGENTS_MODEL"]
+
+[env.AGENTSEEK_API_KEY]
+required = true
+description = "Credential for the selected OpenAI-compatible model provider."
+aliases = ["OPENAI_API_KEY", "BUB_API_KEY"]
+
+[env.AGENTSEEK_LANGCHAIN_SPEC]
+required = true
+default = "{{ cookiecutter.project_slug }}.agent:build_spec"
+description = "Import path for the AgentSeek LangChain RunnableSpec."
+aliases = ["BUB_LANGCHAIN_SPEC"]
+
+[env.AGENTSEEK_MCP_CONFIG_PATH]
+required = true
+default = "{{ cookiecutter.mcp_config_path }}"
+description = "MCP server configuration path."
+aliases = ["BUB_MCP_CONFIG_PATH"]
+
+[env.AGENTSEEK_WECOM_CALLBACK_PATH]
+required = true
+default = "{{ cookiecutter.wecom_callback_path }}"
+description = "WeCom intelligent robot callback path."
+
+[env.AGENTSEEK_WECOM_TOKEN]
+required = true
+description = "WeCom callback Token."
+
+[env.AGENTSEEK_WECOM_ENCODING_AES_KEY]
+required = true
+description = "WeCom callback EncodingAESKey."
+
+[env.AGENTSEEK_WECOM_CORP_ID]
+required = true
+description = "WeCom corporation id for openuserid_to_userid."
+
+[env.AGENTSEEK_WECOM_APP_SECRET]
+required = true
+description = "Self-built WeCom app secret for openuserid_to_userid."
+
+[env.AGENTSEEK_IDENTITY_PROVIDER]
+required = true
+default = "dm"
+description = "Enterprise identity provider."
+
+[env.AGENTSEEK_IDENTITY_DM_HOST]
+required = true
+description = "DM database host for employee identity lookup."
+
+[env.AGENTSEEK_IDENTITY_DM_USER]
+required = true
+description = "DM database user."
+
+[env.AGENTSEEK_IDENTITY_DM_PASSWORD]
+required = true
+description = "DM database password."
+
+[env.AGENTSEEK_IDENTITY_DM_SCHEMA]
+required = true
+default = "DBO"
+description = "DM schema containing employee identity tables."
+
+[env.AGENTSEEK_IDENTITY_DM_DRIVER_MODULE]
+required = true
+default = "agentseek_enterprise.identity.jdbc_driver"
+description = "Python DB driver module used by the identity provider."
+
+[env.AGENTSEEK_IDENTITY_DM_EXECUTION_MODE]
+required = true
+default = "subprocess"
+description = "JVM isolation mode: subprocess or sidecar."
+
+[env.AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET]
+required = true
+description = "High-entropy namespace secret for per-employee durable stores."
+
+[env.AGENTSEEK_CTX_STORAGE_BACKEND]
+required = false
+default = "seekdb"
+description = "ContextSeek semantic memory backend."
+
+[services.wecom]
+url = "http://127.0.0.1:{{ cookiecutter.wecom_port }}{{ cookiecutter.wecom_callback_path }}"
+
+[processes.gateway]
+command = ["scripts/run_gateway.sh"]
+
+[tasks.sync]
+description = "Install Python dependencies."
+command = ["uv", "sync"]
+
+[tasks.prod-check]
+description = "Run redacted production preflight."
+command = ["scripts/prod_check.py", "--env-file", ".env"]

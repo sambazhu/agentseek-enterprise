@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  User-level LaunchAgent for {{ cookiecutter.project_name }}.
+  It keeps the gateway process alive without embedding secrets in the plist.
+
+  Before installing, edit the project path below if this project is deployed
+  somewhere other than {{ cookiecutter.deployment_path }}.
+
+  Install for the current user:
+    mkdir -p ~/Library/LaunchAgents
+    cp launchd/com.local.{{cookiecutter.project_slug}}.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.local.{{cookiecutter.project_slug}}.plist 2>/dev/null || true
+    launchctl load -w ~/Library/LaunchAgents/com.local.{{cookiecutter.project_slug}}.plist
+
+  Stop:
+    launchctl unload ~/Library/LaunchAgents/com.local.{{cookiecutter.project_slug}}.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.{{cookiecutter.project_slug}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd {{ cookiecutter.deployment_path }} &amp;&amp; exec scripts/run_gateway.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{ cookiecutter.deployment_path }}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AGENTSEEK_ENV_FILE</key>
+        <string>.env</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/{{cookiecutter.project_slug}}.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/{{cookiecutter.project_slug}}.log</string>
+</dict>
+</plist>

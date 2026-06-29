@@ -19,6 +19,7 @@ sources:
 | `bub/default` | Lightweight Bub agent with AgentSeek lifecycle spec. |
 | `deepagents/content-builder` | DeepAgents content builder with writing workflows, image generation, local UI, and AgentSeek lifecycle spec. |
 | `deepagents/default` | Minimal DeepAgents app with AgentSeek lifecycle spec. |
+| `deepagents/enterprise-wecom` | Enterprise WeCom digital employee with employee identity, MCP tools, semantic memory, and AgentSeek lifecycle spec. |
 | `deepagents/research` | DeepAgents research app with search workflow, local UI, and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag` | LangChain agentic RAG with OceanBase vector search and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag-openvino` | LangChain agentic RAG with local OpenVINO models and AgentSeek lifecycle spec. |

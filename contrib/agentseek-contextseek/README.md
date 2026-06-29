@@ -48,6 +48,11 @@ All contextseek env vars can be set with the `AGENTSEEK_CTX_` prefix. These act 
 | `AGENTSEEK_CTX_EVOLUTION_ENABLED` | `EVOLUTION_ENABLED` | `true` |
 | `AGENTSEEK_CTX_RETRIEVAL_DEFAULT_K` | `RETRIEVAL_DEFAULT_K` | `5` |
 | `AGENTSEEK_CTX_TENANT` | _(scope prefix)_ | `default` |
+| `AGENTSEEK_CTX_SCOPE_MODE` | AgentSeek scope strategy | `session` |
+| `AGENTSEEK_CTX_INJECTION_MODE` | Prompt injection strategy | `prompt` |
+| `AGENTSEEK_CTX_STORE_USER_TURNS` | Store final user+assistant turn | `false` |
+| `AGENTSEEK_CTX_STORE_MAX_CONTENT_CHARS` | Per side write limit | `4000` |
+| `AGENTSEEK_CTX_SKIP_SENSITIVE_CONTENT` | Skip credential-like turns | `true` |
 
 See `.env.example` in the repo root for a full list of supported variables.
 
@@ -69,6 +74,25 @@ agentseek ctx compact  --scope acme/db/eng
 
 Storage directories (e.g. `.contextseek/store`) are created on first write
 by the chosen backend — no separate `init` step is required.
+
+For embedded local vector search, install the SeekDB extra and configure its
+own path (not `STORAGE_PATH`):
+
+```bash
+uv pip install 'contextseek[seekdb]'
+```
+
+```env
+AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+AGENTSEEK_CTX_SEEKDB_PATH=./runtime/contextseek
+AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=["vector"]
+```
+
+SeekDB downloads its ONNX embedding model on first use; production images
+should pre-warm or mount that model cache. The ContextSeek integration uses
+upstream storage configuration, so an environment that provides a compatible
+Milvus adapter can be introduced without changing the enterprise scope or
+prompt-injection code.
 
 ### MCP server registration
 
@@ -110,11 +134,13 @@ python -c "from contextseek.client.contextseek import ContextSeek; \
 
 The Bub plugin registers three hooks:
 
-- **`load_state`**: calls `ctx.retrieve(content, scope, k)` and stores a `[ContextSeek]` block in state when retrieval hits.
-- **`build_prompt`**: prepends the stored `[ContextSeek]` block to the user prompt (returns `None` when there is no retrieval hit).
-- **`save_state`**: calls `ctx.add(model_output, scope, stage=raw)` to feed the model output into the contextseek evolution pipeline.
+- **`load_state`**: records the default session scope. Enterprise scopes are deferred until aggregate runtime state is available.
+- **`build_prompt`**: retrieves semantic context and either prepends it to the user prompt (`prompt`) or leaves it in state (`state`) for a template to inject as a system message.
+- **`save_state`**: stores the final assistant response, or the final user+assistant turn when configured. It never records MCP calls or raw tool output.
 
-Scope is derived from Bub state as `{AGENTSEEK_CTX_TENANT}/{chat_id}/{session_id}`.
+`SCOPE_MODE=session` derives `{AGENTSEEK_CTX_TENANT}/{chat_id}/{session_id}`. The enterprise-wecom template sets `SCOPE_MODE=enterprise_user`, which derives an anonymous `enterprise/v1/<tenant-key>/<employee-key>/semantic` scope from P1 runtime state. If identity state is unavailable, it fails closed and does not retrieve or write context.
+
+The enterprise template also selects `INJECTION_MODE=state`, so retrieved history becomes an explicitly marked, untrusted system message rather than text embedded inside the employee's latest message.
 
 Both hooks fail silently (debug-level log only) — the semantic layer is enhancement, not a blocking dependency.
 
@@ -129,5 +155,6 @@ pytest contrib/agentseek-contextseek/tests/
 ## Limitations
 
 - `before_model` uses `trylast=True`, meaning it runs after other non-`trylast` hooks. If another hook modifies the prompt before this one, the injected context will be appended to the already-modified prompt.
-- The scope granularity is `tenant/chat_id/session_id`. Context does not automatically propagate across sessions; use a contextseek DataPlug or direct `ctx.add` calls to seed cross-session context.
+- `SCOPE_MODE=session` is per session. Use `enterprise_user` only when a trusted identity plugin has populated `_langgraph_runtime_context`.
+- ContextSeek 0.1.3 natively supports memory, file, SeekDB, and OceanBase storage. Milvus is not bundled by this repository today; treat it as a future upstream-compatible storage adapter rather than a current toggle.
 - Synchronous contextseek client calls are offloaded to a thread pool via `asyncio.to_thread` to avoid blocking the event loop.

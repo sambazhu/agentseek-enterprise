@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+runtime/*
+!runtime/.gitkeep
+!.agentseek/
+.agentseek/*
+!.agentseek/lifecycle.toml
+.agents/mcp.local.json
