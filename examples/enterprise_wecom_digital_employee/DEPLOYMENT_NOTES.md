@@ -95,6 +95,17 @@ What was tested and the outcome, so the next session knows the current state:
   fresh render needs network (numpy via PyPI, `bub-mcp` via git) — over FlClash's
   proxy, set `git config --global http.version HTTP/1.1` first to avoid git
   HTTP2 stalls.
+- **Production preflight + LaunchAgent托管 (commit 7129af1) — VERIFIED
+  (2026-06-29).** `scripts/prod_check.py --env-file .env` on the rendered
+  project: all checks OK (model/WeCom/DM/JVM-isolation/cache/namespace-secret/
+  paths/seekdb/MCP/launchd-plist). `LANGSMITH_TRACING=false` (will move to
+  open-source Langfuse later) → preflight passes with **0 warnings**. Then
+  installed the template's user LaunchAgent (path-fixed to the project dir):
+  `launchctl load` started the gateway via `run_gateway.sh` (RunAtLoad); killing
+  the gateway process was auto-recovered by `KeepAlive` in ~2 s (new pid). The
+  gateway now runs under launchd (boot-start + crash-restart). Note: the plist
+  defaults to `/opt/agentseek/<slug>`; override the cookiecutter
+  `deployment_path` (or edit the plist) for other locations.
 
 ## The DM connection root cause + fix (the big one)
 
