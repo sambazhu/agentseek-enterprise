@@ -32,6 +32,20 @@ Fill `.env` with:
 scripts/run_gateway.sh
 ```
 
+Before installing launchd, run the production preflight. It redacts secrets and
+checks only presence, file paths, writable runtime directories, tracing intent,
+identity isolation mode, and namespace-secret readiness:
+
+```bash
+scripts/prod_check.py --env-file .env
+```
+
+Generate a new namespace secret before formal production handoff:
+
+```bash
+scripts/prod_check.py --generate-namespace-secret
+```
+
 For macOS process supervision, edit `{{ cookiecutter.deployment_path }}` in
 `launchd/com.local.{{cookiecutter.project_slug}}.plist` if needed, then install
 it as a user LaunchAgent:

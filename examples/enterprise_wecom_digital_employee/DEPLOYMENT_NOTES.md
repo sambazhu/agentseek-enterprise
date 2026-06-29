@@ -287,12 +287,22 @@ logging fix, additionally confirm lifecycle log visibility:
 - confirm no SIGBUS / exit 138 and no DM stale-connection errors.
 
 ### 2. Production hardening
+- `scripts/prod_check.py` now performs a redacted production preflight: required
+  env presence, DM/JDBC paths, subprocess/sidecar isolation, identity cache,
+  namespace secret readiness, runtime path writability, MCP config, tracing
+  intent, and launchd plist presence. Run it before installing launchd:
+  `scripts/prod_check.py --env-file .env`. Use
+  `scripts/prod_check.py --generate-namespace-secret` to generate a new
+  high-entropy `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` before formal handoff.
 - A user LaunchAgent template now exists:
   `launchd/com.local.agentseek-enterprise-wecom.plist`. Edit the repo path if
   needed, then install it under `~/Library/LaunchAgents/` and confirm restart
   behavior plus `/tmp/agentseek-enterprise-wecom.log`.
-- Confirm `LANGSMITH_TRACING=true` is intended for prod (or gate it by env).
-- `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` is set — keep it secret, rotate for prod.
+- If `LANGSMITH_TRACING=true` is intentional in production, set
+  `AGENTSEEK_PRODUCTION_TRACING_ACK=true`; otherwise keep tracing disabled.
+- Namespace secret rotation changes the derived long-term-store namespace. Rotate
+  before production handoff, or plan data migration if rotating after users have
+  durable memories.
 
 ### 3. `agentseek create` for a clean standalone project
 The bundled `deepagents/enterprise-wecom` template now carries the verified
@@ -312,6 +322,8 @@ tests before formal handoff.
   — user LaunchAgent template for keeping the gateway process alive.
 - `examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh`
   — shared gateway startup script for manual runs and launchd.
+- `examples/enterprise_wecom_digital_employee/scripts/prod_check.py`
+  — redacted production preflight and namespace-secret generator.
 - `vendor/dameng/DmJdbcDriver18-8.1.3.62.jar` — newer DM JDBC driver (optional;
   8.1.2.192 also works once FlClash isn't intercepting).
 - `agentseek-enterprise` now supports

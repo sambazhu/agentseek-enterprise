@@ -49,6 +49,20 @@ same project-scoped configuration.
 examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh
 ```
 
+Before installing launchd, run the production preflight. It redacts secrets and
+checks only presence, file paths, writable runtime directories, tracing intent,
+identity isolation mode, and namespace-secret readiness:
+
+```bash
+examples/enterprise_wecom_digital_employee/scripts/prod_check.py --env-file examples/enterprise_wecom_digital_employee/.env
+```
+
+Generate a new namespace secret before formal production handoff:
+
+```bash
+examples/enterprise_wecom_digital_employee/scripts/prod_check.py --generate-namespace-secret
+```
+
 For Mac mini process supervision, edit the repo path in
 `launchd/com.local.agentseek-enterprise-wecom.plist`, then install it as a
 user LaunchAgent:

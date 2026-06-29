@@ -35,6 +35,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
   launchd/
     com.local.{{ cookiecutter.project_slug }}.plist
   scripts/
+    prod_check.py
     run_gateway.sh
   skills/
     enterprise-employee/SKILL.md
