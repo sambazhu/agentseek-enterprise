@@ -8,6 +8,55 @@ case to local-only instrumentation.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+
+def _load_project_env_file() -> None:
+    env_file = os.environ.get("AGENTSEEK_ENV_FILE", "").strip()
+    if not env_file:
+        return
+
+    path = Path(env_file).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+
+    for key, value in _read_dotenv_values(path).items():
+        os.environ[key] = value
+
+
+def _read_dotenv_values(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").lstrip()
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _apply_project_bub_aliases() -> None:
+    for key, value in list(os.environ.items()):
+        if not key.startswith("AGENTSEEK_"):
+            continue
+        suffix = key.removeprefix("AGENTSEEK_")
+        if suffix:
+            os.environ[f"BUB_{suffix}"] = value
+
 
 def _guard_logfire_configure() -> None:
     try:
@@ -30,6 +79,11 @@ def _guard_logfire_configure() -> None:
 
 
 def main() -> None:
+    _load_project_env_file()
+    _apply_project_bub_aliases()
+    from agentseek.env import apply_agentseek_env_aliases
+
+    apply_agentseek_env_aliases()
     _guard_logfire_configure()
 
     from bub.__main__ import app

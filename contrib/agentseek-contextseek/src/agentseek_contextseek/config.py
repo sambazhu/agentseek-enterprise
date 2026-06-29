@@ -14,6 +14,7 @@ where the real var is ``GEO_GEO_TABLE_NAME``).
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator, MutableMapping
 from functools import lru_cache
@@ -22,6 +23,7 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AGENTSEEK_CTX_PREFIX = "AGENTSEEK_CTX_"
+_JSON_LIST_ENV_VARS = {"RETRIEVAL_RECALL_ROUTES"}
 
 
 class ContextSeekPluginSettings(BaseSettings):
@@ -199,7 +201,39 @@ def _apply_contextseek_prefixed_aliases(target: MutableMapping[str, str]) -> Non
     for env_var in _upstream_env_vars():
         alias = f"{AGENTSEEK_CTX_PREFIX}{env_var}"
         if alias in target:
-            target.setdefault(env_var, target[alias])
+            target.setdefault(env_var, _normalize_contextseek_env_value(env_var, target[alias]))
+
+
+def _normalize_contextseek_env_value(env_var: str, value: str) -> str:
+    if env_var not in _JSON_LIST_ENV_VARS:
+        return value
+    return _normalize_json_list(value)
+
+
+def _normalize_json_list(value: str) -> str:
+    current: object = value.strip()
+    for _ in range(3):
+        if isinstance(current, list):
+            return json.dumps([str(item) for item in current], ensure_ascii=False)
+        if not isinstance(current, str):
+            break
+        text = current.strip()
+        if not text:
+            return "[]"
+        try:
+            current = json.loads(text)
+            continue
+        except json.JSONDecodeError:
+            pass
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            current = text[1:-1].replace('\\"', '"').replace("\\'", "'")
+            continue
+        if "," in text:
+            return json.dumps([part.strip() for part in text.split(",") if part.strip()], ensure_ascii=False)
+        if text.startswith("[") and text.endswith("]"):
+            return text
+        return json.dumps([text], ensure_ascii=False)
+    return json.dumps([str(current)], ensure_ascii=False)
 
 
 @lru_cache(maxsize=1)

@@ -241,22 +241,48 @@ boots cleanly:
   `zhuchunlin` resolved + cached. No SIGBUS.
 
 But the live `我是谁` turn exposed **2 new v0.0.4 regressions** (the upstream
-lifecycle refactor changed config handling):
+lifecycle refactor changed config handling). Both now have follow-up fixes in
+this branch:
 
 1. **ContextSeek init fails → semantic memory disabled.**
    `error parsing value for field "recall_routes" from source "EnvSettingsSource"`.
    The `.env` value `AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=["vector"]` (a JSON
-   array as a string) is no longer parsed correctly — likely a pydantic-settings
-   version/parsing change in v0.0.4. ContextSeek falls back to disabled.
+   array as a string) was not always passed to upstream ContextSeek in a shape
+   pydantic-settings could parse. ContextSeek fell back to disabled.
+   **Fixed:** the `agentseek-contextseek` alias layer now normalizes
+   `AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES` into a JSON list before setting
+   `RETRIEVAL_RECALL_ROUTES`, including escaped/quoted JSON, comma-separated,
+   and single-route forms.
 
 2. **Model defaults to OpenRouter → turn fails (no reply).** The turn errors
    `[openrouter] No openrouter API key provided` even though `.env` has
    `AGENTSEEK_MODEL=glm-5.2` + `AGENTSEEK_MODEL_PROVIDER=openai` + DashScope
    key/base (and identity env IS loaded, so the `.env` reached the process).
-   v0.0.4's model resolution isn't applying the configured provider/model — it
-   falls back to the OpenRouter default. **This blocks replies entirely.**
+   v0.0.4's model resolution wasn't applying the configured provider/model
+   because an inherited `BUB_MODEL=openrouter:free` could outrank dotenv-only
+   model config. **Fixed:** the enterprise `bub_gateway.py` wrapper now loads
+   `AGENTSEEK_ENV_FILE` into `os.environ` before importing Bub, then mirrors
+   project `AGENTSEEK_*` values into `BUB_*` values. This makes the project
+   `.env` the authoritative runtime config source for Bub, LangChain, and
+   ContextSeek. Verified with an inherited `BUB_MODEL=openrouter:free`:
+   `BUB_MODEL` becomes `glm-5.2`, `BUB_LANGCHAIN_SPEC` is set, and
+   `settings.build_model()` resolves `ChatOpenAI / glm-5.2 / DashScope base`.
 
-Priority: ② (model) > ① (ContextSeek) — no model = no reply.
+Follow-up validation on the Mac Pro:
+
+- `uv run pytest contrib/agentseek-contextseek/tests -q` -> `32 passed`.
+- `uv run pytest --import-mode=importlib contrib/agentseek-enterprise/tests
+  contrib/agentseek-wecom/tests contrib/agentseek-contextseek/tests
+  contrib/agentseek-langchain/tests -q` -> `90 passed, 1 warning`.
+- `PYTHONPATH="$PWD" uv run pytest tests/cli_commands/test_templates_render.py
+  -q` -> `25 passed`.
+- `env -u LOGFIRE_TOKEN uv run --offline --env-file examples/enterprise_wecom_digital_employee/.env --with jaydebeapi --with JPype1 python examples/enterprise_wecom_digital_employee/scripts/bub_gateway.py gateway --help`
+  exits 0.
+- A dummy-env probe confirmed inherited `BUB_MODEL=openrouter:free` is replaced
+  by project `AGENTSEEK_MODEL=glm-5.2` / `BUB_MODEL=glm-5.2`, and
+  `settings.build_model()` uses the DashScope-compatible OpenAI endpoint.
+- A ContextSeek probe confirmed escaped
+  `AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES` resolves to `['vector']`.
 
 ## The DM connection root cause + fix (the big one)
 

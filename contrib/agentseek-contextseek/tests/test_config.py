@@ -65,4 +65,20 @@ def test_every_reflected_var_is_aliased():
     for env_var in _upstream_env_vars():
         env: dict[str, str] = {f"{AGENTSEEK_CTX_PREFIX}{env_var}": "test-value"}
         apply_contextseek_env_aliases(env)
-        assert env[env_var] == "test-value", f"{env_var} not mapped"
+        expected = '["test-value"]' if env_var == "RETRIEVAL_RECALL_ROUTES" else "test-value"
+        assert env[env_var] == expected, f"{env_var} not mapped"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('["vector"]', '["vector"]'),
+        ('"[\\"vector\\"]"', '["vector"]'),
+        ("vector,graph", '["vector", "graph"]'),
+        ("vector", '["vector"]'),
+    ],
+)
+def test_retrieval_recall_routes_alias_is_normalized_to_json_list(raw: str, expected: str):
+    env: dict[str, str] = {f"{AGENTSEEK_CTX_PREFIX}RETRIEVAL_RECALL_ROUTES": raw}
+    apply_contextseek_env_aliases(env)
+    assert env["RETRIEVAL_RECALL_ROUTES"] == expected
