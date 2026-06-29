@@ -19,12 +19,13 @@ Fill `.env` with:
 - WeCom callback `Token` and `EncodingAESKey`;
 - self-built WeCom app `corp_id` and app secret;
 - employee identity database settings;
-- macOS DM access uses the committed JDBC driver plus Java 11. Enable
-  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` so the gateway can use
-  ContextSeek `seekdb` without loading JPype/libjvm in the main process. After
-  that is stable, `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` can be used to
-  keep a local DM worker and connection warm. See `DEPLOYMENT_NOTES.md` for the
-  FlClash/TUN route workaround;
+- macOS DM access uses the committed JDBC driver plus Java 11. Keep
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess` as the conservative rollback
+  mode; use `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar` after validating the
+  long-lived local worker in the target network environment. Both modes keep
+  JPype/libjvm out of the gateway process so ContextSeek `seekdb` can run in
+  the main process. See `DEPLOYMENT_NOTES.md` for the FlClash/TUN route
+  workaround;
 - short-TTL employee identity cache settings, so repeated messages from the
   same resolved employee do not reopen the DM/JDBC path on every turn;
 - short-term memory retention settings;
@@ -110,9 +111,13 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
 - ContextSeek only stores final conversation turns, not MCP calls or tool output. Retrieved history is marked as untrusted context and injected as a system message. SeekDB is the local vector backend; production storage is chosen through ContextSeek configuration, so it can later move to OceanBase or an adapter for Milvus without changing the employee scope contract.
+- DM JDBC identity lookup can run in a short-lived subprocess or a persistent
+  local sidecar process. Both keep JPype/libjvm out of the gateway process so
+  SeekDB/ONNX can coexist with the DM driver. `subprocess` is the conservative
+  rollback mode; `sidecar` avoids cold-starting the JVM on cache misses.
+- Successful employee identity lookups can be cached briefly in the gateway
+  process. Missing users and lookup errors are not cached.
 - The WeCom channel deduplicates intelligent-robot retries by `msgid` and
   reuses the original stream response, so slow first replies do not launch
   duplicate agent turns.
 - `pyproject.toml` depends on AgentSeek runtime plugins: `agentseek-langchain`, `agentseek-wecom`, `agentseek-enterprise`, `agentseek-schedule-sqlalchemy`, and `bub-mcp`.
-
-Author: Your Name

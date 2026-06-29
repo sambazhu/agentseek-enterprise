@@ -100,6 +100,9 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
   rollback mode; `sidecar` avoids cold-starting the JVM on cache misses.
 - Successful employee identity lookups can be cached briefly in the gateway
   process. Missing users and lookup errors are not cached.
+- The WeCom channel deduplicates intelligent-robot retries by `msgid` and
+  reuses the original stream response, so slow first replies do not launch
+  duplicate agent turns.
 - `pyproject.toml` depends on AgentSeek runtime plugins: `agentseek-langchain`, `agentseek-wecom`, `agentseek-enterprise`, `agentseek-schedule-sqlalchemy`, and `bub-mcp`.
 
 Author: {{ cookiecutter.author }}

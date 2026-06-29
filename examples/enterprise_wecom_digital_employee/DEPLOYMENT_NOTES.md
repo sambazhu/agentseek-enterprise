@@ -1,9 +1,9 @@
 # Enterprise WeCom Digital Employee — Deployment Notes (Mac mini)
 
 Handoff notes from deploying/verifying this example on a company Mac mini
-(branch `enterprise/wecom-runtime`, 2026-06-27). Covers the DM-connection
-root cause, the working configuration, known-issue workarounds, and the
-remaining work items.
+(branch `enterprise/wecom-runtime`, 2026-06-27 through 2026-06-29). Covers the
+DM-connection root cause, the working configuration, known-issue workarounds,
+and the production-ready operating state.
 
 ## Verified working (end-to-end)
 
@@ -270,59 +270,33 @@ generation >5 s, triggering WeCom retries).
 - The `wecom.incoming msgtype=...` diagnostic is intentionally left in place at
   debug level for future WeCom-behavior investigations.
 
-## Next steps / TODO (priority order)
+## Completed production milestones
 
-### 1. Verify long-lived DM sidecar / connection pooling
-The short-TTL cache removes repeated DM lookups for active users, but
-`subprocess` mode still starts a short-lived child process and opens a new DM
-connection on every cache miss.
+- **Long-lived DM sidecar / connection pooling:** verified live with
+  `AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar`. The gateway keeps `libjvm` out
+  of the main process, cache misses reuse one long-lived JSON-lines worker, and
+  the Mac mini run showed no SIGBUS / exit 138 / stale connection errors.
+- **Production hardening:** `scripts/prod_check.py --env-file .env` passed with
+  no warnings in the rendered project. The generated LaunchAgent was installed,
+  starts at load, and restarts the gateway after a kill in about two seconds.
+- **Clean `agentseek create` project:** `agentseek create
+  deepagents/enterprise-wecom` rendered a standalone project that passed live
+  WeCom identity, short-term memory, seekdb long-term memory, restart
+  persistence, MCP listing, retry dedup, and JVM-isolation checks.
 
-The code now has an opt-in long-lived local worker:
+## Recommended next work
 
-```env
-AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar
-AGENTSEEK_IDENTITY_DM_SUBPROCESS_TIMEOUT_SECONDS=30
-```
-
-This mode keeps the JVM/JDBC driver in a child process, but keeps that process
-alive and serves requests over stdin/stdout JSON lines. It does **not** open a
-network port. The mode is live-verified on the Mac mini; after pulling the
-logging fix, additionally confirm lifecycle log visibility:
-
-- restart the gateway with `EXECUTION_MODE=sidecar`;
-- send `我是谁` twice;
-- confirm only one `DM identity sidecar started pid=...` appears for the
-  gateway process and the second request still benefits from identity cache;
-- wait for cache TTL or temporarily lower TTL to force a second lookup, and
-  confirm it reuses the same sidecar pid instead of starting a new child;
-- confirm no SIGBUS / exit 138 and no DM stale-connection errors.
-
-### 2. Production hardening
-- `scripts/prod_check.py` now performs a redacted production preflight: required
-  env presence, DM/JDBC paths, subprocess/sidecar isolation, identity cache,
-  namespace secret readiness, runtime path writability, MCP config, tracing
-  intent, and launchd plist presence. Run it before installing launchd:
-  `scripts/prod_check.py --env-file .env`. Use
-  `scripts/prod_check.py --generate-namespace-secret` to generate a new
-  high-entropy `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` before formal handoff.
-- A user LaunchAgent template now exists:
-  `launchd/com.local.agentseek-enterprise-wecom.plist`. Edit the repo path if
-  needed, then install it under `~/Library/LaunchAgents/` and confirm restart
-  behavior plus `/tmp/agentseek-enterprise-wecom.log`.
-- If `LANGSMITH_TRACING=true` is intentional in production, set
-  `AGENTSEEK_PRODUCTION_TRACING_ACK=true`; otherwise keep tracing disabled.
-- Namespace secret rotation changes the derived long-term-store namespace. Rotate
-  before production handoff, or plan data migration if rotating after users have
-  durable memories.
-
-### 3. `agentseek create` for a clean standalone project
-The bundled `deepagents/enterprise-wecom` template now carries the verified
-subprocess/sidecar identity settings, identity cache defaults, run script,
-LaunchAgent template, and DM JDBC vendor directory placeholder. Next Mac mini
-step: render a clean standalone project via `agentseek create
-deepagents/enterprise-wecom`, copy the working `.env` and DM JDBC jar into the
-generated project, then run `scripts/run_gateway.sh` and repeat the WeCom smoke
-tests before formal handoff.
+- **MCP policy and audit:** the current `call_mcp_tool` adapter is a generic MCP
+  bridge. Before adding state-changing office tools such as meeting-room booking
+  or travel submission, add runtime policy for tool allowlists, read/write
+  classification, explicit confirmation, argument redaction, and audit logging.
+- **Observability:** tracing is intentionally disabled in production for now
+  (`LANGSMITH_TRACING=false`). Add Langfuse or another approved trace backend
+  after the deployment endpoint and credentials are available.
+- **Backup and rotation runbook:** document backup/restore for SQLite state,
+  seekdb data, launchd logs, and namespace-secret rotation. Rotating
+  `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET` changes the derived long-term-memory
+  namespace, so do it before broad rollout or plan a migration.
 
 ## Files added/changed in this deployment session (for the Mac Pro pull)
 
