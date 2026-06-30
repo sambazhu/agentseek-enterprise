@@ -491,6 +491,41 @@ Both the Example (in-repo) and the rendered standalone project are fully
 verified on v0.0.4. The template produces a deployable standalone project
 under the new `bub gateway` lifecycle.
 
+### GA release + company GitLab mirror (2026-06-30)
+
+Published the final GA release:
+
+- GitHub release:
+  `https://github.com/sambazhu/agentseek-enterprise/releases/tag/enterprise-wecom-v0.0.4-ga-20260629`
+- GA tag: `enterprise-wecom-v0.0.4-ga-20260629` -> `1b06692`
+- Production branch: `enterprise/wecom-runtime-v0.0.4` -> `1b06692`
+- Previous audit tag: `enterprise-wecom-v0.0.4-prod-20260629` -> `6cd8d41`
+
+Mirrored the production refs to the company GitLab project:
+
+- GitLab remote:
+  `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git`
+- Pushed branch: `enterprise/wecom-runtime-v0.0.4`
+- Pushed tags:
+  `enterprise-wecom-v0.0.4-ga-20260629`,
+  `enterprise-wecom-v0.0.4-prod-20260629`
+
+Remote verification:
+
+```text
+refs/heads/enterprise/wecom-runtime-v0.0.4 -> 1b066927...
+refs/tags/enterprise-wecom-v0.0.4-ga-20260629^{} -> 1b066927...
+refs/tags/enterprise-wecom-v0.0.4-prod-20260629^{} -> 6cd8d41f...
+```
+
+Internal deployments can now clone from GitLab and pin the GA tag:
+
+```bash
+git clone http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+cd agentseek-enterprise
+git checkout enterprise-wecom-v0.0.4-ga-20260629
+```
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could

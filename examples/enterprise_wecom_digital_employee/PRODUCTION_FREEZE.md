@@ -20,6 +20,51 @@ Runtime code must remain equivalent to `7409444` unless a new freeze is
 created. The older `prod` tag is kept immutable for audit history; use the GA
 tag for new deployments.
 
+## Release And Mirrors
+
+| Location | Purpose | URL / ref |
+| --- | --- | --- |
+| GitHub release | External collaboration and release notes | `https://github.com/sambazhu/agentseek-enterprise/releases/tag/enterprise-wecom-v0.0.4-ga-20260629` |
+| GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
+| Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
+
+Published refs:
+
+| Ref | Commit | Use |
+| --- | --- | --- |
+| `enterprise/wecom-runtime-v0.0.4` | Documentation head; runtime equivalent to `1b06692` | Active internal production branch |
+| `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Final immutable GA deployment tag |
+| `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
+
+The branch may receive documentation-only updates after GA. Runtime deployments
+should still pin `enterprise-wecom-v0.0.4-ga-20260629` unless a new GA tag is
+created.
+
+Recommended GitLab project settings:
+
+- default branch: `enterprise/wecom-runtime-v0.0.4`;
+- protected branch: `enterprise/wecom-runtime-v0.0.4`;
+- protected tags: `enterprise-wecom-v0.0.4-*`.
+
+For production deployment from the company GitLab mirror:
+
+```bash
+git clone http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+cd agentseek-enterprise
+git checkout enterprise-wecom-v0.0.4-ga-20260629
+```
+
+For production deployment from GitHub:
+
+```bash
+git clone https://github.com/sambazhu/agentseek-enterprise.git
+cd agentseek-enterprise
+git checkout enterprise-wecom-v0.0.4-ga-20260629
+```
+
+Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,
+or local virtual environments to either remote.
+
 ## Verified Capabilities
 
 - In-repository example deployment and a separately rendered standalone project

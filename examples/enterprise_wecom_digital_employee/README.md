@@ -74,9 +74,15 @@ Generate a new namespace secret before formal production handoff:
 examples/enterprise_wecom_digital_employee/scripts/prod_check.py --generate-namespace-secret
 ```
 
-The first production-ready baseline is frozen in `PRODUCTION_FREEZE.md`. Use it
-to pin the verified commit/tag, required runtime switches, smoke-test prompts,
-and rollback knobs before changing production behavior.
+The GA baseline is frozen in `PRODUCTION_FREEZE.md`. Use it to pin the verified
+commit/tag, GitHub release, company GitLab mirror, required runtime switches,
+smoke-test prompts, and rollback knobs before changing production behavior.
+
+For production deployment, prefer the immutable GA tag:
+
+```bash
+git checkout enterprise-wecom-v0.0.4-ga-20260629
+```
 
 For Mac mini process supervision, edit the repo path in
 `launchd/com.local.agentseek-enterprise-wecom.plist`, then install it as a
