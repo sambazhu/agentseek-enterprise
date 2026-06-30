@@ -43,7 +43,14 @@ def employee_memory_tools() -> list[BaseTool]:
         if item is None:
             return "No durable employee memory is currently stored."
         content = item.value.get("content")
-        return str(content) if isinstance(content, str) else "No durable employee memory is currently stored."
+        if not isinstance(content, str):
+            return "No durable employee memory is currently stored."
+        return (
+            "[DurableEmployeeMemory]\n"
+            "These are explicit durable memories saved for this authenticated employee. "
+            "Answer durable-memory questions from this block and do not mix unrelated short-term conversation facts.\n"
+            f"{content}"
+        )
 
     @tool("remember_employee_memory")
     def remember_employee_memory(

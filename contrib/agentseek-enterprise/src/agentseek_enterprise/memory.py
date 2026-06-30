@@ -287,6 +287,8 @@ def format_short_term_memory_for_prompt(value: Any) -> str | None:
     lines = [
         "[ShortTermMemory]",
         "以下是同一员工同一会话的近期对话。用于理解追问、代词、继续处理和刚才提到的事项，不代表最终授权。",
+        "只在当前问题直接询问近期对话、刚才提到的事项、代词所指或继续上一步任务时使用。",
+        "如果当前问题询问长期偏好、长期记忆或员工画像，不要主动提及这里的不相关近期事实。",
     ]
     for item in messages:
         if not isinstance(item, dict):

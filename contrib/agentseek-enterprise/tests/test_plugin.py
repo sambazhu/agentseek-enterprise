@@ -266,6 +266,7 @@ def test_system_prompt_can_include_short_term_memory(monkeypatch: Any) -> None:
     assert prompt is not None
     assert "[ShortTermMemory]" in prompt
     assert "用户: 帮我记一下，我明天去深圳出差" in prompt
+    assert "不要主动提及这里的不相关近期事实" in prompt
 
 
 def _turn_snapshot(
@@ -424,7 +425,10 @@ def test_employee_memory_tools_use_only_the_authenticated_user_namespace(tmp_pat
     )
 
     assert "recorded" in remembered
-    assert "concise" in tools["recall_employee_memory"].func(runtime=first_runtime)
+    recalled = tools["recall_employee_memory"].func(runtime=first_runtime)
+    assert "[DurableEmployeeMemory]" in recalled
+    assert "concise" in recalled
+    assert "do not mix unrelated short-term" in recalled
     assert "No durable" in tools["recall_employee_memory"].func(runtime=second_runtime)
     refused = tools["remember_employee_memory"].func(
         memory="api key is private", category="preference", runtime=first_runtime
