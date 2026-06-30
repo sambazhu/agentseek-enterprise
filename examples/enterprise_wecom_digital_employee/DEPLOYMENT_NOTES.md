@@ -818,10 +818,13 @@ generation >5 s, triggering WeCom retries).
 
 ## Recommended next work
 
-- **MCP policy and audit:** the current `call_mcp_tool` adapter is a generic MCP
-  bridge. Before adding state-changing office tools such as meeting-room booking
-  or travel submission, add runtime policy for tool allowlists, read/write
-  classification, explicit confirmation, argument redaction, and audit logging.
+- **Long-running MCP result delivery:** MCP policy and audit are implemented and
+  verified. The next gap is WeCom delivery for slow tools: confirmed
+  `tavily_search` can execute successfully, but very large search results made
+  the model spend about 19 minutes before the final reply, exceeding the WeCom
+  stream response window. Add a result-budget strategy such as tool-output
+  truncation, answer-first summarization, or an async "正在处理" workflow before
+  broad rollout of slow external tools.
 - **Observability:** tracing is intentionally disabled in production for now
   (`LANGSMITH_TRACING=false`). Add Langfuse or another approved trace backend
   after the deployment endpoint and credentials are available.
