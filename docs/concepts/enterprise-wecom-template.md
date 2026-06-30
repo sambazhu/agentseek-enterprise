@@ -7,6 +7,7 @@ verified_on: 2026-06-30
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
 ---
@@ -19,7 +20,7 @@ layered memory.
 
 ## Current Status
 
-`enterprise-wecom-v0.0.4-ga-20260629` is the first GA baseline.
+`enterprise-wecom-v0.0.5-ga-20260630` is the current GA baseline.
 
 It was verified in two forms:
 
@@ -74,12 +75,26 @@ DM identity lookup can run in `subprocess` or `sidecar` mode. Both keep
 JPype/libjvm out of the main gateway process so ContextSeek SeekDB and ONNX can
 run in the gateway process.
 
+## MCP Policy And Audit
+
+MCP tools are the boundary for business actions such as meeting-room booking,
+travel requests, or data lookup. The generated `call_mcp_tool` adapter evaluates
+a local policy before it calls a remote MCP server.
+
+The policy separates read/query tools from write or risky tools. Read tools can
+run by default. Write or risky tools can require an explicit employee
+confirmation, and denied tools are blocked before any remote call is made.
+Every adapter decision can be written to a redacted JSONL audit log.
+
+This keeps the business integration layer in MCP while giving the runtime a
+small, local approval and audit surface.
+
 ## Production Baseline
 
 Use the GA tag for deployments:
 
 ```bash
-git checkout enterprise-wecom-v0.0.4-ga-20260629
+git checkout enterprise-wecom-v0.0.5-ga-20260630
 ```
 
 The detailed freeze record lives in

@@ -3,10 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+_loguru_logger: Any | None
+
 try:
-    from loguru import logger as _loguru_logger
+    from loguru import logger as _imported_loguru_logger
 except ImportError:  # pragma: no cover - exercised only in minimal installs without loguru.
     _loguru_logger = None
+else:
+    _loguru_logger = _imported_loguru_logger
 
 
 class _StdlibLoggerAdapter:

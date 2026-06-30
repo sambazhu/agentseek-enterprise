@@ -33,7 +33,9 @@ Fill `.env` with:
 - the tenant id, namespace secret, and durable store path, or
   `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` for PostgreSQL/MySQL;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
-- MCP servers in `.agents/mcp.json`.
+- MCP servers in `.agents/mcp.json`;
+- MCP policy and audit settings for allowlists, write-tool confirmation, and
+  JSONL audit logs.
 
 When you enable PostgreSQL/MySQL memory URLs, install the matching SQLAlchemy
 driver in the deployment environment, for example `psycopg[binary]` for
@@ -87,7 +89,7 @@ smoke-test prompts, and rollback knobs before changing production behavior.
 For production deployment, prefer the immutable GA tag:
 
 ```bash
-git checkout enterprise-wecom-v0.0.4-ga-20260629
+git checkout enterprise-wecom-v0.0.5-ga-20260630
 ```
 
 For Mac mini process supervision, edit the repo path in
@@ -117,24 +119,93 @@ After configuring WeCom, send `你好` to the intelligent robot. A healthy first
 - follow-up questions can use recent messages stored under `short_term_memory`.
 - semantic retrieval is scoped to the resolved employee rather than the WeCom session.
 
-For short-term memory, send:
+Use these smoke tests to keep the memory layers distinct:
+
+### A. Identity
+
+```text
+我是谁
+```
+
+Expected: the answer uses `employee_context`, including name, OA account,
+organization path, role, and post when available.
+
+### B. Short-Term Memory (Relational Store)
 
 ```text
 帮我记一下，我明天下午去深圳出差
 我刚才说我要去哪里？
 ```
 
-For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
+Expected: the answer recalls the recent Shenzhen trip from the short-term
+conversation memory database. Production deployments can set
+`AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` to PostgreSQL/MySQL; local
+development falls back to `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
+
+### C. Explicit Durable Memory (Employee Store)
+
+```text
+请长期记住：我偏好简洁、分点的回复方式
+你记得我的回复偏好吗？
+```
+
+Expected: the answer recalls the preference through the dedicated durable memory
+tools. Production deployments can set
+`AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` to PostgreSQL/MySQL; local
+development falls back to `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`. This is
+explicit employee memory, not ContextSeek semantic recall.
+
+### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
+
+```text
+请长期记住：我的职责是负责数据架构工作
+我的工作职责是什么？
+```
+
+Expected: ContextSeek retrieves the semantically related historical turn from
+SeekDB and the model answer includes the data-architecture responsibility. This
+is semantic memory from `AGENTSEEK_CTX_SEEKDB_PATH`, not the SQLiteStore durable
+memory tool.
+
+### E. MCP
+
+After adding servers to `.agents/mcp.json`, restart the gateway, then ask:
 
 ```text
 列一下当前可用的 MCP 工具
 ```
+
+Expected: the answer lists the configured MCP services and tools.
+
+### MCP Policy And Audit
+
+The template's `call_mcp_tool` adapter enforces a local enterprise policy before
+it calls a configured MCP server. By default the policy allows existing query
+tools and writes audit events to `./runtime/mcp-audit.jsonl`.
+
+Use `server/tool` patterns to classify business tools:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST=gildata_datamap-*/*,tavily-search/*
+AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
+AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request
+AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
+AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
+AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
+```
+
+For write or risky tools, the first `call_mcp_tool` call returns a
+confirmation-required response instead of executing. The agent should summarize
+the exact business action and key arguments, wait for the employee to confirm,
+then call the same tool again with `confirmed=true`.
 
 ## What's Different Vs. Pure DeepAgents
 
 - `src/enterprise_wecom_digital_employee/agent.py` exports `build_spec()` for `AGENTSEEK_LANGCHAIN_SPEC`.
 - `src/enterprise_wecom_digital_employee/tools.py` adds a lightweight MCP list/call adapter.
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
+- The MCP adapter enforces allowlist/denylist policy, write/risky
+  confirmation, and redacted JSONL audit logging before calling remote tools.
 - Short-term memory and explicit durable employee memory can both use
   PostgreSQL/MySQL through SQLAlchemy URLs. If those URLs are empty, the example
   falls back to the local SQLite files configured by

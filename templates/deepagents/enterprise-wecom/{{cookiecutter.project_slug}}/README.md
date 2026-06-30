@@ -30,7 +30,9 @@ Fill `.env` with:
 - the tenant id, namespace secret, and durable store path, or
   `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` for PostgreSQL/MySQL;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
-- MCP servers in `.agents/mcp.json`.
+- MCP servers in `.agents/mcp.json`;
+- MCP policy and audit settings for allowlists, write-tool confirmation, and
+  JSONL audit logs.
 
 When you enable PostgreSQL/MySQL memory URLs, install the matching SQLAlchemy
 driver in the deployment environment, for example `psycopg[binary]` for
@@ -152,6 +154,28 @@ After adding servers to `.agents/mcp.json`, restart the gateway, then ask:
 
 Expected: the answer lists the configured MCP services and tools.
 
+### MCP Policy And Audit
+
+The template's `call_mcp_tool` adapter enforces a local enterprise policy before
+it calls a configured MCP server. By default the policy allows existing query
+tools and writes audit events to `./runtime/mcp-audit.jsonl`.
+
+Use `server/tool` patterns to classify business tools:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST=gildata_datamap-*/*,tavily-search/*
+AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
+AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request
+AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
+AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
+AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
+```
+
+For write or risky tools, the first `call_mcp_tool` call returns a
+confirmation-required response instead of executing. The agent should summarize
+the exact business action and key arguments, wait for the employee to confirm,
+then call the same tool again with `confirmed=true`.
+
 When reading gateway logs, remember that WeCom replies are often multi-line. Use
 enough trailing context such as `grep -A N`; `grep | tail -1` can truncate the
 reply and hide the relevant memory-enriched lines.
@@ -161,6 +185,8 @@ reply and hide the relevant memory-enriched lines.
 - `src/{{ cookiecutter.project_slug }}/agent.py` exports `build_spec()` for `AGENTSEEK_LANGCHAIN_SPEC`.
 - `src/{{ cookiecutter.project_slug }}/tools.py` adds a lightweight MCP list/call adapter.
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
+- The MCP adapter enforces allowlist/denylist policy, write/risky
+  confirmation, and redacted JSONL audit logging before calling remote tools.
 - Short-term memory and explicit durable employee memory can both use
   PostgreSQL/MySQL through SQLAlchemy URLs. If those URLs are empty, the project
   falls back to the local SQLite files configured by

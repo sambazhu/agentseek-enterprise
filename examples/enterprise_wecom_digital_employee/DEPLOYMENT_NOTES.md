@@ -830,3 +830,32 @@ answers the preference — the three-layer memory boundary works.
 
 PostgreSQL path confirmed: 0 SIGBUS, 0 SQLAlchemy init errors, 0 duplicate
 turns. psycopg driver, agentseek database, brew services all OK.
+
+### v0.0.5 GA tag (2026-06-30)
+
+Published the v0.0.5 GA baseline after the RC1 smoke test passed on Mac mini:
+
+- GA tag: `enterprise-wecom-v0.0.5-ga-20260630` -> `5cce3a2`
+- RC tag: `enterprise-wecom-v0.0.5-rc1` -> `3d0644c`
+- Production branch: `enterprise/wecom-runtime-v0.0.4` -> `5cce3a2`
+
+This GA baseline includes the SQLAlchemy memory-store path, PostgreSQL
+verification, and the tightened memory-boundary prompt that prevents short-term
+travel context from leaking into explicit long-term preference answers.
+
+### MCP policy and audit implementation (2026-06-30)
+
+Started branch `enterprise/wecom-mcp-policy-audit` from the v0.0.5 GA baseline.
+The branch adds a local MCP policy layer before the generated
+`call_mcp_tool` adapter calls remote MCP servers:
+
+- allowlist and denylist patterns using `server/tool`, `server:tool`, or
+  wildcards;
+- read, write, and risky tool classification;
+- confirmation-required flow for write/risky tools before execution;
+- JSONL audit records with redacted arguments;
+- example, template, and reference documentation for the new runtime settings.
+
+Local tests cover policy evaluation, policy-file/env merging, confirmation
+messages, and audit redaction. Live WeCom validation is still required before
+this branch can become the next GA baseline.

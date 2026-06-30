@@ -7,6 +7,7 @@ verified_on: 2026-06-30
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
 ---
@@ -18,7 +19,7 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 
 ## 当前状态
 
-`enterprise-wecom-v0.0.4-ga-20260629` 是第一版 GA 基线。
+`enterprise-wecom-v0.0.5-ga-20260630` 是当前 GA 基线。
 
 它已经完成两类验证：
 
@@ -68,12 +69,23 @@ DM 身份查询可以使用 `subprocess` 或 `sidecar` 模式。两种模式都�
 JPype/libjvm 隔离在 gateway 主进程之外，使 ContextSeek SeekDB 和 ONNX 可以在
 gateway 主进程中运行。
 
+## MCP 策略和审计
+
+MCP tools 是预订会议室、提交出差申请、数据查询等业务动作的边界。生成项目里的
+`call_mcp_tool` adapter 会先评估本地策略，再调用远端 MCP server。
+
+策略会区分 read/query 工具和 write/risky 工具。查询工具默认可以执行；写入或高风险
+工具可以要求员工明确确认；denylist 命中的工具会在远端调用之前被阻断。每次 adapter
+决策都可以写入脱敏后的 JSONL 审计日志。
+
+这样业务集成仍然留在 MCP 层，但 runtime 拥有一个很小、可本地配置的审批和审计面。
+
 ## 生产基线
 
 生产部署使用 GA tag：
 
 ```bash
-git checkout enterprise-wecom-v0.0.4-ga-20260629
+git checkout enterprise-wecom-v0.0.5-ga-20260630
 ```
 
 详细冻结记录在 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`。

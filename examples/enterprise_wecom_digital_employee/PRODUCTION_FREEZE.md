@@ -6,25 +6,26 @@ WeCom digital employee runtime.
 ## Baseline
 
 - Branch: `enterprise/wecom-runtime-v0.0.4`
-- Final GA tag: `enterprise-wecom-v0.0.4-ga-20260629`
-- Final GA tag commit: documentation-only successor of `7409444`
-- Final verified integration commit: `7409444`
+- Final GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
+- Final GA tag commit: `5cce3a2`
+- Final verified integration commit: `5cce3a2`
+- Previous GA tag: `enterprise-wecom-v0.0.4-ga-20260629`
 - Previous production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
 - Previous production freeze commit: `6cd8d41`
 - Initial full runtime verification commit: `0c63850`
 - Verification host: company-network Mac mini
-- Verification date: 2026-06-29
+- Verification date: 2026-06-30
 
-The final GA tag points to a documentation-only successor of `7409444`.
-Runtime code must remain equivalent to `7409444` unless a new freeze is
-created. The older `prod` tag is kept immutable for audit history; use the GA
-tag for new deployments.
+The final GA tag includes the v0.0.5 memory-store upgrade and verification
+record. Runtime code must remain equivalent to `5cce3a2` unless a new freeze is
+created. The older v0.0.4 `ga` and `prod` tags are kept immutable for audit
+history; use the v0.0.5 GA tag for new deployments.
 
 ## Release And Mirrors
 
 | Location | Purpose | URL / ref |
 | --- | --- | --- |
-| GitHub release | External collaboration and release notes | `https://github.com/sambazhu/agentseek-enterprise/releases/tag/enterprise-wecom-v0.0.4-ga-20260629` |
+| GitHub release | External collaboration and release notes | `https://github.com/sambazhu/agentseek-enterprise/releases/tag/enterprise-wecom-v0.0.5-ga-20260630` |
 | GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
 | Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
 
@@ -32,26 +33,27 @@ Published refs:
 
 | Ref | Commit | Use |
 | --- | --- | --- |
-| `enterprise/wecom-runtime-v0.0.4` | Documentation head; runtime equivalent to `1b06692` | Active internal production branch |
-| `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Final immutable GA deployment tag |
+| `enterprise/wecom-runtime-v0.0.4` | `5cce3a2` | Active internal production branch |
+| `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Final immutable GA deployment tag |
+| `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
 
 The branch may receive documentation-only updates after GA. Runtime deployments
-should still pin `enterprise-wecom-v0.0.4-ga-20260629` unless a new GA tag is
+should still pin `enterprise-wecom-v0.0.5-ga-20260630` unless a new GA tag is
 created.
 
 Recommended GitLab project settings:
 
 - default branch: `enterprise/wecom-runtime-v0.0.4`;
 - protected branch: `enterprise/wecom-runtime-v0.0.4`;
-- protected tags: `enterprise-wecom-v0.0.4-*`.
+- protected tags: `enterprise-wecom-v0.0.*`.
 
 For production deployment from the company GitLab mirror:
 
 ```bash
 git clone http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.4-ga-20260629
+git checkout enterprise-wecom-v0.0.5-ga-20260630
 ```
 
 For production deployment from GitHub:
@@ -59,7 +61,7 @@ For production deployment from GitHub:
 ```bash
 git clone https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.4-ga-20260629
+git checkout enterprise-wecom-v0.0.5-ga-20260630
 ```
 
 Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,
@@ -74,7 +76,7 @@ or local virtual environments to either remote.
 - Employee identity lookup through DM JDBC in an isolated `sidecar` process.
 - Employee identity cache with a 10 minute TTL.
 - Per-session short-term memory persistence.
-- Employee-scoped durable memory tools backed by SQLiteStore.
+- Employee-scoped durable memory tools backed by SQLite or SQLAlchemy.
 - ContextSeek semantic long-term memory with local SeekDB.
 - ContextSeek retrieval enrichment reaches the model prompt.
 - MCP lifecycle channel with gildata and Tavily tools.
@@ -82,10 +84,9 @@ or local virtual environments to either remote.
 - LaunchAgent supervision with auto-restart.
 - No SIGBUS with DM sidecar and SeekDB/ONNX in the main gateway process.
 
-Post-GA note: the frozen baseline above used local SQLite files for
-short-term memory and explicit durable memory. Current branch code can move
-those two relational layers to PostgreSQL/MySQL by setting
-`AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
+The v0.0.5 baseline keeps local SQLite fallback for short-term memory and
+explicit durable memory, and can move those two relational layers to
+PostgreSQL/MySQL by setting `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`. ContextSeek semantic memory remains
 configured separately through its own backend settings.
 
@@ -161,7 +162,7 @@ After restart, verify these prompts from WeCom:
 Expected: resolves to the employee context, e.g. name, OA account,
 organization path, role, and post.
 
-### B. Short-Term Memory (SQLite Baseline)
+### B. Short-Term Memory (Relational Store)
 
 ```text
 帮我记一下，我明天下午去深圳出差
@@ -169,9 +170,10 @@ organization path, role, and post.
 ```
 
 Expected: recalls the recent trip from the short-term conversation memory
-database configured by `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
+database configured by `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` or the
+local fallback `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
 
-### C. Explicit Durable Memory (SQLiteStore Baseline)
+### C. Explicit Durable Memory (Employee Store)
 
 ```text
 请长期记住：我偏好简洁、分点的回复方式
@@ -179,7 +181,8 @@ database configured by `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
 ```
 
 Expected: recalls the preference through the dedicated durable memory tools
-backed by `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
+backed by `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` or the local fallback
+`AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 
 ### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
 

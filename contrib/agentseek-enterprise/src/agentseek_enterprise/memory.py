@@ -7,7 +7,7 @@ import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from agentseek_enterprise.relational import create_sqlalchemy_engine, require_sqlalchemy
 from agentseek_enterprise.sqlite import (
@@ -63,7 +63,7 @@ def build_short_term_memory_store(settings: ShortTermMemorySettings) -> ShortTer
     return SQLiteShortTermMemoryStore(settings)
 
 
-class ShortTermMemoryStore:
+class ShortTermMemoryStore(Protocol):
     def load_recent_messages(self, session_id: str) -> list[dict[str, Any]]: ...
 
     def append_turn(self, session_id: str, user_content: str, assistant_content: str) -> None: ...

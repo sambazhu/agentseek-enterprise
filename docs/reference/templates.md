@@ -9,6 +9,7 @@ sources:
   - src/agentseek/cli/commands/create.py
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
 ---
 
 # Templates
@@ -60,6 +61,7 @@ sources:
 | Channel | WeCom intelligent robot callback through `agentseek-wecom` |
 | Identity | Enterprise employee context through `agentseek-enterprise` |
 | Business tools | MCP servers from `.agents/mcp.json` |
+| MCP policy | Local allowlist/denylist, write/risky confirmation, and JSONL audit |
 | Short-term memory | Per-session SQLAlchemy memory, SQLite fallback |
 | Explicit durable memory | Employee-scoped LangGraph Store memory tools, SQLAlchemy or SQLite fallback |
 | Semantic memory | ContextSeek with SeekDB by default |

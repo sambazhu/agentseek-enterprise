@@ -9,6 +9,7 @@ sources:
   - src/agentseek/cli/commands/create.py
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
 ---
 
 # 模板
@@ -60,6 +61,7 @@ sources:
 | 通道 | 通过 `agentseek-wecom` 接入企业微信智能机器人回调 |
 | 身份 | 通过 `agentseek-enterprise` 注入员工身份上下文 |
 | 业务工具 | 从 `.agents/mcp.json` 加载 MCP servers |
+| MCP 策略 | 本地 allowlist/denylist、写入/高风险工具确认、JSONL 审计 |
 | 短期记忆 | 按 session 隔离的 SQLAlchemy 记忆，SQLite fallback |
 | 显式长期记忆 | 员工级 LangGraph Store memory tools，支持 SQLAlchemy 或 SQLite fallback |
 | 语义记忆 | 默认使用 ContextSeek + SeekDB |

@@ -13,15 +13,20 @@
 
 ## When To Use It
 
-Use this plugin for enterprise-specific runtime context that should not live in the AgentSeek core package. Current capabilities include employee identity enrichment, per-session short-term memory, and user-scoped persistent memory:
+Use this plugin for enterprise-specific runtime context that should not live in the AgentSeek core package. Current capabilities include employee identity enrichment, per-session short-term memory, user-scoped persistent memory, and MCP policy helpers:
 
 - reads an OA / WeCom user id from the inbound message envelope;
 - resolves it through the configured employee identity provider;
 - stores the normalized result in `state["employee_context"]` for LangChain, DeepAgents, skills, and MCP-aware templates.
 - stores recent user/assistant turns in SQLite and reloads them as `state["short_term_memory"]`.
 - creates non-PII LangGraph runtime context and resolves `StoreBackend` files into a per-tenant/per-employee SQLite namespace.
+- evaluates local MCP allowlist/denylist policy and writes redacted MCP audit events when used by a template adapter.
 
-This package owns runtime context only. Channel protocol handling belongs in a channel plugin such as `agentseek-wecom`, and business actions such as meeting room booking or travel requests should stay in MCP tools.
+This package owns runtime context and reusable enterprise guardrails. Channel
+protocol handling belongs in a channel plugin such as `agentseek-wecom`, and
+business actions such as meeting room booking or travel requests should stay in
+MCP tools. The `enterprise-wecom` template wires the MCP policy helper into its
+generated `call_mcp_tool` adapter.
 
 ## Install
 
@@ -110,6 +115,27 @@ The template does not grant generic filesystem tools access to `/memories`. Only
 `remember_employee_memory`, `recall_employee_memory`, and `forget_employee_memory` tools can
 reach the authenticated employee's namespace. This keeps durable preferences and work context
 isolated while avoiding arbitrary prompt content becoming a writable filesystem.
+
+Configure MCP policy and audit for template adapters with:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_POLICY_ENABLED=true
+AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION=allow
+AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST=gildata_datamap-*/*,tavily-search/*
+AGENTSEEK_ENTERPRISE_MCP_DENYLIST=
+AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
+AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request
+AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
+AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
+AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED=true
+AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
+```
+
+Tool patterns accept `server/tool`, `server:tool`, or wildcards such as
+`gildata_datamap-*/*`. Read/query tools are allowed by default. Tools classified
+as write, risky, or confirmation-required return a confirmation-required result
+until the adapter calls them again with `confirmed=true`. Audit JSONL records
+the action, tool reference, risk, policy reason, and redacted arguments.
 
 ## Runtime Behavior
 
