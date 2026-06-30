@@ -583,6 +583,58 @@ SQLAlchemy init errors, 2 msgid dedup (normal WeCom retries).
 
 All acceptance criteria met. **enterprise-wecom-v0.0.5-rc1 is ready for GA tagging.**
 
+### MCP policy multi-risk verification (2026-06-30, enterprise/wecom-mcp-policy-audit)
+
+Configured 3 risk levels across 5 MCP servers:
+- `AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=tavily-search/*` (write)
+- `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=gildata_datamap-data/*,agent-platform/install_agent_skills` (risky)
+- All other tools: read (default allow)
+
+**Round 1 — read + risky triggered together**:
+| # | Audit event | Risk | Tool |
+|---|-------------|------|------|
+| 1 | succeeded | read | gildata_datamap-api/CompanyBasicInfo |
+| 2 | succeeded | read | gildata_datamap-tools/FinQuery |
+| 3 | confirmation_required | risky | gildata_datamap-data/FinGeneralQuery |
+| 4 | succeeded | read | gildata_datamap-api/CompanyBasicInfo |
+
+Read tools executed directly (no confirmation). Risky tool (FinGeneralQuery)
+blocked — model proactively asked "是否确认执行？" without calling it.
+
+**Round 2 — write tool (tavily_search)**:
+Model tried 3 gildata read tools (no international news data), then wanted
+tavily_search (write) → asked "是否确认执行？" (no execution). Audit entries
+5-7: read tools succeeded.
+
+**Round 3 — confirmed execution**:
+User sent "确认" → tavily_search called with `confirmed=True` → executed (search
+results returned). Audit entry 9: `succeeded, risk=write, confirmed=True`.
+
+**Full audit log** (9 events):
+```
+ 1. succeeded              risk=read    confirmed=False   gildata/CompanyBasicInfo
+ 2. succeeded              risk=read    confirmed=False   gildata/FinQuery
+ 3. confirmation_required  risk=risky   confirmed=False   gildata/FinGeneralQuery
+ 4. succeeded              risk=read    confirmed=False   gildata/CompanyBasicInfo
+ 5. succeeded              risk=read    confirmed=False   gildata/NewsDataQuery
+ 6. succeeded              risk=read    confirmed=False   gildata/MacroNewslist
+ 7. succeeded              risk=read    confirmed=False   gildata/NewsInfoList
+ 8. (tavily write — model proactively asked confirmation, no tool call)
+ 9. succeeded              risk=write   confirmed=True    tavily/tavily_search
+```
+
+**Sensitive field redaction**: no token/password/secret/api.key found in audit
+entries ✅.
+
+**Known issue**: Round 3's reply was generated in the gateway log (international
+news results) but WeCom showed "抱歉，我暂时无法回答" — the model took ~19 min
+processing tavily search results, causing a **WeCom stream timeout**. This is a
+WeCom delivery issue (stream response expiry), NOT an MCP policy issue. The
+policy enforcement + audit logging are correct.
+
+**Health**: 0 SIGBUS, 0 SQLAlchemy errors, 2 msgid dedup (normal), gateway
+stable.
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
