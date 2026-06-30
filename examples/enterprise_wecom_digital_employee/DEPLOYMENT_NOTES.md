@@ -558,6 +558,31 @@ SA SQLite files confirmed created (`runtime/*-sa.sqlite3`). 0 SIGBUS, 0
 SQLAlchemy init errors, 0 WeCom duplicate turns. seekdb semantic memory
 unaffected (ContextSeek uses its own SeekDB, not the enterprise SA store).
 
+### v0.0.5 RC1 verification (2026-06-30, enterprise-wecom-v0.0.5-rc1)
+
+RC tag `enterprise-wecom-v0.0.5-rc1` at commit `3d0644c`. Verified on Mac mini
+with PostgreSQL 17 (`postgresql+psycopg://localhost/agentseek`).
+
+**Part A — code-level tests**: enterprise 36 passed, template render 25 passed,
+docs-test mkdocs build OK.
+
+**Live smoke test (7 messages, all PASS)**:
+
+| # | Message | Reply | Result |
+|---|---------|-------|--------|
+| 1 | `我是谁` | 朱春霖 + OA + 岗位 + 组织路径 | ✅ |
+| 2 | `帮我记一下…深圳出差` | "已长期记住：明天去深圳出差" | ✅ (correctly stored 深圳) |
+| 3 | `我刚才说我要去哪里？` | "明天去深圳出差 ✈️" | ✅ short-term recall |
+| 4 | `请长期记住：偏好简洁分点` | "已长期记住：偏好简洁、分点的回复方式" | ✅ long-term store |
+| 5 | `你记得我的回复偏好吗？` | "记得你的长期偏好：企微回复简洁 / 分点呈现" | ✅ **NO 出差 mixed in** |
+| 6 | `我的工作职责是什么？` | "岗位：团队长兼数据架构师 / 职责：数据架构设计…" | ✅ seekdb semantic |
+| 7 | `列一下当前可用的 MCP 工具` | 4 services (gildata×3 + tavily) | ✅ |
+
+**Health**: alive ✓, sidecar PID 34525 stable ✓, 0 SIGBUS/exit 138, 0
+SQLAlchemy init errors, 2 msgid dedup (normal WeCom retries).
+
+All acceptance criteria met. **enterprise-wecom-v0.0.5-rc1 is ready for GA tagging.**
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
