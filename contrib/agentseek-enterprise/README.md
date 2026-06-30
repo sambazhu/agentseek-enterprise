@@ -83,6 +83,10 @@ Enable short-term memory with:
 
 ```env
 AGENTSEEK_ENTERPRISE_MEMORY_ENABLED=true
+# Production: set a SQLAlchemy URL to move this store to PostgreSQL/MySQL.
+# AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL=postgresql+psycopg://user:pass@host:5432/agentseek
+# AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL=mysql+pymysql://user:pass@host:3306/agentseek?charset=utf8mb4
+# Local fallback when the SQLAlchemy URL is empty:
 AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH=./runtime/enterprise-short-term-memory.sqlite3
 AGENTSEEK_ENTERPRISE_MEMORY_RECENT_TURNS=8
 AGENTSEEK_ENTERPRISE_MEMORY_TTL_SECONDS=604800
@@ -95,6 +99,10 @@ The enterprise DeepAgents template also uses a separate durable StoreBackend:
 AGENTSEEK_ENTERPRISE_TENANT_ID=wkzq
 # Use a high-entropy value in production. Without it, namespace keys are SHA-256 digests.
 AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET=
+# Production: set a SQLAlchemy URL to move explicit durable memory to PostgreSQL/MySQL.
+# AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL=postgresql+psycopg://user:pass@host:5432/agentseek
+# AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL=mysql+pymysql://user:pass@host:3306/agentseek?charset=utf8mb4
+# Local fallback when the SQLAlchemy URL is empty:
 AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH=./runtime/enterprise-long-term-store.sqlite3
 ```
 

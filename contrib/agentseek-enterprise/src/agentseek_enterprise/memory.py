@@ -9,6 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agentseek_enterprise.relational import create_sqlalchemy_engine, require_sqlalchemy
+from agentseek_enterprise.sqlite import (
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_SQLITE_JOURNAL_MODE,
+    configure_sqlite_connection,
+    normalize_sqlite_journal_mode,
+)
+
 SHORT_TERM_MEMORY_STATE_KEY = "short_term_memory"
 
 
@@ -17,21 +25,48 @@ class ShortTermMemorySettings:
     """Settings for per-session short-term conversation memory."""
 
     enabled: bool = False
+    sqlalchemy_url: str = ""
     sqlite_path: Path = Path("./runtime/enterprise-short-term-memory.sqlite3")
     recent_turns: int = 8
     ttl_seconds: int = 7 * 24 * 60 * 60
     max_content_chars: int = 4000
+    sqlite_busy_timeout_ms: int = DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+    sqlite_journal_mode: str = DEFAULT_SQLITE_JOURNAL_MODE
 
     @classmethod
     def from_env(cls) -> ShortTermMemorySettings:
         _load_dotenv_if_present(Path.cwd() / ".env")
         return cls(
             enabled=_truthy(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED")),
+            sqlalchemy_url=(
+                os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL")
+                or os.environ.get("AGENTSEEK_ENTERPRISE_SHORT_TERM_MEMORY_SQLALCHEMY_URL")
+                or ""
+            ).strip(),
             sqlite_path=_sqlite_path_from_env(),
             recent_turns=max(1, int(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_RECENT_TURNS", "8"))),
             ttl_seconds=max(0, int(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_TTL_SECONDS", str(7 * 24 * 60 * 60)))),
             max_content_chars=max(1, int(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_MAX_CONTENT_CHARS", "4000"))),
+            sqlite_busy_timeout_ms=max(
+                0,
+                int(os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_BUSY_TIMEOUT_MS", "30000")),
+            ),
+            sqlite_journal_mode=normalize_sqlite_journal_mode(
+                os.environ.get("AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_JOURNAL_MODE", "WAL")
+            ),
         )
+
+
+def build_short_term_memory_store(settings: ShortTermMemorySettings) -> ShortTermMemoryStore:
+    if settings.sqlalchemy_url:
+        return SQLAlchemyShortTermMemoryStore(settings)
+    return SQLiteShortTermMemoryStore(settings)
+
+
+class ShortTermMemoryStore:
+    def load_recent_messages(self, session_id: str) -> list[dict[str, Any]]: ...
+
+    def append_turn(self, session_id: str, user_content: str, assistant_content: str) -> None: ...
 
 
 class SQLiteShortTermMemoryStore:
@@ -129,15 +164,103 @@ class SQLiteShortTermMemoryStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=10)
+        connection = sqlite3.connect(str(self.path), timeout=self.settings.sqlite_busy_timeout_ms / 1000)
         connection.row_factory = sqlite3.Row
-        return connection
+        return configure_sqlite_connection(
+            connection,
+            busy_timeout_ms=self.settings.sqlite_busy_timeout_ms,
+            journal_mode=self.settings.sqlite_journal_mode,
+        )
 
     def _prune_expired(self, connection: sqlite3.Connection, now: int) -> None:
         if self.settings.ttl_seconds <= 0:
             return
         cutoff = now - self.settings.ttl_seconds
         connection.execute("DELETE FROM enterprise_short_term_messages WHERE created_at < ?", (cutoff,))
+
+
+class SQLAlchemyShortTermMemoryStore:
+    """SQLAlchemy-backed store for recent user/assistant turns.
+
+    This is the production path for PostgreSQL/MySQL deployments. SQLite remains
+    available for local development and tests through either the native fallback
+    or a ``sqlite+pysqlite://`` SQLAlchemy URL.
+    """
+
+    def __init__(self, settings: ShortTermMemorySettings) -> None:
+        if not settings.sqlalchemy_url:
+            raise ValueError("Short-term memory SQLAlchemy URL is required.")
+        self.settings = settings
+        self._sa = require_sqlalchemy()
+        self._engine = create_sqlalchemy_engine(
+            settings.sqlalchemy_url,
+            sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+            sqlite_journal_mode=settings.sqlite_journal_mode,
+        )
+        self._metadata = self._sa.MetaData()
+        self._messages = self._sa.Table(
+            "enterprise_short_term_messages",
+            self._metadata,
+            self._sa.Column("id", self._sa.Integer, primary_key=True, autoincrement=True),
+            self._sa.Column("session_id", self._sa.String(512), nullable=False),
+            self._sa.Column("role", self._sa.String(32), nullable=False),
+            self._sa.Column("content", self._sa.Text, nullable=False),
+            self._sa.Column("created_at", self._sa.Integer, nullable=False),
+            self._sa.Index("idx_enterprise_short_term_messages_session_id", "session_id", "id"),
+            self._sa.Index("idx_enterprise_short_term_messages_created_at", "created_at"),
+        )
+        self._metadata.create_all(self._engine)
+
+    def load_recent_messages(self, session_id: str) -> list[dict[str, Any]]:
+        self.prune_expired()
+        limit = self.settings.recent_turns * 2
+        table = self._messages
+        query = (
+            self._sa.select(table.c.role, table.c.content, table.c.created_at, table.c.id)
+            .where(table.c.session_id == session_id)
+            .order_by(table.c.id.desc())
+            .limit(limit)
+        )
+        with self._engine.begin() as connection:
+            rows = list(connection.execute(query).mappings())
+        rows.reverse()
+        return [
+            {
+                "role": str(row["role"]),
+                "content": str(row["content"]),
+                "created_at": int(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def append_turn(self, session_id: str, user_content: str, assistant_content: str) -> None:
+        user_content = _truncate(user_content, self.settings.max_content_chars)
+        assistant_content = _truncate(assistant_content, self.settings.max_content_chars)
+        if not user_content and not assistant_content:
+            return
+
+        now = int(time.time())
+        rows: list[dict[str, Any]] = []
+        if user_content:
+            rows.append({"session_id": session_id, "role": "user", "content": user_content, "created_at": now})
+        if assistant_content:
+            rows.append({"session_id": session_id, "role": "assistant", "content": assistant_content, "created_at": now})
+
+        with self._engine.begin() as connection:
+            self._prune_expired(connection, now)
+            connection.execute(self._messages.insert(), rows)
+
+    def prune_expired(self) -> None:
+        if self.settings.ttl_seconds <= 0:
+            return
+        with self._engine.begin() as connection:
+            self._prune_expired(connection, int(time.time()))
+
+    def _prune_expired(self, connection: Any, now: int) -> None:
+        if self.settings.ttl_seconds <= 0:
+            return
+        cutoff = now - self.settings.ttl_seconds
+        connection.execute(self._messages.delete().where(self._messages.c.created_at < cutoff))
 
 
 def short_term_memory_enabled_from_env() -> bool:

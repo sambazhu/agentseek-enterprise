@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import closing
 from types import SimpleNamespace
 from typing import Any
 
 from agentseek_enterprise import plugin as enterprise_plugin
 from agentseek_enterprise.identity import EmployeeContext
-from agentseek_enterprise.langgraph_store import SQLiteStore
+from agentseek_enterprise.langgraph_store import SQLAlchemyStore, SQLiteStore, build_langgraph_store
 from agentseek_enterprise.long_term_memory import employee_memory_tools
-from agentseek_enterprise.memory import SHORT_TERM_MEMORY_STATE_KEY
+from agentseek_enterprise.memory import (
+    SHORT_TERM_MEMORY_STATE_KEY,
+    SQLAlchemyShortTermMemoryStore,
+    ShortTermMemorySettings,
+    SQLiteShortTermMemoryStore,
+    build_short_term_memory_store,
+)
 from agentseek_enterprise.plugin import (
     EMPLOYEE_CONTEXT_STATE_KEY,
     EMPLOYEE_IDENTITY_STATE_KEY,
@@ -196,6 +203,48 @@ def test_short_term_memory_persists_recent_messages(monkeypatch: Any, tmp_path: 
     assert plugin.load_state({"content": "hi"}, "wecom:other") == {}
 
 
+def test_short_term_memory_sqlite_uses_wal_and_busy_timeout(tmp_path: Any) -> None:
+    store = SQLiteShortTermMemoryStore(
+        ShortTermMemorySettings(
+            enabled=True,
+            sqlite_path=tmp_path / "short-term-memory.sqlite3",
+            sqlite_busy_timeout_ms=12_345,
+        )
+    )
+
+    with closing(store._connect()) as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 12_345
+        assert str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+
+
+def test_short_term_memory_sqlalchemy_store_persists_recent_messages(tmp_path: Any) -> None:
+    settings = ShortTermMemorySettings(
+        enabled=True,
+        sqlalchemy_url=f"sqlite+pysqlite:///{tmp_path / 'short-term-memory-sa.sqlite3'}",
+        recent_turns=2,
+    )
+    store = SQLAlchemyShortTermMemoryStore(settings)
+    store.append_turn("wecom:chenkang2", "帮我记一下，我明天去深圳出差", "好的，我记住了。")
+
+    restarted = SQLAlchemyShortTermMemoryStore(settings)
+    messages = restarted.load_recent_messages("wecom:chenkang2")
+
+    assert [item["role"] for item in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "帮我记一下，我明天去深圳出差"
+    assert restarted.load_recent_messages("wecom:other") == []
+
+
+def test_short_term_memory_factory_prefers_sqlalchemy_url(tmp_path: Any) -> None:
+    store = build_short_term_memory_store(
+        ShortTermMemorySettings(
+            enabled=True,
+            sqlalchemy_url=f"sqlite+pysqlite:///{tmp_path / 'factory.sqlite3'}",
+        )
+    )
+
+    assert isinstance(store, SQLAlchemyShortTermMemoryStore)
+
+
 def test_system_prompt_can_include_short_term_memory(monkeypatch: Any) -> None:
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_SYSTEM_PROMPT", "false")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_SYSTEM_PROMPT", "true")
@@ -315,6 +364,42 @@ def test_sqlite_store_persists_and_isolates_namespaces(tmp_path: Any) -> None:
     assert second_item is not None
     assert second_item.value["content"] == "B"
     assert restarted.list_namespaces(prefix=("enterprise", "v1", "tenant-a")) == [namespace_a, namespace_b]
+
+
+def test_sqlite_store_uses_wal_and_busy_timeout(tmp_path: Any) -> None:
+    store = SQLiteStore(tmp_path / "enterprise-store.sqlite3", busy_timeout_ms=23_456)
+
+    with closing(store._connect()) as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 23_456
+        assert str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+
+
+def test_sqlalchemy_store_persists_and_isolates_namespaces(tmp_path: Any) -> None:
+    url = f"sqlite+pysqlite:///{tmp_path / 'enterprise-store-sa.sqlite3'}"
+    store = SQLAlchemyStore(url)
+    namespace_a = ("enterprise", "v1", "tenant-a", "user-a", "filesystem")
+    namespace_b = ("enterprise", "v1", "tenant-a", "user-b", "filesystem")
+    store.put(namespace_a, "/profile.md", {"content": "A", "kind": "profile"}, index=False)
+    store.put(namespace_b, "/profile.md", {"content": "B", "kind": "profile"}, index=False)
+
+    restarted = SQLAlchemyStore(url)
+    first_item = restarted.get(namespace_a, "/profile.md")
+    assert first_item is not None
+    assert first_item.value["content"] == "A"
+    assert restarted.search(namespace_a, filter={"kind": "profile"})[0].value["content"] == "A"
+    second_item = restarted.get(namespace_b, "/profile.md")
+    assert second_item is not None
+    assert second_item.value["content"] == "B"
+    assert restarted.list_namespaces(prefix=("enterprise", "v1", "tenant-a")) == [namespace_a, namespace_b]
+
+
+def test_langgraph_store_factory_prefers_sqlalchemy_url(tmp_path: Any) -> None:
+    store = build_langgraph_store(
+        sqlalchemy_url=f"sqlite+pysqlite:///{tmp_path / 'factory-store.sqlite3'}",
+        sqlite_path=tmp_path / "fallback.sqlite3",
+    )
+
+    assert isinstance(store, SQLAlchemyStore)
 
 
 def test_employee_memory_tools_use_only_the_authenticated_user_namespace(tmp_path: Any) -> None:

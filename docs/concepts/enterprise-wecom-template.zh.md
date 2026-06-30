@@ -47,12 +47,17 @@ runtime 细节。
 
 | 层级 | 存储 | 用途 |
 | --- | --- | --- |
-| 短期记忆 | SQLite | 最近的 per-session 对话上下文 |
-| 显式长期记忆 | SQLiteStore | 员工明确要求助手长期记住的事实 |
+| 短期记忆 | SQLAlchemy URL；本地 fallback 为 SQLite | 最近的 per-session 对话上下文 |
+| 显式长期记忆 | 员工级 LangGraph Store；可由 SQLAlchemy URL 驱动，本地 fallback 为 SQLite | 员工明确要求助手长期记住的事实 |
 | 语义长期记忆 | ContextSeek + SeekDB | 历史对话的语义召回 |
 
 这三层是刻意分开的。短期记忆服务最近追问；显式长期记忆通过 memory tools 控制；
 语义长期记忆自动检索相关历史上下文，不要求 agent 主动选择某个文件或笔记。
+
+生产环境可以把前两层迁到 PostgreSQL/MySQL：
+`AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` 控制短期记忆，
+`AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` 控制显式长期记忆。语义长期记忆仍由
+ContextSeek 的 backend 配置控制，例如本地 SeekDB 或后续的向量数据库适配器。
 
 ## 隔离选择
 
@@ -72,4 +77,3 @@ git checkout enterprise-wecom-v0.0.4-ga-20260629
 ```
 
 详细冻结记录在 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`。
-

@@ -28,10 +28,16 @@ Fill `.env` with:
   workaround;
 - short-TTL employee identity cache settings, so repeated messages from the
   same resolved employee do not reopen the DM/JDBC path on every turn;
-- short-term memory retention settings;
-- the tenant id, namespace secret, and durable store path;
+- short-term memory retention settings and, for production, an optional
+  `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` pointing at PostgreSQL/MySQL;
+- the tenant id, namespace secret, and durable store path, or
+  `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` for PostgreSQL/MySQL;
 - local ContextSeek SeekDB storage and its first-start embedding-model download;
 - MCP servers in `.agents/mcp.json`.
+
+When you enable PostgreSQL/MySQL memory URLs, install the matching SQLAlchemy
+driver in the deployment environment, for example `psycopg[binary]` for
+`postgresql+psycopg://...` or `pymysql` for `mysql+pymysql://...`.
 
 When running this example from the AgentSeek repository root, keep the root
 `.env` small and point it at this project's dotenv file:
@@ -129,6 +135,11 @@ For MCP, add one server to `.agents/mcp.json`, restart the gateway, then ask:
 - `src/enterprise_wecom_digital_employee/agent.py` exports `build_spec()` for `AGENTSEEK_LANGCHAIN_SPEC`.
 - `src/enterprise_wecom_digital_employee/tools.py` adds a lightweight MCP list/call adapter.
 - `AGENTS.md` and `skills/` carry enterprise identity and office workflow rules.
+- Short-term memory and explicit durable employee memory can both use
+  PostgreSQL/MySQL through SQLAlchemy URLs. If those URLs are empty, the example
+  falls back to the local SQLite files configured by
+  `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH` and
+  `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
 - ContextSeek only stores final conversation turns, not MCP calls or tool output. Retrieved history is marked as untrusted context and injected as a system message. SeekDB is the local vector backend; production storage is chosen through ContextSeek configuration, so it can later move to OceanBase or an adapter for Milvus without changing the employee scope contract.
 - DM JDBC identity lookup can run in a short-lived subprocess or a persistent

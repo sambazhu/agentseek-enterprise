@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from agentseek_enterprise.memory import format_short_term_memory_for_prompt
-from agentseek_enterprise.langgraph_store import SQLiteStore
+from agentseek_enterprise.langgraph_store import build_langgraph_store
 from agentseek_enterprise.long_term_memory import employee_memory_tools
+from agentseek_enterprise.memory import format_short_term_memory_for_prompt
 from agentseek_enterprise.runtime import EnterpriseRuntimeContext, enterprise_filesystem_namespace
 from agentseek_enterprise.static_assets import StaticAgentAssets, load_static_agent_assets
 from agentseek_langchain import messages_spec
@@ -52,7 +52,10 @@ def build_agent() -> Any:
     """Build the local DeepAgents runnable."""
 
     settings = get_settings()
-    store = SQLiteStore(settings.resolved_enterprise_store_path())
+    store = build_langgraph_store(
+        sqlalchemy_url=settings.enterprise_store_sqlalchemy_url,
+        sqlite_path=settings.resolved_enterprise_store_path(),
+    )
     backend = CompositeBackend(
         default=StateBackend(),
         routes={

@@ -82,6 +82,13 @@ or local virtual environments to either remote.
 - LaunchAgent supervision with auto-restart.
 - No SIGBUS with DM sidecar and SeekDB/ONNX in the main gateway process.
 
+Post-GA note: the frozen baseline above used local SQLite files for
+short-term memory and explicit durable memory. Current branch code can move
+those two relational layers to PostgreSQL/MySQL by setting
+`AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
+`AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`. ContextSeek semantic memory remains
+configured separately through its own backend settings.
+
 ## Required Runtime Settings
 
 Keep these settings explicit in the deployment `.env`; do not rely on shell
@@ -154,7 +161,7 @@ After restart, verify these prompts from WeCom:
 Expected: resolves to the employee context, e.g. name, OA account,
 organization path, role, and post.
 
-### B. Short-Term Memory (SQLite)
+### B. Short-Term Memory (SQLite Baseline)
 
 ```text
 帮我记一下，我明天下午去深圳出差
@@ -164,7 +171,7 @@ organization path, role, and post.
 Expected: recalls the recent trip from the short-term conversation memory
 database configured by `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
 
-### C. Explicit Durable Memory (SQLiteStore)
+### C. Explicit Durable Memory (SQLiteStore Baseline)
 
 ```text
 请长期记住：我偏好简洁、分点的回复方式

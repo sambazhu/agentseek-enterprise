@@ -49,14 +49,20 @@ and `scripts/run_gateway.sh`.
 
 | Layer | Storage | Purpose |
 | --- | --- | --- |
-| Short-term memory | SQLite | Recent per-session conversation context |
-| Explicit durable memory | SQLiteStore | Facts the employee explicitly asks the assistant to remember |
+| Short-term memory | SQLAlchemy URL; SQLite fallback for local development | Recent per-session conversation context |
+| Explicit durable memory | Employee-scoped LangGraph Store; SQLAlchemy URL optional, SQLite fallback local | Facts the employee explicitly asks the assistant to remember |
 | Semantic memory | ContextSeek + SeekDB | Semantic recall of historical conversation turns |
 
 These layers are intentionally separate. Short-term memory helps with recent
 follow-ups. Explicit durable memory is controlled through memory tools.
 Semantic memory retrieves relevant historical context without requiring the
 agent to choose a specific file or note.
+
+Production deployments can move the first two layers to PostgreSQL/MySQL:
+`AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` controls short-term memory, and
+`AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` controls explicit durable memory.
+Semantic memory remains controlled by ContextSeek backend settings, such as
+local SeekDB or a future vector database adapter.
 
 ## Isolation Choices
 
@@ -78,4 +84,3 @@ git checkout enterprise-wecom-v0.0.4-ga-20260629
 
 The detailed freeze record lives in
 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`.
-

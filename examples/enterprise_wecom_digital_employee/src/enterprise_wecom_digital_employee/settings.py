@@ -57,6 +57,13 @@ class ProjectSettings(BaseSettings):
         default="./runtime/enterprise-long-term-store.sqlite3",
         validation_alias=AliasChoices("AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH"),
     )
+    enterprise_store_sqlalchemy_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL",
+            "AGENTSEEK_ENTERPRISE_LONG_TERM_MEMORY_SQLALCHEMY_URL",
+        ),
+    )
 
     def require_model(self) -> str:
         model = self.model.strip()

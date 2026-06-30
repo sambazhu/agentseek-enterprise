@@ -60,8 +60,8 @@ sources:
 | 通道 | 通过 `agentseek-wecom` 接入企业微信智能机器人回调 |
 | 身份 | 通过 `agentseek-enterprise` 注入员工身份上下文 |
 | 业务工具 | 从 `.agents/mcp.json` 加载 MCP servers |
-| 短期记忆 | 按 session 隔离的 SQLite 记忆 |
-| 显式长期记忆 | 员工级 SQLiteStore memory tools |
+| 短期记忆 | 按 session 隔离的 SQLAlchemy 记忆，SQLite fallback |
+| 显式长期记忆 | 员工级 LangGraph Store memory tools，支持 SQLAlchemy 或 SQLite fallback |
 | 语义记忆 | 默认使用 ContextSeek + SeekDB |
 | 生产检查 | 生成项目中的 `scripts/prod_check.py --env-file .env` |
 

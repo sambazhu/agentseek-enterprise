@@ -15,7 +15,7 @@ from agentseek_enterprise.identity import DmStaffIdentityProvider, EmployeeConte
 from agentseek_enterprise.memory import (
     SHORT_TERM_MEMORY_STATE_KEY,
     ShortTermMemorySettings,
-    SQLiteShortTermMemoryStore,
+    build_short_term_memory_store,
     format_short_term_memory_for_prompt,
     short_term_memory_enabled_from_env,
     short_term_memory_state,
@@ -289,7 +289,7 @@ class EnterprisePlugin:
             settings = ShortTermMemorySettings.from_env()
             if not settings.enabled:
                 return None
-            self._memory_store = SQLiteShortTermMemoryStore(settings)
+            self._memory_store = build_short_term_memory_store(settings)
         except Exception as exc:
             logger.warning("Short-term memory store initialization failed: {}", exc)
             self._memory_store = None
