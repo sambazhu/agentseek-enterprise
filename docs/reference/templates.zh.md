@@ -3,10 +3,12 @@ title: 模板
 type: reference
 audience: [A1, A2]
 runs: no
-verified_on: 2026-06-26
+verified_on: 2026-06-30
 sources:
   - templates/index.json
   - src/agentseek/cli/commands/create.py
+  - templates/deepagents/enterprise-wecom/README.md
+  - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
 ---
 
 # 模板
@@ -48,3 +50,29 @@ sources:
 | `agentseek create bub/default` | 使用指定模板。 |
 | `agentseek create bub --template default` | 使用 `bub/default`。 |
 | `agentseek create --template` | 列出模板的兼容入口。新脚本优先使用 `--list-templates`。 |
+
+## 企业微信模板
+
+| 字段 | 值 |
+| --- | --- |
+| 模板 | `deepagents/enterprise-wecom` |
+| Runtime | DeepAgents，经由 `agentseek-langchain` 和 `bub gateway` 运行 |
+| 通道 | 通过 `agentseek-wecom` 接入企业微信智能机器人回调 |
+| 身份 | 通过 `agentseek-enterprise` 注入员工身份上下文 |
+| 业务工具 | 从 `.agents/mcp.json` 加载 MCP servers |
+| 短期记忆 | 按 session 隔离的 SQLite 记忆 |
+| 显式长期记忆 | 员工级 SQLiteStore memory tools |
+| 语义记忆 | 默认使用 ContextSeek + SeekDB |
+| 生产检查 | 生成项目中的 `scripts/prod_check.py --env-file .env` |
+
+创建形式：
+
+```bash
+agentseek create deepagents/enterprise-wecom
+```
+
+生成项目包含 `.agentseek/lifecycle.toml`、`scripts/run_gateway.sh`、
+`scripts/bub_gateway.py`、`scripts/prod_check.py`、macOS LaunchAgent 模板，
+以及用于放置 DM JDBC driver 的 `vendor/dameng/` 目录。
+
+Runtime 和记忆分层设计见[企业微信模板](../concepts/enterprise-wecom-template.md)。

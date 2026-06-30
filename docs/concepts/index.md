@@ -15,3 +15,4 @@ Use these pages to understand the design behind the workflow.
 | Page | Question |
 | --- | --- |
 | [Lifecycle Toolkit](lifecycle-toolkit.md) | Why is AgentSeek organized around lifecycle commands? |
+| [Enterprise WeCom Template](enterprise-wecom-template.md) | How is the enterprise WeCom digital employee template structured? |

@@ -15,3 +15,4 @@ sources:
 | 页面 | 问题 |
 | --- | --- |
 | [生命周期工具包](lifecycle-toolkit.md) | 为什么 AgentSeek 围绕生命周期命令组织？ |
+| [企业微信模板](enterprise-wecom-template.md) | 企业微信数字员工模板是如何组织的？ |

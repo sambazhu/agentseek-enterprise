@@ -3,10 +3,12 @@ title: Templates
 type: reference
 audience: [A1, A2]
 runs: no
-verified_on: 2026-06-23
+verified_on: 2026-06-30
 sources:
   - templates/index.json
   - src/agentseek/cli/commands/create.py
+  - templates/deepagents/enterprise-wecom/README.md
+  - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
 ---
 
 # Templates
@@ -48,3 +50,30 @@ sources:
 | `agentseek create bub/default` | Use the specific template. |
 | `agentseek create bub --template default` | Use `bub/default`. |
 | `agentseek create --template` | Compatibility entry point that lists templates. Prefer `--list-templates` in new scripts. |
+
+## Enterprise WeCom Template
+
+| Field | Value |
+| --- | --- |
+| Template | `deepagents/enterprise-wecom` |
+| Runtime | DeepAgents through `agentseek-langchain` and `bub gateway` |
+| Channel | WeCom intelligent robot callback through `agentseek-wecom` |
+| Identity | Enterprise employee context through `agentseek-enterprise` |
+| Business tools | MCP servers from `.agents/mcp.json` |
+| Short-term memory | Per-session SQLite memory |
+| Explicit durable memory | Employee-scoped SQLiteStore memory tools |
+| Semantic memory | ContextSeek with SeekDB by default |
+| Production check | `scripts/prod_check.py --env-file .env` in the generated project |
+
+Create form:
+
+```bash
+agentseek create deepagents/enterprise-wecom
+```
+
+The generated project includes `.agentseek/lifecycle.toml`, `scripts/run_gateway.sh`,
+`scripts/bub_gateway.py`, `scripts/prod_check.py`, a macOS LaunchAgent template,
+and a `vendor/dameng/` directory for the DM JDBC driver.
+
+See [Enterprise WeCom Template](../concepts/enterprise-wecom-template.md) for
+the runtime and memory-layer design.

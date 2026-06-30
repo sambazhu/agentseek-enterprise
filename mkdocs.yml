@@ -21,9 +21,10 @@ nav:
       - CLI: reference/cli.md
       - Lifecycle Spec: reference/lifecycle-spec.md
       - Templates: reference/templates.md
-  - Concepts:
-      - Overview: concepts/index.md
-      - Lifecycle Toolkit: concepts/lifecycle-toolkit.md
+      - Concepts:
+          - Overview: concepts/index.md
+          - Lifecycle Toolkit: concepts/lifecycle-toolkit.md
+          - Enterprise WeCom Template: concepts/enterprise-wecom-template.md
 
 theme:
   name: terminal
@@ -61,6 +62,7 @@ plugins:
             - 概念:
                 - 概览: concepts/index.md
                 - 生命周期工具包: concepts/lifecycle-toolkit.md
+                - 企业微信模板: concepts/enterprise-wecom-template.md
 
 markdown_extensions:
   - toc:
