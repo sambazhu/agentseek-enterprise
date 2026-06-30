@@ -859,3 +859,29 @@ The branch adds a local MCP policy layer before the generated
 Local tests cover policy evaluation, policy-file/env merging, confirmation
 messages, and audit redaction. Live WeCom validation is still required before
 this branch can become the next GA baseline.
+
+### MCP policy + audit verification (2026-06-30, enterprise/wecom-mcp-policy-audit)
+
+Branch `enterprise/wecom-mcp-policy-audit` (commit `f2130a0`). Verified MCP
+policy enforcement + audit logging on Mac mini with PostgreSQL + 5 MCP servers.
+
+**A. No regression**: A-E smoke test all PASS (identity, short-term, explicit
+long-term with no 出差 mixed in, seekdb semantic, MCP list).
+
+**B. Risk/policy labels**: MCP tools evaluated with `risk=read` (gildata,
+default allow) or `risk=write` (tavily, configured via
+`AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=tavily-search/*`).
+
+**C. Write tool confirmation**: `tavily_search` first call →
+`confirmation_required` (tool NOT executed, model asked user "是否确认执行？").
+Gildata read tools executed normally (`succeeded, risk=read`).
+
+**D. Confirmed execution**: After user confirmed, `tavily_search` called with
+`confirmed=True` → `succeeded, risk=write, confirmed=True` (tool executed).
+
+**E. Audit log** (`runtime/mcp-audit.jsonl`): all event types present —
+`succeeded` (read + write), `confirmation_required`. Sensitive fields
+(token/password/secret/api.key) redacted — none found in audit entries.
+
+**F. Health**: 0 SIGBUS, 0 SQLAlchemy errors, 2 msgid dedup (normal), gateway
+stable throughout.
