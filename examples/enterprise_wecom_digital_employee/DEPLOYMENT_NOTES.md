@@ -526,6 +526,38 @@ cd agentseek-enterprise
 git checkout enterprise-wecom-v0.0.4-ga-20260629
 ```
 
+### Memory SQLAlchemy store migration — VERIFIED (2026-06-30, branch enterprise/memory-sqlalchemy-store)
+
+Branch `enterprise/memory-sqlalchemy-store` (based on v0.0.4 GA `88ebf79`,
+adds commit `d1b3614`). Verified the migration of short-term + explicit
+long-term memory from SQLite fallback to SQLAlchemy URL on the Mac mini.
+
+**Part A — code-level tests**: enterprise 36 passed, template render 25 passed,
+docs-test mkdocs build OK.
+
+**Part B — SQLite fallback (no SA URLs set)**: A-E smoke test all PASS —
+identity, short-term, explicit long-term (SQLiteStore), seekdb semantic,
+MCP. No regression from the v0.0.4 GA baseline.
+
+**Part C — SQLAlchemy path (SA SQLite URLs)**:
+```
+AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL=sqlite+pysqlite:///./runtime/enterprise-short-term-memory-sa.sqlite3
+AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL=sqlite+pysqlite:///./runtime/enterprise-long-term-store-sa.sqlite3
+```
+7-step smoke test all PASS:
+
+| Step | Result |
+|------|--------|
+| 1. Identity | ✅ 朱春霖 |
+| 2-3. Short-term store+recall | ✅ |
+| 4-5. Explicit long-term store+recall (SA) | ✅ |
+| 6. **Restart → persistence** | ✅ SA store recalled across restart |
+| 7. MCP tools | ✅ 4 services |
+
+SA SQLite files confirmed created (`runtime/*-sa.sqlite3`). 0 SIGBUS, 0
+SQLAlchemy init errors, 0 WeCom duplicate turns. seekdb semantic memory
+unaffected (ContextSeek uses its own SeekDB, not the enterprise SA store).
+
 ## The DM connection root cause + fix (the big one)
 
 **Symptom:** the DM JDBC bridge (`jaydebeapi` + JPype + `DmJdbcDriver`) could
