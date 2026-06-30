@@ -783,3 +783,25 @@ generation >5 s, triggering WeCom retries).
   diagnostic, reducing normal gateway log noise.
 - The `.env` files are gitignored (secrets); copy the working `.env` to the Mac
   Pro manually if you want the same config.
+
+### Memory prompt fix + PostgreSQL verification (2026-06-30, 0cfeaf7)
+
+Pulled `0cfeaf7 Tighten enterprise memory layer prompts` (short-term memory
+boundary, "三层记忆不要混答" system prompt, `[DurableEmployeeMemory]` label).
+Verified on Mac mini with **PostgreSQL 17** (`postgresql+psycopg://localhost/agentseek`):
+
+Targeted 4-message test:
+
+| Step | Reply | Result |
+|------|-------|--------|
+| 1. `帮我记一下…出差` | "已长期记住：出差" | ✅ store |
+| 2. `我刚才说我要去哪里？` | "出差" | ✅ short-term recall |
+| 3. `请长期记住：偏好简洁分点` | "已长期记住：偏好" | ✅ long-term store |
+| 4. `你记得我的回复偏好吗？` | "记得你的长期偏好：简洁/分点" | ✅ **NO 出差 mixed in** |
+
+Before the fix, step 4's reply included "明天去出差" (short-term memory
+leaked into the long-term preference answer). After the fix, step 4 ONLY
+answers the preference — the three-layer memory boundary works.
+
+PostgreSQL path confirmed: 0 SIGBUS, 0 SQLAlchemy init errors, 0 duplicate
+turns. psycopg driver, agentseek database, brew services all OK.
