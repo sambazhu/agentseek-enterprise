@@ -1145,3 +1145,89 @@ previous MCP policy behavior at the user's request. The rollback is a normal
 revert commit on top of the verification record, so Mac mini can pull the branch
 without rewriting history and re-run validation against the pre-hardening
 behavior.
+
+### Revert `f03e983` — VERIFIED + gateway restarted on reverted code (2026-07-01, commit 68d7b25)
+
+`git fetch origin` + `git pull --ff-only origin enterprise/wecom-mcp-policy-audit`
+→ `8c73a6d..68d7b25`, `git rev-parse --short HEAD` → **`68d7b25`** (matches
+target). Branch history is `f03e983` (hardening) → `8c73a6d` (verification
+record) → `68d7b25` (this revert); the ff-only pull advanced HEAD by exactly
+the revert commit.
+
+**Code revert confirmed.** `git show 68d7b25 --stat` reverts the 21 files
+f03e983 touched. After pull:
+- `MCPConfirmationGuard`, `confirmation_state_enabled`, `require_or_consume` →
+  **no matches** in `contrib/agentseek-enterprise/src/` or the example src. The
+  session-backed guard is fully removed.
+- The three env vars (`AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED` /
+  `_TTL_SECONDS` / `_MAX_PENDING`) → **removed** from both `.env.example` files.
+- `call_mcp_tool` signature returned to `(server_name, tool_name, arguments,
+  confirmed=False)` — no `ToolRuntime` param — and the body once again calls
+  `policy.evaluate(server_name, tool_name, confirmed=confirmed)` directly, with
+  no preflight, no `effective_confirmed`, no pending-state lookup.
+- `test_mcp_policy.py` shrank from 13 → **8 tests** (the 5 guard tests removed).
+
+**Reverted unit suite**: `uv run --offline pytest
+contrib/agentseek-enterprise/tests/test_mcp_policy.py -v` → **8 passed, 0.24s**.
+No regression in policy evaluation, allowlist/denylist, confirmation-for-write,
+audit redaction, or policy-file/env merging.
+
+**Reverted production behavior** — drove the production `call_mcp_tool` against a
+real local stdio MCP server with `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
+verify/search` (a locally confirm-listed tool, per the task). Harness:
+`/private/tmp/mcp_verify/run_revert_verify.py`. **6/6 PASS**:
+
+| Check | Expected (reverted) | Observed |
+|-------|---------------------|----------|
+| setup | guard absent, `confirmation_state_enabled` attr gone | ✅ both absent |
+| basic | `list_mcp_tools` connects, lists `verify/search` | ✅ |
+| **R1** first `confirmed=true` on a confirm-listed tool | **executes directly** (the previously-problematic scenario, recovered) | ✅ `RESULTS for 'alpha'`; audit `succeeded confirmed=True` |
+| R2 `confirmed=false` | still `confirmation_required` (policy still gates) | ✅ no execution; audit `confirmation_required confirmed=False` |
+| R3 `confirmed=true` with fresh args | executes, no pending-state dependency | ✅ `RESULTS for 'gamma'` |
+
+The audit tail confirms the restored stateless semantics — policy judges purely
+by the `confirmed` argument:
+```
+succeeded              confirmed=True   args={'query':'alpha'}    # R1 — first confirmed=true executes (was blocked under f03e983)
+confirmation_required  confirmed=False  args={'query':'beta'}     # R2 — confirmed=false gated
+succeeded              confirmed=True   args={'query':'gamma'}    # R3 — fresh args, executes immediately
+```
+This is the pre-`f03e983` behavior restored: the model's `confirmed=true` is
+again honored on the first attempt, and there is no session/tool/argument
+pending store.
+
+**Gateway restarted on the reverted code.** The previously-running gateway (pid
+12844, started 18:16) still held `f03e983` in memory, so reverting the repo did
+not change the live process. Per the user's instruction, it was restarted:
+SIGTERM'd the `uv run` parent (12837) + gateway (12844); the DM sidecar child
+(13267) exited with its parent; port `:12000` freed. Relaunched via
+`bash examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh` (the
+canonical launcher; matches the prior command exactly). New gateway pid **21413**
+(parent uv-run 21407). Boot log is clean (8 lines, no errors/traceback/SIGBUS):
+
+```
+INFO:  Started server process [21413]
+INFO:  Application startup complete.
+INFO:  Uvicorn running on http://0.0.0.0:12000
+INFO:  schedule.start complete
+INFO:  channel.manager started listening      (wecom + mcp.lifecycle + skills.lifecycle up)
+Tavily MCP server running on stdio            (MCP child spawned)
+```
+
+`:12000` is LISTENING again. FlClash was OFF at restart time (healthy network
+conditions — DM/WeCom egress direct), so the gateway came back without the
+DM/WeCom-API connectivity failures documented elsewhere in these notes.
+
+**Basic chain.** The revert's diff touches only MCP-confirmation code
+(`mcp_policy.py`, `tools.py`, both `.env.example`, docs, tests) — identity,
+short-term memory, explicit long-term store, and seekdb are byte-for-byte the
+`v0.0.6-rc1` verified state, so no regression is possible from this revert in
+those subsystems. The restarted gateway boots cleanly with all channels and the
+MCP child (so `列一下当前可用的 MCP 工具` remains functional). A live WeCom
+identity/short-term/seekdb turn was not separately driven (it needs a signed
+WeCom callback), but is unaffected by the revert's scope.
+
+**Net state.** HEAD = `68d7b25`; the live gateway is now serving the reverted
+(stateless, `confirmed`-parameter-driven) MCP policy; the previously-problematic
+scenario (model passing `confirmed=true` on the first attempt to a confirm-listed
+tool) executes directly again, as it did before `f03e983`.
