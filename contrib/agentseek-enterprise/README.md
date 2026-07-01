@@ -127,6 +127,9 @@ AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
 AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request
 AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
 AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED=true
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS=600
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING=2048
 AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED=true
 AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
 ```
@@ -134,8 +137,11 @@ AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
 Tool patterns accept `server/tool`, `server:tool`, or wildcards such as
 `gildata_datamap-*/*`. Read/query tools are allowed by default. Tools classified
 as write, risky, or confirmation-required return a confirmation-required result
-until the adapter calls them again with `confirmed=true`. Audit JSONL records
-the action, tool reference, risk, policy reason, and redacted arguments.
+until the adapter calls them again with `confirmed=true`. `confirmed=true` is
+treated only as a model request: the template adapter also requires a matching
+pending confirmation for the same session, tool, and arguments, plus a latest
+user message that clearly confirms the action. Audit JSONL records the action,
+tool reference, risk, policy reason, and redacted arguments.
 
 MCP policy is evaluated locally before the template adapter opens the remote MCP
 client. The policy result has two dimensions:
@@ -154,6 +160,10 @@ The evaluation order is:
 5. `AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS` marks matching tools as `write`.
 6. `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS`, `write`, and `risky` tools require
    confirmation when `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true`.
+7. If `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED=true`, the adapter
+   ignores model-supplied `confirmed=true` unless it matches a pending
+   confirmation registered in the current session. Pending confirmations expire
+   after `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS`.
 
 The `enterprise-wecom` adapter writes audit events for `denied`,
 `confirmation_required`, `failed`, and `succeeded` outcomes. Each event includes

@@ -93,11 +93,16 @@ audit logging all happen before the remote MCP call.
 
 This creates a two-step flow for state-changing tools:
 
-1. The model asks to call the tool without `confirmed=true`.
+1. The model asks to call the tool without `confirmed=true`. If it mistakenly
+   sends `confirmed=true` on the first attempt, the adapter ignores that flag.
 2. The adapter returns a confirmation-required result and writes an audit event.
+   It also registers a pending confirmation scoped to the current session, tool,
+   and arguments.
 3. The model summarizes the intended action and key arguments to the employee.
 4. The employee confirms.
-5. The model calls the same tool again with `confirmed=true`.
+5. The model calls the same tool again with `confirmed=true`. The adapter only
+   executes it when the pending confirmation still exists and the latest user
+   message is a clear confirmation.
 
 Audit logs are intended for operational review and incident reconstruction. They
 record the tool reference, risk, decision, confirmation flag, reason, and

@@ -89,6 +89,9 @@ agentseek create deepagents/enterprise-wecom
 | `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS` | 空 | 标记为高风险操作的工具模式列表。 |
 | `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS` | 空 | 即使是 `read` 也要求确认的工具模式列表。 |
 | `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | 对 `write`、`risky` 和 confirm-listed 工具要求显式确认。 |
+| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED` | `true` | 要求模型传入的 `confirmed=true` 必须命中同一 session 的待确认记录。 |
+| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS` | `600` | MCP 待确认记录的有效时间窗口。 |
+| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING` | `2048` | gateway 进程内最多保留的待确认记录数量。 |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | 将 MCP 决策事件写入 JSONL。 |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | 审计 JSONL 路径；相对路径基于项目根目录。 |
 

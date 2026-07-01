@@ -1130,3 +1130,53 @@ regardless of who set `confirmed=True`.
 **Impact on GA**: Does not block GA. The policy, audit, and stream delivery
 all work correctly. The inconsistency is in model behavior, not system
 behavior. Codex to decide the fix approach.
+
+### MCP confirmation state hardening (Codex fix, pending Mac mini verification)
+
+Codex selected the runtime-side fix instead of relying on prompt-only behavior.
+The adapter now treats the model-provided `confirmed` argument as an intent
+signal, not as proof of employee approval.
+
+Implemented behavior:
+
+- First call to a `write`, `risky`, or confirm-listed tool always produces
+  `confirmation_required`, even if the model incorrectly sends
+  `confirmed=true`.
+- The adapter registers a pending confirmation scoped by session, tool, and
+  normalized argument digest.
+- A later `confirmed=true` call is allowed only when:
+  - a matching pending confirmation exists;
+  - the pending entry has not expired;
+  - the latest user message is a clear confirmation, such as `确认`, `同意`,
+    `可以`, `执行`, `ok`, or `proceed`.
+- Cross-session and cross-argument confirmation reuse is blocked.
+- Audit entries record the effective confirmation result, so a model-forged
+  `confirmed=true` first attempt is logged as `confirmation_required` with
+  `confirmed=false`.
+
+New settings:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED=true
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS=600
+AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING=2048
+```
+
+Local verification on Codex machine:
+
+- `uv run pytest contrib/agentseek-enterprise/tests -q` → 49 passed.
+- `call_mcp_tool` LangChain schema exposes only
+  `server_name`, `tool_name`, `arguments`, and `confirmed`; hidden
+  `ToolRuntime` injection is not visible to the model.
+- A no-network adapter probe with a fake MCP client verified:
+  first `confirmed=true` call returns `confirmation_required`; same-turn
+  repeated `confirmed=true` is still blocked because the latest user message is
+  not confirmation; a later `确认` message with the same tool and arguments
+  succeeds and audits `succeeded confirmed=true`.
+
+Mac mini live WeCom verification still required on
+`enterprise/wecom-mcp-policy-audit`: repeat the direct risky/write request that
+previously let the model pass `confirmed=true` on the first attempt. Expected:
+first turn returns confirmation-required, user sends `确认`, second matching
+tool call succeeds and audit shows `confirmation_required confirmed=false`
+followed by `succeeded confirmed=true`.

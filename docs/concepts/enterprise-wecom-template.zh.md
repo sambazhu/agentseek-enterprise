@@ -84,11 +84,14 @@ runtime 不把业务授权规则交给模型自由判断，而是在远端 MCP �
 
 对会改变企业状态的工具，交互是两步：
 
-1. 模型先以 `confirmed=false` 请求调用工具。
-2. adapter 返回 confirmation-required，并写入审计事件。
+1. 模型先以 `confirmed=false` 请求调用工具；如果模型第一次误传
+   `confirmed=true`，adapter 会忽略这个标记。
+2. adapter 返回 confirmation-required，并写入审计事件，同时登记一条按当前
+   session、工具和参数隔离的待确认记录。
 3. 模型把要执行的业务动作和关键参数复述给员工。
 4. 员工明确确认。
-5. 模型用同一个工具和参数再次调用，并传入 `confirmed=true`。
+5. 模型用同一个工具和参数再次调用，并传入 `confirmed=true`。只有待确认记录仍然
+   有效，且最新用户消息是明确确认时，adapter 才会真正调用远端 MCP。
 
 审计日志用于运维复核和问题追溯。它记录 tool reference、risk、decision、confirmed、
 reason 和脱敏后的 arguments。它不是下游业务系统日志，也不能替代正式审批流。
