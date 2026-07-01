@@ -1010,3 +1010,32 @@ Local verification:
 Mac mini live verification still required: repeat the confirmed `tavily_search`
 flow and confirm the user sees the placeholder quickly, then receives the final
 international-news reply through stream polling instead of the WeCom fallback.
+
+### WeCom stream placeholder fix — VERIFIED (2026-07-01, commit 0488ede)
+
+Codex's fix (`0488ede Return WeCom stream placeholder before slow turns finish`):
+WeCom channel now creates a stream + schedules the agent turn in the
+background, returning a placeholder ("已收到，正在处理...") immediately so
+WeCom's stream polling stays alive during long tool calls.
+
+**Full end-to-end test** (confirmed tavily weather search):
+
+| Step | Message | Result |
+|------|---------|--------|
+| 1 | `搜索一下今天天气预报` | Reply delivered ✅ (model asked which city) |
+| 2 | `深圳` | Reply delivered ✅ (model asked to confirm tavily_search) |
+| 3 | `确认` | tavily_search executed (confirmed=True, succeeded) ✅ |
+| 3b | (stream polling) | Weather reply delivered to WeCom ✅ (no timeout!) |
+
+Audit entry #5: `succeeded, risk=risky, confirmed=True, tavily-search/tavily_search`
+
+**Comparison with pre-fix** (same tavily confirmed call):
+- Before: reply generated in 39s, but WeCom stream expired → "抱歉" fallback
+- After: reply generated + delivered via stream polling → user sees weather results
+
+**Note**: A separate DashScope `data_inspection_failed` (400) error occurred
+when tavily returned AI tech news results — the model API's content moderation
+blocked the output. This is a model API issue, NOT a gateway/policy/stream issue.
+Weather search results did not trigger content moderation and delivered successfully.
+
+**Health**: 0 SIGBUS, 0 stream timeouts, gateway stable.
