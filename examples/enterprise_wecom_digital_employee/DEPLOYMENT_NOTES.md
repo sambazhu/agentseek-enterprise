@@ -940,3 +940,50 @@ Gildata read tools executed normally (`succeeded, risk=read`).
 
 **F. Health**: 0 SIGBUS, 0 SQLAlchemy errors, 2 msgid dedup (normal), gateway
 stable throughout.
+
+### WeCom stream timeout on confirmed MCP tool calls (2026-07-01, known issue)
+
+**Symptom**: After user confirms a risky/write tool call (sends "确认"), the
+gateway executes the tool + generates a reply, but the WeCom client shows
+"抱歉，我暂时无法回答你的问题，请稍后再试" (fallback). The reply is in the
+gateway log but never delivered to WeCom.
+
+**Detailed timeline** (Round 2 confirmed tavily_search, 2026-07-01):
+
+```
+09:41:50  tavily_search executed (confirmed=True, risk=risky)
+          audit: succeeded, returned 10 results (BBC, CNN, etc.)
+09:42:29  model generated reply: "朱春霖，今日（7/1）国际新闻要点如下：..."
+          (only 39 seconds after tool call — model is NOT slow)
+09:47:13  WeCom started stream polls (321 polls, 1/sec) — 5 min AFTER reply
+09:47:22  polls stopped (stream expired)
+```
+
+**Root cause**: The WeCom stream response has a timeout (~15-30s from the
+original "确认" message). The full chain — model calls tavily_search (network
+API call) → tavily returns 10 results (`max_results=10, search_depth=advanced`)
+→ model processes results → model generates reply — exceeds the stream timeout
+window. By the time the reply is written to the stream (09:42:29), the stream
+has already expired. WeCom's later retries (09:47:13, 321 polls) find no new
+reply for the expired stream.
+
+**Key finding**: The tool call + policy + model are all correct:
+- `confirmation_required` → `succeeded (confirmed=True)` ✅
+- Tool returned real search results ✅
+- Model generated reply in 39 seconds ✅
+- Only the WeCom stream delivery failed ❌
+
+**Impact**: Any confirmed tool call that involves a network API call (tavily,
+agent-platform) + result processing will likely hit this timeout, because the
+total chain (confirm → tool → process → reply) exceeds WeCom's stream window.
+
+**Possible fixes for Codex**:
+1. **Pre-write a "processing" placeholder** to the stream before the tool call,
+   so WeCom sees activity and doesn't timeout.
+2. **Stream the model's output** (chunked) instead of writing the full reply
+   at the end.
+3. **Reduce tavily search params** (`max_results=3, search_depth=basic`) to
+   shorten processing — but this is a workaround, not a fix.
+4. **Async delivery**: execute the confirmed tool asynchronously, deliver the
+   result as a new WeCom message (not via the original stream).
+5. **Increase stream timeout** if the WeCom channel has a configurable timeout.
