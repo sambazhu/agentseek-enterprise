@@ -1039,3 +1039,20 @@ blocked the output. This is a model API issue, NOT a gateway/policy/stream issue
 Weather search results did not trigger content moderation and delivered successfully.
 
 **Health**: 0 SIGBUS, 0 stream timeouts, gateway stable.
+
+### v0.0.6 RC1 smoke test (2026-07-01, enterprise-wecom-v0.0.6-rc1)
+
+RC1 tag `enterprise-wecom-v0.0.6-rc1` at `b0763ce`. Quick 5-item smoke test:
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | `我是谁` → identity (朱春霖 + OA + org + 岗位) | ✅ |
+| 2 | `帮我记一下…深圳出差` → `我刚才说我要去哪里？` → recalled | ✅ |
+| 3 | `请长期记住：偏好简洁分点` → `你记得我的回复偏好吗？` → recalled | ✅ |
+| 4 | `列一下当前可用的 MCP 工具` → 5 services listed | ✅ |
+| 5 | `搜索深圳今天天气` → model asked "确认后立即执行" → user "确认" → tavily_search executed (confirmed=True) → weather results delivered via stream | ✅ |
+
+Audit log: `confirmation_required (confirmed=False)` → `succeeded (confirmed=True)` —
+full confirmation flow works. 0 SIGBUS, 0 stream timeouts, 0 content moderation errors.
+
+**enterprise-wecom-v0.0.6-rc1 is ready for GA tagging.**
