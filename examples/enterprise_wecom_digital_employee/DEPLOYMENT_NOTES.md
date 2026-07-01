@@ -1056,3 +1056,77 @@ Audit log: `confirmation_required (confirmed=False)` → `succeeded (confirmed=T
 full confirmation flow works. 0 SIGBUS, 0 stream timeouts, 0 content moderation errors.
 
 **enterprise-wecom-v0.0.6-rc1 is ready for GA tagging.**
+
+### MCP policy confirmed parameter behavior analysis (2026-07-01)
+
+**User question**: Why does the model sometimes ask for confirmation before
+calling risky/write tools, and sometimes skip confirmation and call with
+`confirmed=true` directly? Is there a time-window mechanism?
+
+**Answer**: No time-window mechanism. The policy (`mcp_policy.py`) is completely
+stateless — each `evaluate()` call is evaluated independently based only on the
+`confirmed` boolean parameter passed by the model's tool call.
+
+**Policy code** (`mcp_policy.py` `evaluate()` method, lines 98-121):
+
+```python
+def evaluate(self, server_name, tool_name, *, confirmed=False):
+    # ... deny/allowlist checks ...
+    risk = self.risk_for(server_name, tool_name)  # read/write/risky
+    needs_confirmation = tool in confirm_tools OR (require_confirmation AND risk in {"write","risky"})
+    if needs_confirmation and not confirmed:
+        return "confirm"  # confirmation_required
+    return "allow"        # succeeded
+```
+
+**No state**: no cache, no TTL, no session memory, no "remember previous
+confirmation". Each call is evaluated independently.
+
+**The `confirmed` parameter is controlled by the model**: `call_mcp_tool` in
+`tools.py` has a `confirmed` boolean (default `False`). The model decides what
+to pass. If the model passes `confirmed=True`, the policy allows it immediately
+(no confirmation_required). If the model passes `confirmed=False`, the policy
+returns `confirmation_required`, and the model should then ask the user to
+confirm, then call again with `confirmed=True`.
+
+**Two-round comparison** (RC1 smoke test, 2026-07-01):
+
+| Round | What the model did | Policy result | User asked? |
+|-------|---------------------|--------------|-------------|
+| Round 1 (item 5) | Model called `call_mcp_tool(confirmed=True)` directly | `succeeded` (policy allowed because confirmed=True) | ❌ No |
+| Round 2 (retest) | Model called `call_mcp_tool(confirmed=False)` → got `confirmation_required` → model asked user "确认后我立即执行" → user said "确认" → model called `call_mcp_tool(confirmed=True)` | `confirmation_required` → `succeeded` | ✅ Yes |
+
+**Root cause**: LLM behavior non-determinism. The model sometimes follows the
+correct flow (confirmed=False first → ask user → confirmed=True after user
+confirms), and sometimes skips the "ask user" step (directly confirmed=True).
+This is a model prompt issue, not a system/gateway/policy bug.
+
+**Policy is correct**: `confirmed=False` → `confirmation_required` (blocked) ✅;
+`confirmed=True` → `succeeded` (allowed) ✅. The policy evaluates correctly
+regardless of who set `confirmed=True`.
+
+**Possible fixes for Codex to consider**:
+
+1. **Prompt-level fix**: Add a system prompt / tool description constraint:
+   "When calling risky/write tools, always call with confirmed=false first. If
+   the tool returns confirmation_required, ask the user to confirm, wait for
+   their response, then call again with confirmed=true. Never set
+   confirmed=true yourself without a user's prior confirmation."
+
+2. **Gateway-level fix (more reliable)**: On the first call to a risky/write
+   tool in a turn, the gateway could **ignore the model's `confirmed=true` and
+   force `confirmed=false`** for the first attempt, guaranteeing
+   `confirmation_required` fires. The user then confirms, and the second call
+   with `confirmed=true` is allowed. This removes the model's ability to skip
+   confirmation.
+
+3. **Session-level confirmation cache (user's hypothesis, currently non-existent)**:
+   Implement a time-limited confirmation cache: once a tool is confirmed by
+   the user, subsequent calls to the same tool within N seconds don't need
+   re-confirmation. This would make the "first round skips confirmation"
+   behavior a feature (if the user confirmed the same tool recently). But this
+   requires new code — it does not exist today.
+
+**Impact on GA**: Does not block GA. The policy, audit, and stream delivery
+all work correctly. The inconsistency is in model behavior, not system
+behavior. Codex to decide the fix approach.
