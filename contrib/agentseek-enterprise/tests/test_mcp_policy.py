@@ -5,10 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from agentseek_enterprise.mcp_policy import (
-    MCPConfirmationGuard,
     MCPPolicy,
     MCPPolicySettings,
-    arguments_digest,
     confirmation_required_message,
     normalize_tool_ref,
     redact_value,
@@ -17,10 +15,6 @@ from agentseek_enterprise.mcp_policy import (
 
 def test_normalize_tool_ref() -> None:
     assert normalize_tool_ref(" office ", " book_room ") == "office/book_room"
-
-
-def test_arguments_digest_is_order_insensitive() -> None:
-    assert arguments_digest({"a": 1, "b": 2}) == arguments_digest({"b": 2, "a": 1})
 
 
 def test_policy_defaults_allow_read_tools() -> None:
@@ -67,125 +61,6 @@ def test_policy_requires_confirmation_for_explicit_confirm_tools() -> None:
     assert confirmed.action == "allow"
 
 
-def test_confirmation_guard_blocks_model_supplied_confirmed_without_pending() -> None:
-    guard = MCPConfirmationGuard()
-
-    status = guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=True,
-        user_confirmed=True,
-    )
-
-    assert not status.confirmed
-    assert "no pending employee confirmation" in status.reason
-    assert guard.has_pending(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-    )
-
-
-def test_confirmation_guard_consumes_same_session_tool_and_arguments() -> None:
-    guard = MCPConfirmationGuard()
-    guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=False,
-    )
-
-    wrong_session = guard.require_or_consume(
-        session_id="wecom:bob",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=True,
-        user_confirmed=True,
-    )
-    wrong_args = guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "B201"},
-        requested_confirmed=True,
-        user_confirmed=True,
-    )
-    matched = guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=True,
-        user_confirmed=True,
-    )
-
-    assert not wrong_session.confirmed
-    assert not wrong_args.confirmed
-    assert matched.confirmed
-    assert not guard.has_pending(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-    )
-
-
-def test_confirmation_guard_requires_latest_user_confirmation() -> None:
-    guard = MCPConfirmationGuard()
-    guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=False,
-    )
-
-    status = guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=True,
-        user_confirmed=False,
-    )
-
-    assert not status.confirmed
-    assert "latest user message" in status.reason
-
-
-def test_confirmation_guard_expires_pending_confirmation() -> None:
-    now = 100.0
-
-    def clock() -> float:
-        return now
-
-    guard = MCPConfirmationGuard(ttl_seconds=10, clock=clock)
-    guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=False,
-    )
-    now = 111.0
-
-    status = guard.require_or_consume(
-        session_id="wecom:alice",
-        server_name="office",
-        tool_name="book_room",
-        arguments={"room": "A101"},
-        requested_confirmed=True,
-        user_confirmed=True,
-    )
-
-    assert not status.confirmed
-
-
 def test_policy_file_and_env_values(monkeypatch: Any, tmp_path: Path) -> None:
     policy_path = tmp_path / "mcp-policy.json"
     policy_path.write_text(
@@ -212,7 +87,6 @@ def test_policy_file_and_env_values(monkeypatch: Any, tmp_path: Path) -> None:
 def test_audit_writes_redacted_jsonl(tmp_path: Path) -> None:
     audit_path = tmp_path / "mcp-audit.jsonl"
     policy = MCPPolicy(MCPPolicySettings(audit_log_path=audit_path))
-    redacted_marker = "[REDACTED]"
 
     policy.audit(
         server_name="office",
@@ -227,12 +101,11 @@ def test_audit_writes_redacted_jsonl(tmp_path: Path) -> None:
     event = json.loads(audit_path.read_text(encoding="utf-8"))
     assert event["tool_ref"] == "office/book_room"
     assert event["arguments"]["room"] == "A101"
-    assert event["arguments"]["api_token"] == redacted_marker
+    assert event["arguments"]["api_token"] == "[REDACTED]"
     assert event["result_summary"] == "Booked room A101"
 
 
 def test_redact_value_truncates_and_redacts_nested_values() -> None:
-    redacted_marker = "[REDACTED]"
     redacted = redact_value(
         {
             "outer": {"password": "abc"},
@@ -241,5 +114,5 @@ def test_redact_value_truncates_and_redacts_nested_values() -> None:
         max_chars=8,
     )
 
-    assert redacted["outer"]["password"] == redacted_marker
+    assert redacted["outer"]["password"] == "[REDACTED]"
     assert redacted["long"] == "xxxxx..."

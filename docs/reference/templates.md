@@ -89,9 +89,6 @@ Enterprise WeCom MCP policy settings:
 | `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS` | empty | Comma-separated patterns classified as high-risk tools. |
 | `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS` | empty | Comma-separated patterns that require confirmation even when classified as `read`. |
 | `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | Require explicit confirmation for `write`, `risky`, and confirm-listed tools. |
-| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED` | `true` | Require model-supplied `confirmed=true` to match a pending same-session confirmation. |
-| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS` | `600` | Time window for a pending MCP confirmation. |
-| `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING` | `2048` | Maximum pending confirmation entries kept in the gateway process. |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | Write MCP decision events to JSONL. |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | Audit JSONL path relative to the project root unless absolute. |
 

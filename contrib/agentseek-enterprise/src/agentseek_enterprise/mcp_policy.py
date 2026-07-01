@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import json
 import os
 import shlex
-import threading
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,9 +47,6 @@ class MCPPolicySettings:
     risky_tools: tuple[str, ...] = ()
     confirm_tools: tuple[str, ...] = ()
     require_confirmation: bool = True
-    confirmation_state_enabled: bool = True
-    confirmation_ttl_seconds: int = 600
-    confirmation_max_pending: int = 2048
     audit_enabled: bool = True
     audit_log_path: Path = Path("./runtime/mcp-audit.jsonl")
     max_audit_value_chars: int = 500
@@ -76,36 +70,6 @@ class MCPPolicySettings:
             ),
             "require_confirmation": _truthy(
                 _get("require_confirmation", "AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION", file_values, "true")
-            ),
-            "confirmation_state_enabled": _truthy(
-                _get(
-                    "confirmation_state_enabled",
-                    "AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED",
-                    file_values,
-                    "true",
-                )
-            ),
-            "confirmation_ttl_seconds": max(
-                1,
-                int(
-                    _get(
-                        "confirmation_ttl_seconds",
-                        "AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS",
-                        file_values,
-                        "600",
-                    )
-                ),
-            ),
-            "confirmation_max_pending": max(
-                1,
-                int(
-                    _get(
-                        "confirmation_max_pending",
-                        "AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING",
-                        file_values,
-                        "2048",
-                    )
-                ),
             ),
             "audit_enabled": _truthy(
                 _get("audit_enabled", "AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED", file_values, "true")
@@ -203,118 +167,8 @@ class MCPPolicy:
             handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-@dataclass(frozen=True)
-class MCPConfirmationStatus:
-    confirmed: bool
-    reason: str
-
-
-class MCPConfirmationGuard:
-    """Session-scoped pending confirmation store for policy-gated MCP tools."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = 600,
-        max_pending: int = 2048,
-        clock: Any = time.monotonic,
-    ) -> None:
-        self.ttl_seconds = max(1, int(ttl_seconds))
-        self.max_pending = max(1, int(max_pending))
-        self._clock = clock
-        self._pending: dict[tuple[str, str, str], float] = {}
-        self._lock = threading.Lock()
-
-    def require_or_consume(
-        self,
-        *,
-        session_id: str,
-        server_name: str,
-        tool_name: str,
-        arguments: Mapping[str, Any] | None,
-        requested_confirmed: bool,
-        user_confirmed: bool = False,
-    ) -> MCPConfirmationStatus:
-        """Return whether model-requested confirmation is backed by runtime state."""
-
-        session = _clean_text(session_id)
-        if not session:
-            return MCPConfirmationStatus(
-                confirmed=False,
-                reason="runtime session is unavailable; explicit confirmation required",
-            )
-
-        key = self._key(session, server_name, tool_name, arguments)
-        now = float(self._clock())
-        with self._lock:
-            self._prune_locked(now)
-            expires_at = self._pending.get(key)
-            if requested_confirmed and user_confirmed and expires_at is not None and expires_at > now:
-                self._pending.pop(key, None)
-                return MCPConfirmationStatus(confirmed=True, reason="matched pending employee confirmation")
-
-            self._pending[key] = now + self.ttl_seconds
-            self._prune_locked(now)
-
-        if requested_confirmed:
-            if not user_confirmed:
-                return MCPConfirmationStatus(
-                    confirmed=False,
-                    reason="model-supplied confirmed=true ignored; latest user message is not a clear confirmation",
-                )
-            return MCPConfirmationStatus(
-                confirmed=False,
-                reason=(
-                    "model-supplied confirmed=true ignored; no pending employee confirmation "
-                    "matched this session, tool, and arguments"
-                ),
-            )
-        return MCPConfirmationStatus(confirmed=False, reason="pending employee confirmation registered")
-
-    def has_pending(
-        self,
-        *,
-        session_id: str,
-        server_name: str,
-        tool_name: str,
-        arguments: Mapping[str, Any] | None,
-    ) -> bool:
-        session = _clean_text(session_id)
-        if not session:
-            return False
-        key = self._key(session, server_name, tool_name, arguments)
-        now = float(self._clock())
-        with self._lock:
-            self._prune_locked(now)
-            return key in self._pending
-
-    def _key(
-        self,
-        session_id: str,
-        server_name: str,
-        tool_name: str,
-        arguments: Mapping[str, Any] | None,
-    ) -> tuple[str, str, str]:
-        return (session_id, normalize_tool_ref(server_name, tool_name), arguments_digest(arguments or {}))
-
-    def _prune_locked(self, now: float) -> None:
-        expired = [key for key, expires_at in self._pending.items() if expires_at <= now]
-        for key in expired:
-            self._pending.pop(key, None)
-        if len(self._pending) <= self.max_pending:
-            return
-        ordered = sorted(self._pending.items(), key=lambda item: item[1])
-        for key, _expires_at in ordered[: len(self._pending) - self.max_pending]:
-            self._pending.pop(key, None)
-
-
 def normalize_tool_ref(server_name: str, tool_name: str) -> str:
     return f"{str(server_name).strip()}/{str(tool_name).strip()}"
-
-
-def arguments_digest(arguments: Mapping[str, Any]) -> str:
-    canonical = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def confirmation_required_message(server_name: str, tool_name: str, policy: MCPToolPolicy) -> str:
@@ -322,7 +176,6 @@ def confirmation_required_message(server_name: str, tool_name: str, policy: MCPT
         "MCP tool call requires explicit employee confirmation before execution.\n"
         f"- Tool: {normalize_tool_ref(server_name, tool_name)}\n"
         f"- Risk: {policy.risk}\n"
-        f"- Reason: {policy.reason}\n"
         "- Required next step: summarize the exact business action and key arguments to the employee, "
         "then wait for a clear confirmation in the latest user message.\n"
         "- After confirmation, call the same tool again with confirmed=true."
@@ -357,7 +210,7 @@ def _read_policy_file(project_root: Path) -> dict[str, Any]:
         return {}
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
-        raise TypeError("MCP policy file must contain a JSON object")
+        raise RuntimeError("MCP policy file must contain a JSON object")
     return loaded
 
 
@@ -424,10 +277,6 @@ def _truncate(value: str, max_chars: int) -> str:
     if max_chars <= 3:
         return text[:max_chars]
     return text[: max_chars - 3].rstrip() + "..."
-
-
-def _clean_text(value: object) -> str:
-    return str(value or "").strip()
 
 
 def _truthy(value: Any) -> bool:

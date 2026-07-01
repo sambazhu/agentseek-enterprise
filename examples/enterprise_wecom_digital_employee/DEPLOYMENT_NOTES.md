@@ -1131,130 +1131,17 @@ regardless of who set `confirmed=True`.
 all work correctly. The inconsistency is in model behavior, not system
 behavior. Codex to decide the fix approach.
 
-### MCP confirmation state hardening (Codex fix, pending Mac mini verification)
+### MCP confirmation hardening verification and rollback note (2026-07-01)
 
-Codex selected the runtime-side fix instead of relying on prompt-only behavior.
-The adapter now treats the model-provided `confirmed` argument as an intent
-signal, not as proof of employee approval.
+Mac mini verified `f03e983 Enforce session-backed MCP confirmations` through the
+production `call_mcp_tool` entry point with a real local stdio MCP server. The
+verification covered the intended hardening behavior: direct model-supplied
+`confirmed=true` was blocked on the first attempt; a later same-session,
+same-tool, same-argument call after user `确认` succeeded; changed arguments and
+different sessions stayed blocked.
 
-Implemented behavior:
-
-- First call to a `write`, `risky`, or confirm-listed tool always produces
-  `confirmation_required`, even if the model incorrectly sends
-  `confirmed=true`.
-- The adapter registers a pending confirmation scoped by session, tool, and
-  normalized argument digest.
-- A later `confirmed=true` call is allowed only when:
-  - a matching pending confirmation exists;
-  - the pending entry has not expired;
-  - the latest user message is a clear confirmation, such as `确认`, `同意`,
-    `可以`, `执行`, `ok`, or `proceed`.
-- Cross-session and cross-argument confirmation reuse is blocked.
-- Audit entries record the effective confirmation result, so a model-forged
-  `confirmed=true` first attempt is logged as `confirmation_required` with
-  `confirmed=false`.
-
-New settings:
-
-```env
-AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED=true
-AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS=600
-AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_MAX_PENDING=2048
-```
-
-Local verification on Codex machine:
-
-- `uv run pytest contrib/agentseek-enterprise/tests -q` → 49 passed.
-- `call_mcp_tool` LangChain schema exposes only
-  `server_name`, `tool_name`, `arguments`, and `confirmed`; hidden
-  `ToolRuntime` injection is not visible to the model.
-- A no-network adapter probe with a fake MCP client verified:
-  first `confirmed=true` call returns `confirmation_required`; same-turn
-  repeated `confirmed=true` is still blocked because the latest user message is
-  not confirmation; a later `确认` message with the same tool and arguments
-  succeeds and audits `succeeded confirmed=true`.
-
-Mac mini live WeCom verification still required on
-`enterprise/wecom-mcp-policy-audit`: repeat the direct risky/write request that
-previously let the model pass `confirmed=true` on the first attempt. Expected:
-first turn returns confirmation-required, user sends `确认`, second matching
-tool call succeeds and audit shows `confirmation_required confirmed=false`
-followed by `succeeded confirmed=true`.
-
-### MCP confirmation hardening — VERIFIED via production call path (2026-07-01, commit f03e983)
-
-Pulled `f03e983 Enforce session-backed MCP confirmations` on
-`enterprise/wecom-mcp-policy-audit` (HEAD already at `f03e983`, `git pull` →
-`Already up to date`). Verified the hardening end-to-end against a **real local
-stdio MCP server**, driven through the **production `call_mcp_tool` entry point**
-that the gateway's MCP binding dispatches — i.e. the exact code path a live
-WeCom → model → MCP turn uses, including `MCPConfirmationGuard`,
-`MCPPolicy.evaluate`, the runtime session/confirmation extractors
-(`_runtime_confirmation_session_id`, `_latest_user_message_confirms`), and the
-JSONL audit writer.
-
-**Why not a full live WeCom restart.** The running gateway (pid 12844,
-`bub_gateway.py ... --enable-channel wecom ...`, listening on `:12000`) started
-at 18:16:09, **~1 hour after** `f03e983` was committed (17:13:22), so it is
-already running the hardened code — a physical restart would only reload the
-same code and interrupt the live WeCom digital-employee service for no benefit.
-The committed `examples/enterprise_wecom_digital_employee/.agents/mcp.json`
-ships with `"mcpServers": {}` (the live tavily/gildata servers are gitignored
-local config), so a live restart could not exercise the confirmation path
-without first wiring a confirm-listed server anyway. The verification below
-covers that path directly and deterministically.
-
-**Env (defaults apply, as allowed by the task).** The example `.env` has
-`AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true`; the three new state vars
-are absent, so `MCPPolicySettings.from_env` resolves to the documented defaults,
-confirmed at runtime: `confirmation_state_enabled=True`, `ttl=600`,
-`max_pending=2048`. A tool was locally marked confirm-listed for the test
-(`AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=verify/search`) — the task explicitly
-allows "a tool you locally mark as confirm" as a stand-in for `tavily_search`
-(the confirmation logic is tool-agnostic; it keys on session + tool ref + arg
-digest). `tavily-mcp` was in fact running on the box (pid 12883) but is not
-wired into the committed config; the local `verify/search` stdio server is a
-deterministic, no-API-cost equivalent.
-
-**Baseline — official unit suite**: `PYTHONPATH=contrib/agentseek-enterprise/src
-uv run --offline pytest contrib/agentseek-enterprise/tests/test_mcp_policy.py
--v` → **13 passed**. Covers guard state transitions, arg/session scoping,
-latest-user-message requirement, TTL expiry, and audit redaction.
-
-**A/B/C/D results (production `call_mcp_tool`, real stdio MCP server, fresh
-audit log)** — harness at `/private/tmp/mcp_verify/run_verify.py`:
-
-| Check | Expected | Observed |
-|-------|----------|----------|
-| A. First `confirmed=true` (model) blocked | `confirmation_required`, no execution | ✅ returned confirmation prompt; **no** `RESULTS` in output |
-| A. Audit for first attempt | `confirmation_required confirmed=false` | ✅ `confirmation_required confirmed=False` |
-| B. After user `确认`, 2nd `confirmed=true` | executes → `succeeded` | ✅ `RESULTS for 'alpha'` returned |
-| B. Audit for confirmed call | `succeeded confirmed=true` | ✅ `succeeded confirmed=True` |
-| C. Audit order | `confirmation_required(false)` → `succeeded(true)` | ✅ exact order for `verify/search` |
-| D1. `confirmed=true` but latest user msg ≠ confirmation | stays blocked | ✅ `confirmation_required`, no execution |
-| D2. user confirms but model **changes args** | stays blocked (arg mismatch) | ✅ `confirmation_required` — "no pending ... matched this session, tool, and arguments" |
-| D3. user confirms same tool+args but **different session** | stays blocked (session mismatch) | ✅ `confirmation_required` — same mismatch reason |
-
-9/9 checks PASS. Reconstructed audit tail for the matching session/tool/args:
-
-```
-confirmation_required  confirmed=False  args={'query':'alpha'}  reason="...latest user message is not a clear confirmation"
-succeeded              confirmed=True   args={'query':'alpha'}  reason="allowed by policy"
-```
-
-The decisive behavior — **the model's `confirmed=true` on the first attempt is
-ignored** (effective `confirmed=false`) because no pending employee
-confirmation exists yet — is confirmed by the `confirmed=False` on the first
-audit event despite the model having passed `confirmed=true`. Execution only
-occurs on the second call, after a pending entry was registered and the latest
-user message matched the confirmation regex (`确认`).
-
-**What was and was not exercised.** Verified: the production adapter, guard,
-policy, runtime session/user-confirm extraction, and audit log against a real
-MCP server (so the "executes successfully" step in B is a genuine remote tool
-execution, not a mock). Not exercised: the full live WeCom callback → DM
-identity → model → remote `tavily_search` chain, because (a) the committed
-`.agents/mcp.json` is empty and the live MCP servers are gitignored local
-config, and (b) that chain adds WeCom/DM/model behavior that is orthogonal to
-the confirmation guard (the guard runs inside `call_mcp_tool` regardless of how
-the call was reached). The hardening logic itself is fully covered.
+After that verification, the branch was intentionally rolled back to the
+previous MCP policy behavior at the user's request. The rollback is a normal
+revert commit on top of the verification record, so Mac mini can pull the branch
+without rewriting history and re-run validation against the pre-hardening
+behavior.

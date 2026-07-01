@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping
-from dataclasses import replace
 import json
 from typing import Any
 
-from agentseek_enterprise.mcp_policy import (
-    MCPConfirmationGuard,
-    MCPPolicy,
-    MCPPolicySettings,
-    confirmation_required_message,
-)
-from agentseek_enterprise.runtime import ENTERPRISE_RUNTIME_CONTEXT_KEY
+from agentseek_enterprise.mcp_policy import MCPPolicy, MCPPolicySettings, confirmation_required_message
 from fastmcp import Client
-from langchain_core.messages import BaseMessage
-from langgraph.prebuilt import ToolRuntime
 
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT, get_settings
-
-_MCP_CONFIRMATION_GUARD: MCPConfirmationGuard | None = None
-_MCP_CONFIRMATION_GUARD_CONFIG: tuple[int, int] | None = None
-_CONFIRMATION_RE = re.compile(
-    r"^\s*(确认|同意|可以|好的|好|是|是的|没问题|执行|继续)(执行|提交|调用|搜索|处理|吧|。|！|!|，|,|\s|$).*"
-    r"|^\s*(yes|y|ok|okay|confirm|confirmed|proceed)\b.*",
-    re.IGNORECASE,
-)
 
 
 def describe_employee_context_contract() -> str:
@@ -72,7 +53,6 @@ async def list_mcp_tools() -> str:
 async def call_mcp_tool(
     server_name: str,
     tool_name: str,
-    runtime: ToolRuntime,
     arguments: dict[str, Any] | None = None,
     confirmed: bool = False,
 ) -> str:
@@ -91,25 +71,7 @@ async def call_mcp_tool(
 
     call_arguments = arguments or {}
     policy = _mcp_policy()
-    effective_confirmed = confirmed
-    confirmation_status_reason = ""
-    preflight_decision = policy.evaluate(server_name, tool_name, confirmed=False)
-    if policy.settings.confirmation_state_enabled and preflight_decision.action == "confirm":
-        confirmation_status = _mcp_confirmation_guard(policy.settings).require_or_consume(
-            session_id=_runtime_confirmation_session_id(runtime),
-            server_name=server_name,
-            tool_name=tool_name,
-            arguments=call_arguments,
-            requested_confirmed=confirmed,
-            user_confirmed=_latest_user_message_confirms(runtime),
-        )
-        effective_confirmed = confirmation_status.confirmed
-        if not confirmation_status.confirmed:
-            confirmation_status_reason = confirmation_status.reason
-
-    decision = policy.evaluate(server_name, tool_name, confirmed=effective_confirmed)
-    if confirmation_status_reason and decision.action == "confirm":
-        decision = replace(decision, reason=f"{decision.reason}; {confirmation_status_reason}")
+    decision = policy.evaluate(server_name, tool_name, confirmed=confirmed)
     if decision.action == "deny":
         policy.audit(
             server_name=server_name,
@@ -117,7 +79,7 @@ async def call_mcp_tool(
             action="denied",
             risk=decision.risk,
             arguments=call_arguments,
-            confirmed=effective_confirmed,
+            confirmed=confirmed,
             reason=decision.reason,
         )
         return f"MCP tool {server_name}/{tool_name} is denied by enterprise policy: {decision.reason}."
@@ -128,7 +90,7 @@ async def call_mcp_tool(
             action="confirmation_required",
             risk=decision.risk,
             arguments=call_arguments,
-            confirmed=effective_confirmed,
+            confirmed=confirmed,
             reason=decision.reason,
         )
         return confirmation_required_message(server_name, tool_name, decision)
@@ -143,7 +105,7 @@ async def call_mcp_tool(
             action="failed",
             risk=decision.risk,
             arguments=call_arguments,
-            confirmed=effective_confirmed,
+            confirmed=confirmed,
             reason=decision.reason,
             error=exc,
         )
@@ -155,7 +117,7 @@ async def call_mcp_tool(
         action="succeeded",
         risk=decision.risk,
         arguments=call_arguments,
-        confirmed=effective_confirmed,
+        confirmed=confirmed,
         reason=decision.reason,
         result=formatted,
     )
@@ -188,104 +150,6 @@ def _normalize_server_config(server_config: Any) -> dict[str, Any]:
 
 def _mcp_policy() -> MCPPolicy:
     return MCPPolicy(MCPPolicySettings.from_env(project_root=PROJECT_ROOT))
-
-
-def _mcp_confirmation_guard(settings: MCPPolicySettings) -> MCPConfirmationGuard:
-    global _MCP_CONFIRMATION_GUARD, _MCP_CONFIRMATION_GUARD_CONFIG
-    config = (settings.confirmation_ttl_seconds, settings.confirmation_max_pending)
-    if _MCP_CONFIRMATION_GUARD is None or _MCP_CONFIRMATION_GUARD_CONFIG != config:
-        _MCP_CONFIRMATION_GUARD = MCPConfirmationGuard(
-            ttl_seconds=settings.confirmation_ttl_seconds,
-            max_pending=settings.confirmation_max_pending,
-        )
-        _MCP_CONFIRMATION_GUARD_CONFIG = config
-    return _MCP_CONFIRMATION_GUARD
-
-
-def _runtime_confirmation_session_id(runtime: ToolRuntime | None) -> str:
-    if runtime is None:
-        return ""
-
-    context = getattr(runtime, "context", None)
-    enterprise = _mapping_get(context, ENTERPRISE_RUNTIME_CONTEXT_KEY)
-    session_key = _clean(_mapping_get(enterprise, "session_key"))
-    if session_key:
-        return f"enterprise:{session_key}"
-
-    config = getattr(runtime, "config", None)
-    configurable = _mapping_get(config, "configurable")
-    for key in ("thread_id", "session_id"):
-        value = _clean(_mapping_get(configurable, key))
-        if value:
-            return value
-
-    metadata = _mapping_get(config, "metadata")
-    session_id = _clean(_mapping_get(metadata, "session_id"))
-    if session_id:
-        return session_id
-
-    execution_info = getattr(runtime, "execution_info", None)
-    thread_id = _clean(getattr(execution_info, "thread_id", None))
-    if thread_id:
-        return thread_id
-
-    state = getattr(runtime, "state", None)
-    for key in ("session_id", "sessionid"):
-        value = _clean(_mapping_get(state, key))
-        if value:
-            return value
-    return ""
-
-
-def _latest_user_message_confirms(runtime: ToolRuntime | None) -> bool:
-    if runtime is None:
-        return False
-    state = getattr(runtime, "state", None)
-    messages = _mapping_get(state, "messages")
-    if not isinstance(messages, list):
-        return False
-    for message in reversed(messages):
-        if not _is_human_message(message):
-            continue
-        text = _message_text(message)
-        return bool(_CONFIRMATION_RE.match(text))
-    return False
-
-
-def _is_human_message(message: object) -> bool:
-    if isinstance(message, BaseMessage):
-        return message.type == "human"
-    if isinstance(message, Mapping):
-        role = _clean(message.get("role") or message.get("type"))
-        return role in {"human", "user"}
-    return False
-
-
-def _message_text(message: object) -> str:
-    content = getattr(message, "content", None)
-    if content is None and isinstance(message, Mapping):
-        content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, Mapping) and isinstance(item.get("text"), str):
-                parts.append(str(item["text"]))
-        return "\n".join(parts).strip()
-    return _clean(content)
-
-
-def _mapping_get(value: object, key: str) -> object:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
-
-
-def _clean(value: object) -> str:
-    return str(value or "").strip()
 
 
 def _format_mcp_result(result: Any) -> str:

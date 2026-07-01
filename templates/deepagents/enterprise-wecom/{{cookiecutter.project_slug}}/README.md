@@ -188,8 +188,6 @@ AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
 AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request
 AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=
 AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
-AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_STATE_ENABLED=true
-AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS=600
 AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
 ```
 
@@ -210,19 +208,14 @@ AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=tavily-search/tavily_search
 
 Confirmation flow:
 
-1. The model calls `call_mcp_tool(..., confirmed=false)`. If the model
-   incorrectly sends `confirmed=true` on the first attempt, the adapter ignores
-   it.
+1. The model calls `call_mcp_tool(..., confirmed=false)`.
 2. The adapter returns a confirmation-required response for `write`, `risky`, or
-   explicitly confirmed tools, and registers a pending confirmation for the
-   same session, tool, and arguments.
+   explicitly confirmed tools.
 3. The model summarizes the exact business action and key arguments to the
    employee.
 4. After the employee clearly confirms, the model calls the same tool again with
    `confirmed=true`.
-5. Only a matching second call reaches the remote MCP server. The pending
-   confirmation is scoped to the current employee session and expires after
-   `AGENTSEEK_ENTERPRISE_MCP_CONFIRMATION_TTL_SECONDS`.
+5. Only the second call reaches the remote MCP server.
 
 Audit events are JSONL records with `timestamp`, `tool_ref`, `action`, `risk`,
 `confirmed`, policy `reason`, redacted `arguments`, and a truncated
