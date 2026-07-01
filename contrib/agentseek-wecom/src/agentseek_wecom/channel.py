@@ -66,6 +66,7 @@ class WeComChannel(Channel):
         self._lock = asyncio.Lock()
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
+        self._dispatch_tasks: set[asyncio.Task[None]] = set()
         self.app = self._build_app()
 
     @property
@@ -103,6 +104,11 @@ class WeComChannel(Channel):
         if task is not None and not task.done():
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        for dispatch_task in list(self._dispatch_tasks):
+            dispatch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dispatch_task
+        self._dispatch_tasks.clear()
 
     async def send(self, message: ChannelMessage) -> None:
         stream = await self._stream_for_outbound(message)
@@ -254,7 +260,9 @@ class WeComChannel(Channel):
             },
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
-        await self._on_receive(message)
+        # Return the stream envelope quickly; slow tool/model work continues in
+        # the channel manager task and is picked up by WeCom stream polls.
+        self._schedule_receive(message)
         return await self._stream_response(stream.stream_id)
 
     async def _resolve_userid(self, from_userid: str | None) -> str | None:
@@ -339,6 +347,26 @@ class WeComChannel(Channel):
             (current.content if current else "") or "已收到，正在处理...",
             bool(current.finish if current else False),
         )
+
+    def _schedule_receive(self, message: ChannelMessage) -> None:
+        task = asyncio.create_task(self._run_receive(message), name=f"agentseek-wecom.dispatch.{message.session_id}")
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    async def _run_receive(self, message: ChannelMessage) -> None:
+        if self._on_receive is None:
+            logger.warning("wecom.receive handler is not bound")
+            return
+        await self._on_receive(message)
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        self._dispatch_tasks.discard(task)
+        if task.cancelled():
+            return
+        with contextlib.suppress(asyncio.CancelledError):
+            exc = task.exception()
+            if exc is not None:
+                logger.opt(exception=exc).error("wecom.dispatch failed")
 
     async def _stream_for_outbound(self, message: ChannelMessage) -> StreamReply | None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)

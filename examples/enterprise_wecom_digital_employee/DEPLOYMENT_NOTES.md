@@ -987,3 +987,26 @@ total chain (confirm → tool → process → reply) exceeds WeCom's stream wind
 4. **Async delivery**: execute the confirmed tool asynchronously, deliver the
    result as a new WeCom message (not via the original stream).
 5. **Increase stream timeout** if the WeCom channel has a configurable timeout.
+
+### WeCom stream timeout fix (2026-07-01, pending Mac mini verification)
+
+Implemented the low-risk channel-side fix in `agentseek-wecom`: inbound WeCom
+callbacks now create the stream, schedule the Bub/agent processing in a
+background task, and return the initial stream envelope quickly. The first
+response contains the existing "已收到，正在处理..." placeholder with
+`finish=false`; later WeCom `msgtype=stream` polls read the final model reply
+from the same stream when the background turn completes.
+
+This avoids holding the original "确认" HTTP callback open while the confirmed
+MCP tool runs. It directly targets the observed failure mode where the tool and
+model succeeded, but WeCom did not receive a usable stream id until the callback
+had already exceeded its short response window.
+
+Local verification:
+- `make test-wecom` ✅
+- `make typecheck-wecom` ✅
+- `ruff` on WeCom channel/tests ✅
+
+Mac mini live verification still required: repeat the confirmed `tavily_search`
+flow and confirm the user sees the placeholder quickly, then receives the final
+international-news reply through stream polling instead of the WeCom fallback.

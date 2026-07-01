@@ -30,7 +30,7 @@ def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
             token="token",
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
             callback_path="/callback/{botid}",
-            initial_wait_seconds=0,
+            initial_wait_seconds=0.05,
             userid_resolve_mode="",
         ),
         userid_resolver=userid_resolver,
@@ -113,6 +113,53 @@ def test_text_message_resolves_open_userid_before_dispatch() -> None:
     assert received[0].context["wecom"]["resolved_userid"] == "zhuchunlin"
 
 
+def test_text_message_returns_placeholder_before_slow_receive_completes() -> None:
+    channel = _channel()
+
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        proceed = asyncio.Event()
+
+        async def on_receive(message: ChannelMessage) -> None:
+            await proceed.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="慢任务处理完成",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+
+        first_plain = await channel._handle_plain_message(
+            {
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "text": {"content": "确认"},
+            }
+        )
+        first_payload = json.loads(first_plain or "{}")
+        proceed.set()
+
+        for _ in range(20):
+            final_plain = await channel._handle_plain_message(
+                {"msgtype": "stream", "stream": {"id": first_payload["stream"]["id"]}}
+            )
+            final_payload = json.loads(final_plain or "{}")
+            if final_payload["stream"]["finish"]:
+                return first_payload, final_payload
+            await asyncio.sleep(0.01)
+        return first_payload, final_payload
+
+    first_payload, final_payload = asyncio.run(scenario())
+
+    assert first_payload["stream"]["content"] == "已收到，正在处理..."
+    assert first_payload["stream"]["finish"] is False
+    assert final_payload["stream"]["content"] == "慢任务处理完成"
+    assert final_payload["stream"]["finish"] is True
+
+
 def test_text_message_sanitizes_wecom_raw_payload() -> None:
     received: list[ChannelMessage] = []
     channel = _channel()
@@ -160,7 +207,7 @@ def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> Non
     received: list[ChannelMessage] = []
     channel = _channel()
 
-    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         proceed = asyncio.Event()
 
         async def on_receive(message: ChannelMessage) -> None:
@@ -188,17 +235,27 @@ def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> Non
             await asyncio.sleep(0)
 
         duplicate_plain = await channel._handle_plain_message(data)
-        proceed.set()
         first_plain = await first_task
-        return json.loads(first_plain or "{}"), json.loads(duplicate_plain or "{}")
+        proceed.set()
+        first_payload = json.loads(first_plain or "{}")
+        for _ in range(20):
+            final_plain = await channel._handle_plain_message(
+                {"msgtype": "stream", "stream": {"id": first_payload["stream"]["id"]}}
+            )
+            final_payload = json.loads(final_plain or "{}")
+            if final_payload["stream"]["finish"]:
+                break
+            await asyncio.sleep(0.01)
+        return first_payload, json.loads(duplicate_plain or "{}"), final_payload
 
-    first_payload, duplicate_payload = asyncio.run(scenario())
+    first_payload, duplicate_payload, final_payload = asyncio.run(scenario())
 
     assert len(received) == 1
     assert duplicate_payload["stream"]["id"] == first_payload["stream"]["id"]
     assert duplicate_payload["stream"]["finish"] is False
-    assert first_payload["stream"]["finish"] is True
-    assert first_payload["stream"]["content"] == "处理完成"
+    assert first_payload["stream"]["finish"] is False
+    assert final_payload["stream"]["finish"] is True
+    assert final_payload["stream"]["content"] == "处理完成"
 
 
 def test_duplicate_msgid_can_reprocess_after_stream_cache_ttl() -> None:
@@ -210,7 +267,7 @@ def test_duplicate_msgid_can_reprocess_after_stream_cache_ttl() -> None:
             token="token",
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
             callback_path="/callback/{botid}",
-            initial_wait_seconds=0,
+            initial_wait_seconds=0.05,
             cache_ttl_seconds=0,
             userid_resolve_mode="",
         ),
@@ -263,7 +320,7 @@ def test_stream_events_appends_text_chunks() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
     message = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="hi")
-    message._agentseek_wecom_stream_id = stream.stream_id
+    setattr(message, "_agentseek_wecom_stream_id", stream.stream_id)
 
     async def events():
         yield StreamEvent("text", {"delta": "你"})
@@ -383,7 +440,7 @@ def test_outbound_with_stream_id_attr_routes_to_that_stream() -> None:
     stream_b = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
 
     reply = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="定向回复")
-    reply._agentseek_wecom_stream_id = stream_a.stream_id
+    setattr(reply, "_agentseek_wecom_stream_id", stream_a.stream_id)
     asyncio.run(channel.send(reply))
 
     assert stream_a.content == "定向回复"
