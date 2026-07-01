@@ -78,6 +78,21 @@ MCP tools 是预订会议室、提交出差申请、数据查询等业务动作�
 工具可以要求员工明确确认；denylist 命中的工具会在远端调用之前被阻断。每次 adapter
 决策都可以写入脱敏后的 JSONL 审计日志。
 
+runtime 不把业务授权规则交给模型自由判断，而是在远端 MCP 调用之前做确定性的本地
+检查：allowlist/denylist 匹配、风险分类、确认要求和审计写入都发生在工具真正执行
+之前。
+
+对会改变企业状态的工具，交互是两步：
+
+1. 模型先以 `confirmed=false` 请求调用工具。
+2. adapter 返回 confirmation-required，并写入审计事件。
+3. 模型把要执行的业务动作和关键参数复述给员工。
+4. 员工明确确认。
+5. 模型用同一个工具和参数再次调用，并传入 `confirmed=true`。
+
+审计日志用于运维复核和问题追溯。它记录 tool reference、risk、decision、confirmed、
+reason 和脱敏后的 arguments。它不是下游业务系统日志，也不能替代正式审批流。
+
 这样业务集成仍然留在 MCP 层，但 runtime 拥有一个很小、可本地配置的审批和审计面。
 
 ## 生产基线

@@ -77,5 +77,20 @@ The generated project includes `.agentseek/lifecycle.toml`, `scripts/run_gateway
 `scripts/bub_gateway.py`, `scripts/prod_check.py`, a macOS LaunchAgent template,
 and a `vendor/dameng/` directory for the DM JDBC driver.
 
+Enterprise WeCom MCP policy settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `AGENTSEEK_ENTERPRISE_MCP_POLICY_ENABLED` | `true` | Enable local MCP policy checks in the template adapter. |
+| `AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION` | `allow` | Default action when no allowlist/denylist rule blocks the tool. |
+| `AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST` | empty | Optional comma-separated `server/tool` patterns allowed to run. |
+| `AGENTSEEK_ENTERPRISE_MCP_DENYLIST` | empty | Comma-separated `server/tool` patterns blocked before remote MCP calls. |
+| `AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS` | empty | Comma-separated patterns classified as state-changing tools. |
+| `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS` | empty | Comma-separated patterns classified as high-risk tools. |
+| `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS` | empty | Comma-separated patterns that require confirmation even when classified as `read`. |
+| `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | Require explicit confirmation for `write`, `risky`, and confirm-listed tools. |
+| `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | Write MCP decision events to JSONL. |
+| `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | Audit JSONL path relative to the project root unless absolute. |
+
 See [Enterprise WeCom Template](../concepts/enterprise-wecom-template.md) for
 the runtime and memory-layer design.

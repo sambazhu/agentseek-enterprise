@@ -157,8 +157,28 @@ Expected: the answer lists the configured MCP services and tools.
 ### MCP Policy And Audit
 
 The template's `call_mcp_tool` adapter enforces a local enterprise policy before
-it calls a configured MCP server. By default the policy allows existing query
-tools and writes audit events to `./runtime/mcp-audit.jsonl`.
+it calls a configured MCP server. Think of it as a small gate in front of every
+business tool call: classify the tool, decide whether it can run, require
+confirmation when needed, and write an audit event.
+
+By default the policy keeps existing query tools available and writes audit
+events to `./runtime/mcp-audit.jsonl`.
+
+Risk levels:
+
+| Risk | Use for | Default behavior |
+| --- | --- | --- |
+| `read` | Data lookup, search, report retrieval | Allowed unless denylist/default-deny blocks it |
+| `write` | Meeting-room booking, travel submission, workflow creation | Requires explicit confirmation |
+| `risky` | Cancellation, permission changes, skill installation, high-impact actions | Requires explicit confirmation |
+
+Policy actions:
+
+| Action | Meaning |
+| --- | --- |
+| `allow` | The adapter calls the remote MCP tool. |
+| `deny` | The adapter returns a policy-denied message and does not call MCP. |
+| `confirm` | The adapter returns a confirmation-required message and does not call MCP. |
 
 Use `server/tool` patterns to classify business tools:
 
@@ -171,10 +191,42 @@ AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true
 AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH=./runtime/mcp-audit.jsonl
 ```
 
-For write or risky tools, the first `call_mcp_tool` call returns a
-confirmation-required response instead of executing. The agent should summarize
-the exact business action and key arguments, wait for the employee to confirm,
-then call the same tool again with `confirmed=true`.
+Patterns also accept `server:tool` and wildcards such as
+`gildata_datamap-*/*`.
+
+For early rollout, keep `AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION=allow` and
+classify only known write/risky tools. After the tool inventory is stable,
+switch to a stricter allowlist:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION=deny
+AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST=gildata_datamap-*/*,tavily-search/tavily_search,office/*,oa/*
+AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
+AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request,agent-platform/install_agent_skills
+AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=tavily-search/tavily_search
+```
+
+Confirmation flow:
+
+1. The model calls `call_mcp_tool(..., confirmed=false)`.
+2. The adapter returns a confirmation-required response for `write`, `risky`, or
+   explicitly confirmed tools.
+3. The model summarizes the exact business action and key arguments to the
+   employee.
+4. After the employee clearly confirms, the model calls the same tool again with
+   `confirmed=true`.
+5. Only the second call reaches the remote MCP server.
+
+Audit events are JSONL records with `timestamp`, `tool_ref`, `action`, `risk`,
+`confirmed`, policy `reason`, redacted `arguments`, and a truncated
+`result_summary` or error. Argument keys containing password, secret, token, api
+key, private key, credential, `身份证`, `银行卡`, `密码`, `密钥`, or `令牌` are
+written as `[REDACTED]`.
+
+Slow tools still need response budgeting. A confirmed MCP call can succeed while
+the final WeCom reply times out if the model spends too long processing a large
+tool result. Prefer bounded tool output, answer-first summaries, or an async
+"正在处理" workflow for slow external tools.
 
 When reading gateway logs, remember that WeCom replies are often multi-line. Use
 enough trailing context such as `grep -A N`; `grep | tail -1` can truncate the

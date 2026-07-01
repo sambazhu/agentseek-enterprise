@@ -77,4 +77,19 @@ agentseek create deepagents/enterprise-wecom
 `scripts/bub_gateway.py`、`scripts/prod_check.py`、macOS LaunchAgent 模板，
 以及用于放置 DM JDBC driver 的 `vendor/dameng/` 目录。
 
+企业微信 MCP policy 配置项：
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `AGENTSEEK_ENTERPRISE_MCP_POLICY_ENABLED` | `true` | 在模板 adapter 中启用本地 MCP 策略检查。 |
+| `AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION` | `allow` | 没有被 allowlist/denylist 拦截时的默认动作。 |
+| `AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST` | 空 | 可执行工具的 `server/tool` 模式列表，逗号分隔。 |
+| `AGENTSEEK_ENTERPRISE_MCP_DENYLIST` | 空 | 在远端 MCP 调用前直接阻断的工具模式列表。 |
+| `AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS` | 空 | 标记为会改变企业状态的工具模式列表。 |
+| `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS` | 空 | 标记为高风险操作的工具模式列表。 |
+| `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS` | 空 | 即使是 `read` 也要求确认的工具模式列表。 |
+| `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | 对 `write`、`risky` 和 confirm-listed 工具要求显式确认。 |
+| `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | 将 MCP 决策事件写入 JSONL。 |
+| `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | 审计 JSONL 路径；相对路径基于项目根目录。 |
+
 Runtime 和记忆分层设计见[企业微信模板](../concepts/enterprise-wecom-template.md)。

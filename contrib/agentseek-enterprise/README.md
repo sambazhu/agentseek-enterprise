@@ -137,6 +137,47 @@ as write, risky, or confirmation-required return a confirmation-required result
 until the adapter calls them again with `confirmed=true`. Audit JSONL records
 the action, tool reference, risk, policy reason, and redacted arguments.
 
+MCP policy is evaluated locally before the template adapter opens the remote MCP
+client. The policy result has two dimensions:
+
+| Dimension | Values | Meaning |
+| --- | --- | --- |
+| Risk | `read`, `write`, `risky` | Query-only, state-changing, or high-risk business operation. |
+| Action | `allow`, `deny`, `confirm` | Execute now, block before remote call, or require employee confirmation. |
+
+The evaluation order is:
+
+1. `AGENTSEEK_ENTERPRISE_MCP_DENYLIST` blocks matching tools.
+2. Non-empty `AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST` blocks tools outside the list.
+3. `AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION=deny` blocks tools not explicitly allowed.
+4. `AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS` marks matching tools as `risky`.
+5. `AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS` marks matching tools as `write`.
+6. `AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS`, `write`, and `risky` tools require
+   confirmation when `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION=true`.
+
+The `enterprise-wecom` adapter writes audit events for `denied`,
+`confirmation_required`, `failed`, and `succeeded` outcomes. Each event includes
+`timestamp`, `server_name`, `tool_name`, `tool_ref`, `action`, `risk`,
+`confirmed`, `reason`, redacted `arguments`, and a truncated `result_summary` or
+error. Argument keys containing password, secret, token, api key, private key,
+credential, `身份证`, `银行卡`, `密码`, `密钥`, or `令牌` are replaced with
+`[REDACTED]`.
+
+For broad production use, start with default `allow` while inventorying tools.
+After the inventory is stable, switch to:
+
+```env
+AGENTSEEK_ENTERPRISE_MCP_DEFAULT_ACTION=deny
+AGENTSEEK_ENTERPRISE_MCP_ALLOWLIST=gildata_datamap-*/*,tavily-search/tavily_search,office/*,oa/*
+AGENTSEEK_ENTERPRISE_MCP_WRITE_TOOLS=office/book_room,oa/submit_travel
+AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request,agent-platform/install_agent_skills
+AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=tavily-search/tavily_search
+```
+
+This keeps known query tools available, requires confirmation for business
+writes, and can force confirmation for external search even when the tool is
+query-only.
+
 ## Runtime Behavior
 
 The plugin implements `load_state()` and adds:

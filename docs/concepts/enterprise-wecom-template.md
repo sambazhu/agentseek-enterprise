@@ -86,6 +86,24 @@ run by default. Write or risky tools can require an explicit employee
 confirmation, and denied tools are blocked before any remote call is made.
 Every adapter decision can be written to a redacted JSONL audit log.
 
+The runtime does not try to put business authorization rules inside the model.
+It gives the model one tool surface and keeps the enforcement step deterministic:
+allowlist and denylist matching, risk classification, confirmation checks, and
+audit logging all happen before the remote MCP call.
+
+This creates a two-step flow for state-changing tools:
+
+1. The model asks to call the tool without `confirmed=true`.
+2. The adapter returns a confirmation-required result and writes an audit event.
+3. The model summarizes the intended action and key arguments to the employee.
+4. The employee confirms.
+5. The model calls the same tool again with `confirmed=true`.
+
+Audit logs are intended for operational review and incident reconstruction. They
+record the tool reference, risk, decision, confirmation flag, reason, and
+redacted arguments. They are not a replacement for downstream system logs or
+business approval records.
+
 This keeps the business integration layer in MCP while giving the runtime a
 small, local approval and audit surface.
 
