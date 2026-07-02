@@ -92,6 +92,103 @@ def test_remember_never_dedupes_across_categories(monkeypatch: pytest.MonkeyPatc
     assert _memory_line_count(profile, "work_context") == 1
 
 
+def test_slot_conflict_supersedes_with_notice(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    first = tools["remember_employee_memory"].func(
+        memory="明天去北京出差",
+        category="work_context",
+        slot="travel_plan",
+        runtime=runtime,
+    )
+    second = tools["remember_employee_memory"].func(
+        memory="明天去深圳出差",
+        category="work_context",
+        slot="travel_plan",
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert "recorded" in first
+    assert second == "已更新『出差计划』: 之前记的是「明天去北京出差」, 现在改为「明天去深圳出差」。"
+    assert _memory_lines(profile, "work_context") == ["- [work_context|slot=travel_plan] 明天去深圳出差"]
+    assert "北京" not in profile
+
+
+def test_slot_near_duplicate_uses_silent_p0_update(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    tools["remember_employee_memory"].func(
+        memory="企微回复偏好简洁、分点的回复方式",
+        category="preference",
+        slot="reply_style",
+        runtime=runtime,
+    )
+    result = tools["remember_employee_memory"].func(
+        memory="企微回复偏好：简洁、分点呈现",
+        category="preference",
+        slot="reply_style",
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert result == "Updated an existing durable memory (near-duplicate)."
+    assert _memory_lines(profile, "preference") == ["- [preference|slot=reply_style] 企微回复偏好：简洁、分点呈现"]
+
+
+def test_different_slots_keep_separate_memories(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    tools["remember_employee_memory"].func(
+        memory="明天去深圳出差",
+        category="work_context",
+        slot="travel_plan",
+        runtime=runtime,
+    )
+    tools["remember_employee_memory"].func(
+        memory="明天参加数据治理评审会",
+        category="work_context",
+        slot="meeting_plan",
+        runtime=runtime,
+    )
+
+    assert _memory_lines(_profile_content(store, runtime), "work_context") == [
+        "- [work_context|slot=travel_plan] 明天去深圳出差",
+        "- [work_context|slot=meeting_plan] 明天参加数据治理评审会",
+    ]
+
+
+def test_same_slot_different_categories_do_not_supersede(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    tools["remember_employee_memory"].func(
+        memory="偏好简洁、分点的回复方式",
+        category="preference",
+        slot="reply_style",
+        runtime=runtime,
+    )
+    tools["remember_employee_memory"].func(
+        memory="偏好简洁、分点的回复方式",
+        category="work_context",
+        slot="reply_style",
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert _memory_lines(profile, "preference") == ["- [preference|slot=reply_style] 偏好简洁、分点的回复方式"]
+    assert _memory_lines(profile, "work_context") == ["- [work_context|slot=reply_style] 偏好简洁、分点的回复方式"]
+
+
 def test_dedup_threshold_one_keeps_exact_match_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", "1.0")
     store, runtime, tools = _memory_harness(tmp_path)
@@ -131,6 +228,53 @@ def test_dedup_threshold_zero_disables_near_duplicate_merge(
         tools["remember_employee_memory"].func(memory=memory, category="preference", runtime=runtime)
 
     assert _memory_line_count(_profile_content(store, runtime), "preference") == 3
+
+
+def test_slot_supersession_env_false_uses_unslotted_p0_behavior(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", "false")
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    tools["remember_employee_memory"].func(
+        memory="明天去北京出差",
+        category="work_context",
+        slot="travel_plan",
+        runtime=runtime,
+    )
+    result = tools["remember_employee_memory"].func(
+        memory="明天去深圳出差",
+        category="work_context",
+        slot="travel_plan",
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert "recorded" in result
+    assert _memory_lines(profile, "work_context") == [
+        "- [work_context] 明天去北京出差",
+        "- [work_context] 明天去深圳出差",
+    ]
+
+
+def test_slot_supersession_env_false_recall_treats_slots_as_plain_p0(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", "false")
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+    _put_profile(
+        store,
+        runtime,
+        "# Employee Memory\n"
+        "- [preference|slot=reply_style] 企微回复偏好简洁、分点的回复方式\n"
+        "- [preference|slot=other_reply_style] 偏好简洁、分点的回复方式\n",
+    )
+
+    recalled = tools["recall_employee_memory"].func(runtime=runtime)
+
+    assert _memory_lines(recalled, "preference") == ["- [preference] 偏好简洁、分点的回复方式"]
 
 
 def test_sensitive_and_size_refusals_are_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
@@ -179,6 +323,26 @@ def test_recall_threshold_zero_disables_dirty_profile_view_merge(
 
     assert len(_memory_lines(recalled, "preference")) == 3
     assert _profile_content(store, runtime) == DIRTY_ZHUCHUNLIN_PROFILE
+
+
+def test_recall_keeps_legacy_and_slotted_profile_readable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+    _put_profile(
+        store,
+        runtime,
+        "# Employee Memory\n"
+        "- [work_context] 负责数据架构工作\n"
+        "- [preference|slot=reply_style] 偏好简洁、分点的回复方式\n",
+    )
+
+    recalled = tools["recall_employee_memory"].func(runtime=runtime)
+
+    assert "- [work_context] 负责数据架构工作" in recalled
+    assert "- [preference|slot=reply_style] 偏好简洁、分点的回复方式" in recalled
 
 
 def test_forget_employee_memory_still_removes_matching_line(
@@ -247,4 +411,8 @@ def _memory_line_count(content: str, category: str) -> int:
 
 
 def _memory_lines(content: str, category: str) -> list[str]:
-    return [line for line in content.splitlines() if line.startswith(f"- [{category}]")]
+    return [
+        line
+        for line in content.splitlines()
+        if line.startswith(f"- [{category}]") or line.startswith(f"- [{category}|")
+    ]
