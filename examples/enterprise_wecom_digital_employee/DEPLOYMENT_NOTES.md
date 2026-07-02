@@ -1754,3 +1754,45 @@ identity, MCP, or the `68d7b25` revert.
 not retroactively slotted (P1 applies only to new slot-tagged writes); the
 model is relied upon to fill consistent slots (no server-side slot
 normalization). The local PostgreSQL `trust` auth hardening remains pending.
+
+### v0.0.6 RC2 memory-slots tag (2026-07-02)
+
+Published the memory-slot RC after Mac mini validated `enterprise/memory-slots`:
+
+- RC tag: `enterprise-wecom-v0.0.6-rc2-memory-slots`
+- RC tag commit: tag target
+- Runtime implementation commit: `6dfe0b4`
+- Verification commit: `5ec346c`
+- Branch: `enterprise/memory-slots`
+
+This RC carries forward the v0.0.6 MCP policy/audit and WeCom stream fixes, then
+adds durable employee memory slot supersession:
+
+- P0: write-side near-duplicate deduplication.
+- P3: read-only recall cleanup for old dirty profiles.
+- P1/P5: same `category + slot` with a different value supersedes the old value
+  and returns an old-to-new notice; same slot with near-duplicate text remains a
+  silent P0 update.
+
+Mac mini verified the critical live case with 熊积健:
+
+```text
+请记住我明天去北京出差
+请记住我明天去深圳出差
+```
+
+The model supplied `slot=travel_plan`; the second write replaced 北京 with
+深圳, persisted only the new travel plan, and surfaced the old-to-new notice to
+the employee. A separate near-duplicate reply-style test stayed silent, proving
+the P0/P5 boundary.
+
+The hard constraints remained intact:
+
+- `mcp_policy.py` and the example `tools.py` have zero diff from the verified
+  P0/P3 baseline.
+- The `68d7b25` MCP confirmation revert remains in effect.
+- `AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED=false` rolls back to
+  the P0/P3 behavior.
+
+This is an RC, not a GA freeze. Keep `enterprise-wecom-v0.0.5-ga-20260630` as
+the immutable GA deployment tag until v0.0.6 receives a GA tag.

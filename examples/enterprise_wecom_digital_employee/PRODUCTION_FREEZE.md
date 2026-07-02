@@ -21,6 +21,43 @@ record. Runtime code must remain equivalent to `5cce3a2` unless a new freeze is
 created. The older v0.0.4 `ga` and `prod` tags are kept immutable for audit
 history; use the v0.0.5 GA tag for new deployments.
 
+## Current v0.0.6 RC Candidate
+
+- RC tag: `enterprise-wecom-v0.0.6-rc2-memory-slots`
+- RC tag commit: tag target
+- Runtime implementation commit: `6dfe0b4`
+- Mac mini verification commit: `5ec346c`
+- Branch: `enterprise/memory-slots`
+- Verification host: company-network Mac mini
+- Verification date: 2026-07-02
+
+This RC includes the v0.0.6 MCP policy/audit and WeCom stream fixes, plus the
+durable employee memory slot-supersession upgrade. It is not yet the immutable
+GA baseline. Use it for candidate deployments that need the latest memory
+contradiction fix.
+
+Durable employee memory now has these production-verified layers:
+
+- P0 write-side near-duplicate deduplication: same category, similar text,
+  latest wording wins.
+- P3 recall-side cleanup: old dirty profiles are rendered as a deduped read-only
+  view without migrating stored data.
+- P1/P5 slot supersession: new slot-tagged memories use
+  `category + slot` as the identity. Same slot + similar value is a silent
+  near-duplicate update; same slot + different value supersedes the old value
+  and returns an explicit old-to-new notice for the employee.
+
+The slot feature is enabled by default and can be disabled without code changes:
+
+```bash
+AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED=false
+```
+
+When disabled, slot handling falls back to the P0/P3 behavior verified in
+`enterprise/memory-dedup`. Existing slot-less profiles remain readable. The RC
+does not retroactively slot or compact old memories; historical contradictions
+such as old 北京/深圳 travel entries still require a later P4 compaction pass.
+
 ## Release And Mirrors
 
 | Location | Purpose | URL / ref |
@@ -34,6 +71,7 @@ Published refs:
 | Ref | Commit | Use |
 | --- | --- | --- |
 | `enterprise/wecom-runtime-v0.0.4` | `5cce3a2` | Active internal production branch |
+| `enterprise-wecom-v0.0.6-rc2-memory-slots` | tag target | Current RC with memory slot supersession |
 | `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Final immutable GA deployment tag |
 | `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
