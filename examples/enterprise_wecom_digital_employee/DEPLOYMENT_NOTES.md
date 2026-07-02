@@ -1231,3 +1231,136 @@ WeCom callback), but is unaffected by the revert's scope.
 (stateless, `confirmed`-parameter-driven) MCP policy; the previously-problematic
 scenario (model passing `confirmed=true` on the first attempt to a confirm-listed
 tool) executes directly again, as it did before `f03e983`.
+
+> **Handoff note for Mac Pro Codex (2026-07-02).** The session-backed
+> confirmation hardening you implemented in `f03e983` was **rolled back at the
+> user's request** (`68d7b25`). The revert is verified working end-to-end (live
+> WeCom + audit proof below). The guard code (`MCPConfirmationGuard`,
+> `confirmation_state_enabled`, the 3 env vars) is gone; `call_mcp_tool` once
+> again evaluates purely on the model-supplied `confirmed` argument. If you
+> re-introduce session-backed confirmation, the "audit before/after" section
+> below shows the exact behavioral delta to reproduce. No code action is
+> required from Codex unless the user asks to re-land the hardening.
+
+### Live WeCom end-to-end verification — 熊积健 (2026-07-01 evening, all PASS)
+
+After the gateway restart on reverted code (pid 21413), drove the full basic
+chain live from the WeCom client as employee **熊积健** (OA `xiongjijian`,
+identity: 公司总部 / 信息技术部 / 数智产品研发团队 / 软件开发岗兼数据开发岗):
+
+| Step | Message | Result |
+|------|---------|--------|
+| 1. Identity | `我是谁` | ✅ full identity; DM sidecar spawned pid 25743 (cache miss), subsequent turns cache-hit |
+| 2. Short-term store | `帮我记一下：明天要参加数据治理评审会` | ✅ "已记下：明天（2026-07-02）参加数据治理评审" |
+| 3. Short-term recall | `我刚才说明天要做什么？` | ✅ "数据治理评审" |
+| 4. Explicit long-term store | `请长期记住：我的汇报对象是 CTO` | ✅ persisted to postgres `langgraph_store_items` (confirmed in DB) |
+| 5. Explicit long-term recall + boundary | `我的汇报对象是谁？` | ✅ "CTO"; no 评审会 mix-in |
+| 6. Work-duty (employee_context + long-term) | `我的工作职责是什么？` | ✅ 岗位/部门/组织路径; after storing "数据开发和软件开发工作", recalled and labeled `（长期记忆）` |
+| 7. MCP tool list | `你有哪些可用的mcp工具` | ✅ 5 services listed with correct risk labels |
+
+**Memory backend in use** (confirmed via DB inspection, not log guessing):
+short-term + explicit long-term both go to **PostgreSQL**
+(`postgresql+psycopg://localhost/agentseek`,
+`AGENTSEEK_ENTERPRISE_*_SQLALCHEMY_URL`). Tables: `enterprise_short_term_messages`
+(short-term), `langgraph_store_items` (explicit long-term, `/employee-profile.md`
+items). 熊积健's three work_context facts (评审会 / CTO / 数据开发+软件开发)
+all persisted under namespace `hmac-b81a…` — correctly **isolated from 朱春霖**
+(`hmac-8129…`). The SQLite files under `runtime/` are stale (Jun 30) because the
+SQLAlchemy/Postgres path took over; they are not being written and that is
+expected.
+
+**Reverted MCP policy behavior — live.** Triggered `tavily-search/tavily_search`
+(risky) via `搜索一下今天深圳的天气`:
+- Model first called with `confirmed=false` → `confirmation_required`, replied
+  "请确认是否执行此搜索？" (no execution).
+- User sent `确认` → model called `confirmed=true` → **executed**, returned real
+  Shenzhen weather data (深圳市气象局), replied at 19:26. No WeCom stream
+  timeout (the `0488ede` placeholder fix held).
+
+### Audit before/after — the revert smoking gun (same file, restart as divider)
+
+`runtime/mcp-audit.jsonl` (PROJECT_ROOT-relative →
+`examples/enterprise_wecom_digital_employee/runtime/mcp-audit.jsonl`). The
+gateway restart at **18:58 (+08)** is the dividing line between the f03e983
+gateway and the reverted gateway; both wrote to the same file, so the behavior
+delta is directly visible:
+
+| Window | Entries | `confirmed` | `reason` |
+|--------|---------|-------------|----------|
+| **Pre-restart, f03e983 gateway** (18:19–18:26 +08) | 8 × `confirmation_required` | all `False` | **GUARD**: `model-supplied confirmed=true ignored; latest user message…` / `pending employee confirmation registered` |
+| **Post-restart, revert gateway** (19:24 +08) | `confirmation_required` | `False` | **clean**: `explicit confirmation required` |
+| **Post-restart, revert gateway** (19:25 +08) | `succeeded` | **`True`** | **clean**: `allowed by policy` |
+| **Post-restart, revert gateway** (22:17 +08) | 7 × `succeeded` (gildata read) | `False` | read tools execute directly |
+
+**Decisive flip:** under `f03e983`, the model's `confirmed=true` first attempt
+was overridden to `confirmed=false` and logged with a guard reason; under the
+revert, `confirmed=true` executes and logs `succeeded … allowed by policy`. No
+post-restart entry contains any guard reason string. `confirmed=true` ∧
+`action=confirmation_required` violations: **0**. This is the definitive proof
+the revert is live.
+
+### seekdb write-side investigation (2026-07-01) — healthy; earlier "empty" claim was a wrong path
+
+Initial observation "seekdb store is empty / not writing" was **wrong** — caused
+by checking `examples/enterprise_wecom_digital_employee/runtime/contextseek`
+(empty). The gateway process cwd is the **repo root** (run_gateway.sh does
+`cd "$REPO_ROOT"`), and `AGENTSEEK_CTX_SEEKDB_PATH=./runtime/contextseek` is
+relative, so it resolves to **`<repo-root>/runtime/contextseek`** (a live
+**257 MB** store). Evidence it is healthy and writing:
+
+- seekdb is an **OceanBase-based embedded engine** (`seekdb.log` =
+  `ob_server.cpp` / `observer instance` / `multi tenant synced` / `schema ready`
+  boot sequence). It runs **in-process** (`run/seekdb.pid` = the gateway pid);
+  the `run/lua.sock` is its internal IPC socket. No separate server process/port.
+- Booted cleanly at gateway start: `server_start 18/18 observer start success`.
+- `store/sstable/block_file` (134 MB) was rewritten **19:14–19:20 +08**, i.e.
+  during/right after the work-context memory turns.
+- `seekdb.log`: **0** error/warn/fail/panic lines.
+- ContextSeek `build_prompt`/`save_state` log **only on skip/error** (DEBUG), not
+  on success — so the gateway log showing only `ContextSeek client initialized`
+  is expected, not a sign of failure. No `skipped` lines appeared either.
+
+**Path-resolution discrepancy worth remembering:** the seekdb path is
+**cwd-relative** (repo-root) while the MCP audit path is **PROJECT_ROOT-relative**
+(example dir) — different rules, which is why the seekdb check initially went to
+the wrong directory while the audit check was always correct.
+
+**Retrieve-side round-trip:** write-side is proven healthy. The work-duty recall
+worked, but the reply labels it `（长期记忆）`, which maps to the **explicit
+long-term store** (langgraph `employee-profile.md`), not unambiguously to seekdb
+semantic. Isolating seekdb retrieve from the explicit store would need either a
+temporary retrieve-hits log line + restart, or an offline probe on a copied store
+(disruptive to the live gateway); not done. This is orthogonal to the revert
+(revert does not touch ContextSeek) and does not block it.
+
+### Overnight run health check (2026-07-02 morning) — clean
+
+Reviewed the full ~14 h the gateway (pid 21413) ran unattended after the restart:
+
+- **Uptime/stability:** pid 21413 ran 13 h 50 m, no restart (pid unchanged); DM
+  sidecar pid 25743 stable 14 h (identity served from cache, no respawns).
+- **Memory:** RSS ~870 MB, +~1 MB over 14 h → **no leak**.
+- **Errors:** 0 SIGBUS / 0 traceback / 0 exit-138 / 0 OOM / 0 ERROR-level log /
+  0 non-2xx HTTP (406 requests, all `200`). `seekdb.log`: 0 errors.
+- **MCP audit (17 entries):** 9 `confirmation_required` (8 pre-restart guard +
+  1 post-restart clean) + 8 `succeeded` (1 tavily `confirmed=true` + 7 gildata
+  read `confirmed=false`); **0 `failed` / 0 `denied`**.
+- **WeCom traffic:** 25 text messages (18:00 ×2 + 19:00 ×18 [the verification] +
+  22:00 ×5 [a gildata finance query]); quiet overnight (last text 22:16, then
+  normal stream/event polls). 2 `duplicate_msgid` (normal WeCom retry dedup).
+
+**Post-check incident (resolved):** the background shell task that launched the
+gateway was stopped by the harness, which took the gateway (21413), the `uv run`
+parent, and the DM sidecar down with it (clean `Application shutdown complete`).
+Restarted via `setsid` so the process is fully detached from the session and
+won't be reaped again — new gateway pid **35923**, DM + WeCom API probed
+directly reachable (`nc` to `192.10.50.26:5236` REACHABLE; `qyapi.weixin.qq.com`
+HTTP 200). FlClash was ON at restart but in **system-proxy mode (TUN off)**
+(default route via `en1`, not `utun`) — the healthy configuration; the new DM
+sidecar spawns lazily on the first identity turn.
+
+**Net verdict.** The `68d7b25` revert is verified live and stable: full basic
+chain works for a fresh employee (熊积健), the MCP confirmation policy judges
+purely by `confirmed`, the model's `confirmed=true` executes directly, and a 14 h
+overnight run was clean. No action needed unless re-landing the hardening is
+requested.
