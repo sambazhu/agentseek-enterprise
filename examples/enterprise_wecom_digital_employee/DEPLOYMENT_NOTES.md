@@ -1899,3 +1899,43 @@ the single turn (pid 97596 still alive, :12000 listening). 0 SIGBUS / 0
 exit-138. The blocker is isolated to parallel durable-memory writes; identity,
 short-term, long-term recall, and (by zero-diff) MCP remain functional. E/F/G
 of the smoke were not pursued further once the blocker was characterized.
+
+### Durable memory concurrent-write fix (2026-07-02, pending Mac mini verification)
+
+Codex fixed the blocker found in the final branch smoke test by serializing
+durable employee profile writes per authenticated employee namespace.
+
+**Fix.** `long_term_memory.py` now wraps the full `get -> modify -> put` section
+in `_remember_employee_memory` and `_forget_employee_memory` with a
+per-namespace `threading.RLock`. The tools are synchronous and can run in
+parallel worker threads during one model turn, so a thread lock matches the
+runtime execution mode. The lock key is the existing
+`enterprise_filesystem_namespace(runtime)`, which means different employees can
+still write concurrently, while one employee's `/employee-profile.md` blob is
+updated one operation at a time.
+
+This protects the single-gateway deployment mode validated on Mac mini. If the
+gateway is later scaled to multiple OS processes or hosts, add a database-level
+upsert/advisory-lock strategy before treating durable memory writes as
+cross-process safe.
+
+**Regression tests added.**
+
+- Two concurrent `forget_employee_memory` calls against the same profile remove
+  both target lines and do not lose either update.
+- Two concurrent `remember_employee_memory` calls against the same profile store
+  both facts and do not let the last writer clobber the first.
+
+**Local verification after the fix.**
+
+- `uv run pytest contrib/agentseek-enterprise/tests/test_long_term_memory.py -q`
+  -> **18 passed**.
+- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest contrib/agentseek-enterprise/tests -q`
+  -> **62 passed**.
+- touched `ruff check --no-fix long_term_memory.py test_long_term_memory.py`
+  -> **All checks passed!**
+
+**Status.** Mac mini live verification is still required before GA. Re-run the
+previous failing D-step2 (`请记住我明天去深圳出差`) and confirm the model can make
+parallel memory calls without `UniqueViolation`, with the final profile showing
+the latest `travel_plan=深圳`.

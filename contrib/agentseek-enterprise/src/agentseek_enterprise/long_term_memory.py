@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -53,6 +54,8 @@ _SLOT_LABELS = {
     "responsibility": "工作职责",
     "meeting_plan": "会议安排",
 }
+_PROFILE_LOCKS: dict[tuple[str, ...], threading.RLock] = {}
+_PROFILE_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -142,23 +145,24 @@ def _remember_employee_memory(
 
     store = _store(runtime)
     namespace = enterprise_filesystem_namespace(runtime)
-    existing = store.get(namespace, _PROFILE_PATH)
-    content = str(existing.value.get("content", "")) if existing is not None else "# Employee Memory\n"
-    normalized_slot = _normalize_slot(slot) if _slot_supersession_enabled() else None
-    line = _format_memory_line(category, normalized, slot=normalized_slot)
-    if line in content:
-        return "That durable employee memory is already recorded."
+    with _profile_lock(namespace):
+        existing = store.get(namespace, _PROFILE_PATH)
+        content = str(existing.value.get("content", "")) if existing is not None else "# Employee Memory\n"
+        normalized_slot = _normalize_slot(slot) if _slot_supersession_enabled() else None
+        line = _format_memory_line(category, normalized, slot=normalized_slot)
+        if line in content:
+            return "That durable employee memory is already recorded."
 
-    if normalized_slot is not None:
-        if match := _find_slot_line(content, category, normalized_slot):
-            if _similar(match.text, normalized):
-                return _replace_durable_memory(store, namespace, content, match.line_index, line)
-            return _replace_conflicting_slot_memory(store, namespace, content, match, line, normalized)
+        if normalized_slot is not None:
+            if match := _find_slot_line(content, category, normalized_slot):
+                if _similar(match.text, normalized):
+                    return _replace_durable_memory(store, namespace, content, match.line_index, line)
+                return _replace_conflicting_slot_memory(store, namespace, content, match, line, normalized)
+            return _append_durable_memory(store, namespace, content, line)
+
+        if match := _find_near_duplicate_line(content, category, normalized):
+            return _replace_durable_memory(store, namespace, content, match.line_index, line)
         return _append_durable_memory(store, namespace, content, line)
-
-    if match := _find_near_duplicate_line(content, category, normalized):
-        return _replace_durable_memory(store, namespace, content, match.line_index, line)
-    return _append_durable_memory(store, namespace, content, line)
 
 
 def _append_durable_memory(store: BaseStore, namespace: tuple[str, ...], content: str, line: str) -> str:
@@ -203,17 +207,30 @@ def _forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
     normalized = _normalize_memory(memory)
     store = _store(runtime)
     namespace = enterprise_filesystem_namespace(runtime)
-    existing = store.get(namespace, _PROFILE_PATH)
-    if existing is None:
-        return "No durable employee memory is currently stored."
+    with _profile_lock(namespace):
+        existing = store.get(namespace, _PROFILE_PATH)
+        if existing is None:
+            return "No durable employee memory is currently stored."
 
-    content = str(existing.value.get("content", ""))
-    retained_lines = [line for line in content.splitlines() if normalized not in line]
-    if len(retained_lines) == len(content.splitlines()):
-        return "No matching durable employee memory was found."
-    updated = "\n".join(retained_lines).rstrip() + "\n"
-    _put_profile(store, namespace, updated)
-    return "The matching durable employee memory has been removed."
+        content = str(existing.value.get("content", ""))
+        retained_lines = [line for line in content.splitlines() if normalized not in line]
+        if len(retained_lines) == len(content.splitlines()):
+            return "No matching durable employee memory was found."
+        updated = "\n".join(retained_lines).rstrip() + "\n"
+        _put_profile(store, namespace, updated)
+        return "The matching durable employee memory has been removed."
+
+
+def _profile_lock(namespace: tuple[str, ...]) -> threading.RLock:
+    # Tools are synchronous and may run concurrently in worker threads within one
+    # model turn, so protect the profile blob with a thread lock per employee
+    # namespace. This keeps get-modify-put atomic inside a gateway process.
+    with _PROFILE_LOCKS_GUARD:
+        lock = _PROFILE_LOCKS.get(namespace)
+        if lock is None:
+            lock = threading.RLock()
+            _PROFILE_LOCKS[namespace] = lock
+        return lock
 
 
 def _put_profile(store: BaseStore, namespace: tuple[str, ...], content: str) -> None:

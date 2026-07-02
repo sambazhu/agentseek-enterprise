@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
+from agentseek_enterprise import long_term_memory
 from agentseek_enterprise.langgraph_store import SQLiteStore
 from agentseek_enterprise.long_term_memory import _PROFILE_PATH, employee_memory_tools
 from agentseek_enterprise.runtime import (
@@ -369,6 +372,73 @@ def test_forget_employee_memory_still_removes_matching_line(
     assert "负责数据架构工作" in profile
 
 
+def test_concurrent_forget_calls_serialize_profile_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    _slow_profile_put(monkeypatch)
+    store, runtime, tools = _memory_harness(tmp_path)
+    _put_profile(
+        store,
+        runtime,
+        "# Employee Memory\n"
+        "- [work_context] 清理旧的北京出差记录\n"
+        "- [work_context] 清理旧的深圳出差记录\n",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                tools["forget_employee_memory"].func,
+                memory=memory,
+                runtime=runtime,
+            )
+            for memory in ("清理旧的北京出差记录", "清理旧的深圳出差记录")
+        ]
+        results = [future.result(timeout=5) for future in futures]
+
+    profile = _profile_content(store, runtime)
+    assert results == [
+        "The matching durable employee memory has been removed.",
+        "The matching durable employee memory has been removed.",
+    ]
+    assert "北京出差" not in profile
+    assert "深圳出差" not in profile
+
+
+def test_concurrent_remember_calls_serialize_profile_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    _slow_profile_put(monkeypatch)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                tools["remember_employee_memory"].func,
+                memory=memory,
+                category="work_context",
+                slot=slot,
+                runtime=runtime,
+            )
+            for memory, slot in (
+                ("负责数据架构工作", "responsibility"),
+                ("明天参加数据治理评审会", "meeting_plan"),
+            )
+        ]
+        results = [future.result(timeout=5) for future in futures]
+
+    profile = _profile_content(store, runtime)
+    assert results == [
+        "The requested durable employee memory has been recorded.",
+        "The requested durable employee memory has been recorded.",
+    ]
+    assert "- [work_context|slot=responsibility] 负责数据架构工作" in profile
+    assert "- [work_context|slot=meeting_plan] 明天参加数据治理评审会" in profile
+
+
 def _memory_harness(tmp_path: Any) -> tuple[SQLiteStore, ToolRuntime, dict[str, Any]]:
     store = SQLiteStore(tmp_path / "enterprise-store.sqlite3")
     context = _runtime_context()
@@ -416,3 +486,13 @@ def _memory_lines(content: str, category: str) -> list[str]:
         for line in content.splitlines()
         if line.startswith(f"- [{category}]") or line.startswith(f"- [{category}|")
     ]
+
+
+def _slow_profile_put(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_put_profile = long_term_memory._put_profile
+
+    def slow_put_profile(*args: Any, **kwargs: Any) -> None:
+        time.sleep(0.05)
+        original_put_profile(*args, **kwargs)
+
+    monkeypatch.setattr(long_term_memory, "_put_profile", slow_put_profile)
