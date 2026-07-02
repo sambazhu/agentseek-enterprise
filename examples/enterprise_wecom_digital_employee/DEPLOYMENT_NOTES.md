@@ -1796,3 +1796,106 @@ The hard constraints remained intact:
 
 This is an RC, not a GA freeze. Keep `enterprise-wecom-v0.0.5-ga-20260630` as
 the immutable GA deployment tag until v0.0.6 receives a GA tag.
+
+### Final branch smoke verification (enterprise/wecom-mcp-policy-audit, 2c626ce) — BLOCKER (do NOT promote to GA)
+
+Mac mini pulled the consolidated final branch `enterprise/wecom-mcp-policy-audit`
+@ `2c626ce` (RC tag `enterprise-wecom-v0.0.6-rc2-memory-slots` → `2c626ce`,
+confirmed). The branch is a clean linear FF of the three prior branches
+(revert + P0/P3 + P1/P5). Static checks pass and most live smoke passes, **but a
+concurrency bug in the durable-memory write path surfaced during live smoke —
+this is a GA blocker.**
+
+**Static — all PASS**
+
+- MCP hard constraint: `git diff 68d7b25 -- mcp_policy.py tools.py` → **no
+  output** (zero diff). The `68d7b25` revert is intact; `f03e983` hardening
+  symbols (`MCPConfirmationGuard`, `confirmation_state_enabled`,
+  `require_or_consume`) are absent from src — **no guard revival**.
+- `pytest contrib/agentseek-enterprise/tests -q` → **60 passed**.
+- touched `ruff` on `long_term_memory.py` + `test_long_term_memory.py` →
+  **All checks passed!**
+
+**Live smoke — A/B/C and D-step1 PASS, D-step2 FAILS (blocker)**
+
+Gateway restarted on `2c626ce` (pid 97596, clean boot, slot env default on,
+FlClash system-proxy/TUN-off, DM sidecar cold-spawned pid 98302). All single
+memory-tool-call turns worked:
+
+- **A identity** — `我是谁` (朱春霖) → full identity. ✅
+- **B short-term** — `帮我记一下…深圳出差` → `我刚才说我要去哪里？` recalled
+  "明天（7/3）下午去深圳出差 ✈️" via conversational context. ✅ (Note: the model
+  durable-stored "记一下" — said "已长期记住" — a prompt nuance, not a bug; recall
+  was correct and source-labelled.)
+- **C long-term recall (P3)** — `我的长期回复偏好是什么？` → single preference
+  ("简洁、分点呈现"), model noting "目前偏好记录仅一条，无冗余". P3 dedup intact. ✅
+- **D step1 P5 (single call)** — `请记住我明天去北京出差` (朱春霖) → P5 fired,
+  superseded the travel_plan=深圳 (set in step B) with 北京; postgres confirmed
+  `- [work_context|slot=travel_plan] 明天（2026-07-03）去北京出差`; reply surfaced
+  the replacement. ✅
+
+**D step2 — FAIL (the blocker).** `请记住我明天去深圳出差` (朱春霖). The model
+issued **two parallel `forget_employee_memory` calls in one turn** (attempting to
+clear multiple legacy 深圳 entries). Both calls do a non-atomic read-modify-write
+on the shared `/employee-profile.md`; the two concurrent `store.put` operations
+raced and the second hit a primary-key violation, crashing the whole turn. The
+user received an error reply and the 深圳 update did **not** persist (postgres
+still shows travel_plan=北京).
+
+Log fragment (gateway_final.log, 2026-07-02 12:42:14):
+
+```
+PregelExecutableTask(name='tools', input=[{'name': 'forget_employee_memory', ...}, {'name': 'forget_employee_memory', ...}])
+→ IntegrityError('(psycopg.errors.UniqueViolation) duplicate key value violates unique constraint "langgraph_store_items_pkey"')
+  DETAIL: Key (namespace_json, item_key)=(["enterprise","v1","hmac-9b99…","hmac-8129…","filesystem"], /employee-profile.md) already exists.
+  [SQL: INSERT INTO langgraph_store_items (namespace_json, item_key, value_json, created_at, updated_at) VALUES (%(namespace_json)s, %(item_key)s, %(value_json)s, %(created_at)s, %(updated_at)s)]
+```
+
+**Root cause.** The durable-memory tools
+(`_remember_employee_memory`/`_forget_employee_memory`) perform a non-atomic
+**read → modify → `store.put`** on the single `/employee-profile.md` row. When
+the model makes **≥2 memory tool calls in one turn** (here: 2 parallel
+`forget_employee_memory`), the calls race: both read the same profile, both
+`put`. The langgraph PostgreSQL store's `put` on this path issues a plain
+`INSERT … VALUES` (no `ON CONFLICT`/upsert clause), so when two concurrent puts
+both believe the row is new, the second violates the
+`langgraph_store_items_pkey` unique constraint → `IntegrityError` → the turn's
+transaction aborts. The slot/P5/P0/P3 logic itself is correct (deterministic
+probe + every single-call live turn passed); the defect is the **write-path
+concurrency**, which is independent of the slot logic but blocks production.
+
+**Impact.** Any turn in which the model makes multiple memory tool calls in
+parallel can fail loudly (error reply + lost write). The model does this in
+practice when cleaning up duplicates or storing related facts — exactly the
+"forget the old duplicates" behavior the new dedup/slot features encourage.
+Reproducible on this build.
+
+**Fix direction for Codex (pick one, recommend #1):**
+
+1. **Serialize per-profile writes** — wrap the `get → modify → put` sequence in
+   `_remember_employee_memory`/`_forget_employee_memory` in a per-namespace
+   `asyncio.Lock` (keyed by `enterprise_filesystem_namespace(runtime)`) so
+   parallel tool calls in one turn queue instead of race. Most robust, fully in
+   app control.
+2. **Make the write idempotent on conflict** — catch `IntegrityError` from
+   `store.put` and retry once as an update (re-read, re-apply, re-put).
+3. **Drive the store to upsert** — ensure the langgraph store `put` uses
+   `INSERT … ON CONFLICT (namespace_json, item_key) DO UPDATE` (may require a
+   store config or version bump; verify the store backend).
+
+Add a regression test that fires ≥2 `forget`/`remember` calls concurrently on
+the same profile (via the real PostgreSQL store, not the fake) and asserts no
+`UniqueViolation` and a consistent final profile.
+
+**Recommendation.** **Do NOT promote `enterprise-wecom-v0.0.6-rc2-memory-slots`
+to GA.** Keep `enterprise-wecom-v0.0.5-ga-20260630` as the immutable GA tag.
+Route back to Codex for the write-path concurrency fix + a concurrent-write
+regression test; re-run this smoke (especially a multi-parallel-memory-call
+turn) before re-assessing GA. The MCP revert, P0/P3, and P1/P5 logic are
+verified sound; only the concurrent-write defect blocks GA.
+
+**Health (despite the blocker).** The gateway did not crash — the error failed
+the single turn (pid 97596 still alive, :12000 listening). 0 SIGBUS / 0
+exit-138. The blocker is isolated to parallel durable-memory writes; identity,
+short-term, long-term recall, and (by zero-diff) MCP remain functional. E/F/G
+of the smoke were not pursued further once the blocker was characterized.
