@@ -2127,3 +2127,96 @@ Carry-over caveats:
 **Verdict.** `enterprise-wecom-v0.0.6-ga-20260702` is the new immutable GA
 deployment baseline. Keep `enterprise-wecom-v0.0.5-ga-20260630` for rollback
 and audit history.
+
+## v0.0.7 pgvector + PostgreSQL scram verification (enterprise/v0.0.7-pgvector, b9d6f2d) — production PASS, 2 test artifacts
+
+Mac mini verified `enterprise/v0.0.7-pgvector` @ `b9d6f2d`: ContextSeek
+semantic memory migrated from local seekdb to **PostgreSQL + pgvector**
+(bge-m3 dense 1024-dim via ONNX/onnxruntime), and PostgreSQL auth switched
+**trust → scram-sha-256** with a dedicated least-privilege app role. No
+`mcp_policy.py`/`tools.py` changes; no seekdb data migrated.
+
+**PostgreSQL + pgvector**
+
+- Version **PostgreSQL 17.10 (Homebrew)**; db `agentseek`; pgvector **0.8.4**
+  (built from source against `postgresql@17`, `CREATE EXTENSION vector`).
+- `password_encryption = scram-sha-256`; `ssl = off` (loopback only).
+
+**Auth — scram fully switched + verified.** All 6 active `pg_hba.conf` rules
+(local + host 127.0.0.1/::1 + replication) changed `trust → scram-sha-256`
+(backup at `pg_hba.conf.trust.bak.*`); `pg_reload_conf()` applied. Created
+least-privilege role **`agentseek_app`** (non-superuser; `CONNECT` on db,
+`USAGE/CREATE` on `public`, table/sequence privileges, `ALTER DEFAULT
+PRIVILEGES`) — the gateway no longer runs as the `sambazhu` superuser.
+Verification: no-password TCP → `fe_sendauth: no password supplied` (rejected);
+`agentseek_app` + `sambazhu` with passwords → login OK. `.env` SQLAlchemy URLs
+(MEMORY/STORE) and `AGENTSEEK_CTX_PGVECTOR_URL` carry `agentseek_app:<pw>@…`
+(`.env` stays gitignored; password never committed/printed).
+
+**bge-m3 ONNX.** `BAAI/bge-m3` dense, **1024-dim**, loaded via `onnxruntime` +
+`tokenizers` (no torch in the gateway process). Used the
+`Xenova/bge-m3` community ONNX export `onnx/model_quantized.onnx` (int8, 570 MB)
+→ `./models/bge-m3-onnx/model.onnx` + `tokenizer.json` (downloaded via HF over
+the 7890 proxy with resume; HF direct was rate-limited). Embedder self-test:
+1024-dim, L2 norm = 1.0. **Note:** this is the int8-quantized variant — fine
+for verification; for production quality consider the fp32/fp16 ONNX variant.
+
+**`prod_check.py`** (Codex updated): `ContextSeek storage backend is pgvector` ✅,
+`pgvector dims 1024` ✅, bge-m3 model+tokenizer paths exist ✅, short-term +
+explicit durable memory use SQLAlchemy URL ✅ — all green.
+
+**Live WeCom** (gateway restarted on pgvector, pid 13692, clean boot,
+**0 `seekdb has opened`**, 0 SIGBUS):
+
+- **A identity** — `我是谁` (朱春霖) → full identity; confirms the gateway's
+  scram `agentseek_app` PG connection works (identity cache stored). ✅
+- **D pgvector semantic** — `请长期记住：…负责数据架构工作` →
+  `ContextSeek pgvector client initialized` (bge-m3 loaded, no seekdb);
+  `contextseek_pgvector_items` table created (owner `agentseek_app`); semantic
+  row stored under 朱春霖's scope. Then `我的工作职责是什么？` → recalled
+  "**负责数据架构工作**" via pgvector cosine ANN. ✅
+- **E isolation** — 熊积健 `我的工作职责是什么？` → answered from his OWN
+  memory/context; **朱春霖's "数据架构工作" did not leak** (pgvector scope
+  WHERE; 熊积健's scope has 0 rows with 数据架构). ✅
+- **F MCP** — `列一下当前可用的 MCP 工具` → 5 services, risk labels correct
+  (tavily ⚠️ 需确认). `mcp-audit.jsonl` still 17 lines, guard-reason count
+  unchanged at 8 (historical) → `68d7b25` MCP revert intact. ✅
+- B (short-term) / C (explicit long-term recall) share the same scram
+  SQLAlchemy connection A proved; code unchanged from v0.0.6 GA.
+
+**Static.** `git diff 68d7b25 -- mcp_policy.py tools.py` → **zero diff** (MCP
+revert intact). `pytest contrib/agentseek-enterprise/tests -q` → **62 passed**.
+contextseek `pytest` → 42 passed, 1 failed, 1 skipped (the skip = real-pgvector
+integration, which was run explicitly with `AGENTSEEK_CTX_PGVECTOR_TEST_URL` →
+**PASS**, confirming production code; see artifacts below).
+
+**Two test artifacts (NOT production bugs — production verified via real-DB +
+live). For Codex to clean up:**
+
+1. `test_pgvector_add_retrieve_roundtrip` (unit, FakeEmbedder) **FAILs**:
+   `assert hit.item.tags == ["t"]` got `[]`. Root cause: the test's
+   `FakePgVectorDatabase` stores the psycopg `Jsonb(["t"])` adapter object
+   as-is (never round-tripped through postgres jsonb), and `_tags_from_row` only
+   handles `list`/`str` → returns `[]`. Real DB round-trip confirmed correct
+   (psycopg deserializes jsonb → Python list). Fix: the fake should adapt
+   `Jsonb` → value on store, or `_tags_from_row` should handle the adapter.
+2. `_delete_real_rows` test helper calls `psycopg.connect(settings.url)`
+   directly, bypassing `_psycopg_url` → fails if the URL is the SQLAlchemy-style
+   `postgresql+psycopg://…` (the production `_connect()` path uses
+   `_psycopg_url` and is correct; the real integration test PASSES with a plain
+   `postgresql://` URL). Fix: use `_psycopg_url(settings.url)` in the helper.
+
+**Operational note (handled).** During the real-test run, passing the
+`postgresql+psycopg://…` URL to the test helper triggered a psycopg parse error
+that echoed the URL including the `agentseek_app` password. The password was
+**rotated immediately** (new random, role + `.env` updated); no other exposure.
+Recommend Codex's helper fix (#2) to prevent recurrence.
+
+**Verdict — RC1 eligible.** The v0.0.7 production functionality (pgvector
+semantic memory with bge-m3 ONNX + scram auth + least-privilege role) is
+verified end-to-end (real-DB integration + live store/recall/isolation), MCP
+revert intact, 0 SIGBUS, seekdb fully replaced (0 `seekdb has opened`).
+**Recommend tagging `enterprise-wecom-v0.0.7-rc1`** after Codex fixes the 2
+test artifacts so the suite is green; the artifacts do not block production
+behavior. Carry-over: consider fp32/fp16 bge-m3 ONNX for production embedding
+quality; PG `ssl=off` is acceptable only while loopback-only.
