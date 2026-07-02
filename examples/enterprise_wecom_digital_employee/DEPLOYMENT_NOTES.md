@@ -1364,3 +1364,207 @@ chain works for a fresh employee (熊积健), the MCP confirmation policy judges
 purely by `confirmed`, the model's `confirmed=true` executes directly, and a 14 h
 overnight run was clean. No action needed unless re-landing the hardening is
 requested.
+
+---
+
+## Work item for Codex: durable-memory dedup + slot supersession (filed 2026-07-02)
+
+**Owner:** Codex (Mac Pro) implements; Mac mini pulls, deploys, and tests against
+the acceptance criteria + test plan below. Branch: open a new branch off
+`enterprise/wecom-mcp-policy-audit` (do **not** commit to the revert branch's
+history directly if the user prefers a reviewable PR — confirm with the user).
+
+### Problem (with live evidence)
+
+The durable employee-memory store accumulates **duplicate** and **contradictory**
+records because writes are append-only with only exact-string dedup. Confirmed
+against real data in postgres (`langgraph_store_items`). 朱春霖's
+`/employee-profile.md` (namespace `…/hmac-8129…/filesystem`):
+
+```
+# Employee Memory
+- [work_context] 朱春霖明天（2026-07-01）下午去北京出差      ← conflicts with below
+- [preference] 企微回复偏好简洁、分点的回复方式               ┐
+- [work_context] 明天（2026/7/1）下午去深圳出差               │ 3 near-duplicate
+- [preference] 企微回复偏好：简洁、分点呈现                   │ preferences
+- [work_context] 明天（2026-07-01）下午去深圳出差             │
+- [preference] 偏好简洁、分点的回复方式                        ┘
+- [work_context] 2026年7月2日下午去深圳出差
+- [work_context] 负责数据架构工作
+```
+
+Two failure modes, both observed in production-style use:
+1. **Duplicates** — same `preference` stored 3× with slightly different phrasing.
+2. **Contradictions** — `work_context` about the same event ("明天出差") with
+   different destinations (北京 vs 深圳) and dates (7/1 vs 7/2), all retained.
+
+### Root cause (code)
+
+All in [`contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py`](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py).
+
+- **Dedup is exact-line match only** — `remember_employee_memory` at
+  [line 76](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L76):
+  `if line in content: return "… already recorded."`. The three preferences
+  differ in punctuation/phrasing ("回复方式" vs "呈现", with/without "企微回复"),
+  so the exact-match misses and all three append.
+- **No slot / supersession concept** — `category` is only `preference` |
+  `work_context` ([line 58](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L58)).
+  Two facts about the same temporal event ("明天去北京" then "明天去深圳") are
+  treated as independent `work_context` lines; nothing recognizes the later one
+  should supersede the earlier.
+- **One free-text markdown blob per employee** — all memories live in a single
+  `/employee-profile.md` string ([line 14](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L14));
+  read-modify-write via `store.put`. No per-line metadata (timestamp, slot,
+  superseded flag, valid-until).
+- **Recall returns the raw accumulated blob** —
+  `recall_employee_memory` ([line 36](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L36))
+  hands the model the full markdown. The model already detects the duplicates at
+  recall time ("目前此条偏好有多条重复记录，需要清理吗?") but the noisy prompt can
+  make it waffle, and storage still grows.
+
+### Current mechanism (for context)
+
+- Tools: `recall_employee_memory`, `remember_employee_memory(memory, category)`,
+  `forget_employee_memory(memory)`. Scoped per employee via
+  `enterprise_filesystem_namespace(runtime)`; stored at `/employee-profile.md`.
+- `_normalize_memory` collapses whitespace; `_contains_sensitive_marker` blocks
+  credentials; `_MAX_MEMORY_CHARS=500`, `_MAX_PROFILE_CHARS=8000`.
+- Backend: langgraph `BaseStore` → PostgreSQL (`langgraph_store_items`,
+  `postgresql+psycopg://localhost/agentseek`). Short-term memory is a separate
+  table (`enterprise_short_term_messages`) and is **out of scope** for this change.
+- ContextSeek/seekdb is a **separate** semantic layer and is **out of scope**.
+
+### Implementation scope for this iteration
+
+**Do now: P0 (write-side semantic dedup) + P3 (read-side reconcile).** Both are
+contained to `long_term_memory.py`, do not change storage schema, and directly
+stop the bleeding. P1/P2 are documented below as the follow-on direction so the
+design rationale is preserved — **do not implement P1/P2 in this iteration**
+unless the user explicitly expands scope.
+
+#### P0 — write-side semantic dedup (in `remember_employee_memory`)
+
+Replace the exact-line dedup ([line 76](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L76))
+with same-category fuzzy matching:
+
+1. Parse existing bullets into `(category, text)` pairs from the markdown
+   (`- [category] text`). Provide a small `_parse_profile(content)` helper.
+2. Normalize for comparison: lowercase, strip CJK + ASCII punctuation
+   (`，。、：；！？,.:!;()（）""''`), collapse whitespace. Keep this
+   **comparison-only** — the stored line keeps its original wording.
+3. Compute similarity against each existing bullet of the **same category**.
+   For CJK, character-shingle similarity works better than word tokens. Use
+   `difflib.SequenceMatcher(None, a, b).ratio()` **or** Jaccard over char
+   2-grams/3-grams. Pick one; wrap behind a `_similar(a, b) -> bool` helper.
+4. Threshold tunable via env, default ~0.70:
+   `AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD` (0.0 disables → current
+   exact-match behavior becomes a subset; 1.0 = exact only).
+5. On match: **replace** the matched line in place with the new wording (so the
+   latest phrasing wins, line count stays flat). Return a distinct confirmation,
+   e.g. `"Updated an existing durable memory (was a near-duplicate)."` — do not
+   silently no-op; the model should know it updated rather than appended.
+6. On no match: append as today.
+7. Keep the existing exact-match short-circuit as a fast path before fuzzy match.
+
+Cross-category never dedupes (a `preference` and a `work_context` can coexist
+even if textually similar).
+
+#### P3 — read-side reconcile (in `recall_employee_memory`)
+
+Before returning the `[DurableEmployeeMemory]` block, clean the content so the
+prompt is not noisy (this also cleans **existing** dirty profiles like 朱春霖's
+without a migration):
+
+1. Parse bullets into `(category, text)`.
+2. Within each category, collapse near-duplicate bullets (same `_similar` helper
+   + threshold from P0) to **one** representative — prefer the latest (last in
+   file = most recently written).
+3. Return the deduped markdown (re-emit as `- [category] text` lines). Keep the
+   `[DurableEmployeeMemory]` header and boundary prompt verbatim
+   ([lines 48-53](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L48-L53)).
+4. This is a **view** over stored data — do not mutate the store on recall.
+
+> Note: P3 alone hides contradictions from the model but does not resolve the
+> 北京/深圳 case (those are different strings, not near-duplicates). P1 (below)
+> is the real fix for contradictions. P3's job is dedup of near-identical lines.
+
+### Acceptance criteria (Codex must hit these; Mac mini tests against them)
+
+1. Storing the exact same `(category, memory)` twice → still one line (current
+   behavior preserved).
+2. Storing the same preference with **different phrasing/punctuation**
+   (the three real strings above) → ends as **one** line, latest wording.
+3. Storing a `preference` and a textually-similar `work_context` → **both** kept
+   (cross-category no-merge).
+4. Sensitive content and size-cap refusals still fire (no regression).
+5. `recall_employee_memory` on 朱春霖's current dirty profile returns ≤1 line per
+   near-duplicate cluster (the 3 preferences collapse to 1).
+6. `forget_employee_memory` still removes the intended line (no regression).
+7. Threshold env var works: set to `1.0` → behaves as exact-match (backward
+   compat); set to `0.0` → never merges.
+8. No regression to identity / short-term memory / seekdb / MCP policy. The
+   `68d7b25` revert behavior (MCP confirmation purely by `confirmed`) is
+   **untouched** — this change must not edit `mcp_policy.py` or `tools.py`.
+
+### Test plan Mac mini will execute (after pulling Codex's branch)
+
+**A. Unit tests (Codex should add `test_long_term_memory.py`; Mac mini re-runs):**
+- exact-duplicate → single line
+- near-duplicate phrasings (the 3 real preference strings) → single line, latest wins
+- cross-category similarity → both kept
+- threshold=1.0 → exact-match behavior; threshold=0.0 → no merge
+- sensitive/size refusals unchanged
+- `recall` dedupes a fixture dirty profile to ≤1 per cluster
+- `forget` removes the right line from a deduped profile
+
+**B. Live WeCom (熊积健 + 朱春霖, on the restarted gateway):**
+1. 朱春霖 `我的长期回复偏好是什么？` → reply cites a **single** preference (P3
+   cleans the existing 3-way dup); no "多条重复记录" waffle.
+2. As 熊积健, store the same preference 3× with different phrasings →
+   `SELECT value_json::jsonb->>'content' FROM langgraph_store_items WHERE
+   namespace_json LIKE '%hmac-b81a%'` shows **one** line (P0).
+3. As 熊积健, store `[preference] X` and a textually-similar `[work_context] X`
+   → both present (cross-category).
+4. Identity / short-term store+recall / explicit long-term recall+boundary /
+   MCP list / MCP confirm round-trip (tavily) — full basic chain, no regression.
+5. Audit log still shows the reverted MCP behavior (clean reasons); memory
+   change must not touch MCP audit.
+
+**C. Regression sweep:** run
+`uv run pytest contrib/agentseek-enterprise/tests -q` (expect all green,
+including the new `test_long_term_memory.py`).
+
+### Follow-on direction (documented, NOT this iteration)
+
+- **P1 — slot-based supersession.** Add a `slot` parameter to
+  `remember_employee_memory` (model fills it from semantics). Same slot + new
+  value → replace. Examples: `pref.reply_style`, `travel_plan`,
+  `meeting:2026-07-02`, `role`, `manager`. This is the real fix for the
+  北京/深圳 contradiction (today's two-string mismatch is not near-duplicate, so
+  P0/P3 won't catch it). Needs prompt guidance so the model emits `slot`.
+- **P2 — structured per-memory storage.** Move from one markdown blob to one
+  store item per memory (key = slot or uuid, value = `{category, content,
+  created_at, superseded_by, valid_until}`); optionally `index=True` to get
+  langgraph store vector search for free. Markdown becomes a rendered view. This
+  is the clean terminal state but a larger refactor — do it after P0/P1 validate
+  the direction.
+- **P4 — periodic compaction/expiry.** Model-driven consolidation pass: drop
+  stale temporal facts whose date passed, merge残余 dupes. Background or
+  on-demand tool.
+- **P5 — contradiction surfacing.** On write-time conflict (same slot, different
+  value), confirm with the user or auto-supersede with a notice.
+
+### Constraints / non-goals
+
+- **Do not** touch `mcp_policy.py`, `tools.py`, or the MCP confirmation behavior
+  — the `68d7b25` revert must stand.
+- **Do not** migrate existing data; P3 must handle dirty profiles read-only.
+- Keep the markdown line format backward-compatible enough that a profile
+  written by old code is still readable (P3's parser must tolerate bullets
+  without slot tags).
+- Keep the change behind the threshold env so it can be disabled without a
+  redeploy if it over-merges in production.
+- Watch the write-path latency budget: P0's similarity check must be cheap
+  (profile is capped at 8 KB → O(n) over a few dozen bullets is fine). Do **not**
+  call an embedding model on every `remember` call; if embedding-based dedup is
+  wanted later, gate it behind an env flag and run it async/out-of-band.
