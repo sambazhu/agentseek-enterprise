@@ -2220,3 +2220,67 @@ revert intact, 0 SIGBUS, seekdb fully replaced (0 `seekdb has opened`).
 test artifacts so the suite is green; the artifacts do not block production
 behavior. Carry-over: consider fp32/fp16 bge-m3 ONNX for production embedding
 quality; PG `ssl=off` is acceptable only while loopback-only.
+
+## v0.0.7 RC1 re-verification (enterprise/v0.0.7-pgvector @ 0485453, tag enterprise-wecom-v0.0.7-rc1) — PASS, ready for GA
+
+Mac mini re-verified RC1 after Codex's `0485453 test: harden pgvector
+verification helpers` (fixes the two artifacts from the prior round: fake-DB
+`Jsonb` tags handling in `_tags_from_row`, and `_psycopg_url` use in the test
+helper to avoid the `postgresql+psycopg://` URL parse error + password echo).
+
+**Branch/tag/commit.** `enterprise/v0.0.7-pgvector` @ `0485453`;
+`enterprise-wecom-v0.0.7-rc1^{}` → `0485453` (match). Working tree clean (no
+business code changes; `.env` not committed). RC1 delta vs the prior verified
+`e882f3d`: `pgvector.py` (+6) + `test_pgvector.py` (+2/-1) — only the
+pgvector/tags path and tests.
+
+**Static + tests — all green, both artifacts fixed.**
+
+- MCP hard constraint: `git diff 68d7b25 -- mcp_policy.py tools.py` → **zero
+  output** (MCP confirmation revert intact).
+- `pytest contrib/agentseek-contextseek/tests -q` → **43 passed, 1 skipped**
+  (skip = real-pgvector integration, needs URL).
+- `pytest contrib/agentseek-enterprise/tests -q` → **62 passed**.
+- Real pgvector integration
+  (`AGENTSEEK_CTX_PGVECTOR_TEST_URL=postgresql+psycopg://agentseek_app:…@…`,
+  the `+psycopg` form that previously errored): **8 passed**, and the raw log
+  contains **no password** — `_psycopg_url` fix verified, no leak.
+- The previously-failing `test_pgvector_add_retrieve_roundtrip` now **PASSES**
+  (`_tags_from_row` handles the `Jsonb` adapter).
+
+**PostgreSQL scram — still fully in effect.** `password_encryption =
+scram-sha-256`; pgvector `vector 0.8.4`; `agentseek_app` is non-superuser
+(`rolsuper=f`); no-password TCP → `fe_sendauth: no password supplied`
+(rejected); with-password → login OK. `.env` unchanged: `CTX_STORAGE_BACKEND=
+pgvector`, `PGVECTOR_URL/TABLE/DIMS=1024`, bge-m3 ONNX+tokenizer paths present,
+short-term + explicit-long-term SQLAlchemy URLs use `agentseek_app`.
+
+**Live WeCom** (gateway restarted on RC1, pid 23132, clean boot):
+
+- **A identity** — `我是谁` (朱春霖) → full identity; confirms the scram
+  `agentseek_app` PG connection (identity cache stored). ✅
+- **B pgvector semantic (the RC1-changed path)** —
+  `请长期记住：…负责数据架构工作` → `我的工作职责是什么？` recalled
+  "**负责数据架构工作**" via pgvector. ✅
+- **F MCP** — `列一下当前可用的 MCP 工具` → 4/5 services listed with correct
+  risk labels (tavily ⚠️ 需确认). `agent-platform` reported "连接失败，当前不
+  可用" — that external SSE server (`172.20.16.242:8000`) is unreachable, **not
+  a v0.0.7 regression** (gateway correctly reports it; other 4 servers fine).
+- C (isolation) / D (short-term) / E (explicit long-term): not re-driven live
+  this round — RC1's only change is the pgvector tags path, which the unit +
+  real-pgvector integration tests cover, and these paths were live-verified on
+  the identical config in the prior round (`e882f3d`).
+
+**Health.** 0 SIGBUS / 0 traceback; 43 HTTP callbacks all `200`; audit
+`guard-reason` count unchanged at 8 (historical) → MCP revert intact; seekdb
+store `block_file` mtime frozen at 15:40 (pre-pgvector-switch) → **seekdb no
+longer growing**, pgvector is the active semantic backend.
+
+**Verdict — ready for GA.** RC1 fixes are verified (both test artifacts
+resolved, suite green, no password leak), production functionality confirmed
+live (identity + scram + pgvector semantic), MCP revert intact, 0 SIGBUS, seekdb
+fully replaced. Recommend tagging **`enterprise-wecom-v0.0.7-ga`** at
+`0485453`. Non-blocking carry-over (unchanged from prior round): consider
+fp32/fp16 bge-m3 ONNX for production embedding quality; `agent-platform` MCP
+server availability is an external ops item; PG `ssl=off` is acceptable only
+while loopback-only.
