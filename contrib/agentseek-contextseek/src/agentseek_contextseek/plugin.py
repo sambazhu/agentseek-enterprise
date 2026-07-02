@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -12,6 +13,7 @@ from bub.types import Envelope, State
 from loguru import logger
 
 from agentseek_contextseek.config import ContextSeekPluginSettings, apply_contextseek_env_aliases
+from agentseek_contextseek.pgvector import PGVECTOR_BACKEND, PgVectorContextSeek
 
 _SCOPED_KEY_RE = re.compile(r"^(?:hmac|sha256)-[a-f0-9]{64}$")
 _SENSITIVE_CONTENT_RE = re.compile(
@@ -37,9 +39,14 @@ class ContextSeekPlugin:
             return self._client
         self._client_initialized = True
         try:
-            cs = importlib.import_module("contextseek.client.contextseek")
-            self._client = cs.ContextSeek.from_settings()
-            logger.info("ContextSeek client initialized.")
+            if _contextseek_storage_backend() == PGVECTOR_BACKEND:
+                self._client = PgVectorContextSeek.from_env()
+                self._client.initialize()
+                logger.info("ContextSeek pgvector client initialized.")
+            else:
+                cs = importlib.import_module("contextseek.client.contextseek")
+                self._client = cs.ContextSeek.from_settings()
+                logger.info("ContextSeek client initialized.")
         except Exception as exc:
             logger.warning(f"ContextSeek client init failed, semantic context disabled: {exc}")
         return self._client
@@ -242,3 +249,11 @@ def _is_scoped_key(value: str) -> bool:
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def _contextseek_storage_backend() -> str:
+    return (
+        os.environ.get("AGENTSEEK_CTX_STORAGE_BACKEND")
+        or os.environ.get("STORAGE_BACKEND")
+        or ""
+    ).strip().lower()

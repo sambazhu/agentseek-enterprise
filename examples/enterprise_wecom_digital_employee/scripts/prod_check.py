@@ -153,18 +153,42 @@ def check_memory(env: dict[str, str], project_root: Path, report: CheckReport) -
         report.ok("enterprise namespace secret is set")
     else:
         report.fail("AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET must be a high-entropy value before production")
-    require(env, report, "AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH")
-    ensure_parent_writable(env, project_root, report, "AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH")
-    ensure_parent_writable(env, project_root, report, "AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH")
+    if env.get("AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL", "").strip():
+        report.ok("short-term memory uses SQLAlchemy URL")
+        warn_if_placeholder_password(env["AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL"], report, "short-term memory")
+    else:
+        ensure_parent_writable(env, project_root, report, "AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH")
+    if env.get("AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL", "").strip():
+        report.ok("explicit durable memory uses SQLAlchemy URL")
+        warn_if_placeholder_password(env["AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL"], report, "explicit durable memory")
+    else:
+        require(env, report, "AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH")
+        ensure_parent_writable(env, project_root, report, "AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH")
 
 
 def check_contextseek(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
     backend = env.get("AGENTSEEK_CTX_STORAGE_BACKEND", "").strip()
     if backend == "seekdb":
         report.ok("ContextSeek storage backend is seekdb")
+        ensure_parent_writable(env, project_root, report, "AGENTSEEK_CTX_SEEKDB_PATH", path_is_directory=True)
+    elif backend == "pgvector":
+        report.ok("ContextSeek storage backend is pgvector")
+        require(env, report, "AGENTSEEK_CTX_PGVECTOR_URL")
+        warn_if_placeholder_password(env.get("AGENTSEEK_CTX_PGVECTOR_URL", ""), report, "ContextSeek pgvector")
+        table = env.get("AGENTSEEK_CTX_PGVECTOR_TABLE", "").strip()
+        if table:
+            report.ok("AGENTSEEK_CTX_PGVECTOR_TABLE is set")
+        else:
+            report.warn("AGENTSEEK_CTX_PGVECTOR_TABLE is empty; default contextseek_pgvector_items will be used")
+        dims = env.get("AGENTSEEK_CTX_PGVECTOR_DIMS", "1024").strip()
+        if dims == "1024":
+            report.ok("pgvector embedding dims are 1024 for bge-m3 dense")
+        else:
+            report.fail(f"AGENTSEEK_CTX_PGVECTOR_DIMS should be 1024 for bge-m3 dense, got {dims!r}")
+        check_existing_path(env, project_root, report, "AGENTSEEK_CTX_BGE_M3_ONNX_MODEL_PATH", file_expected=True)
+        check_existing_path(env, project_root, report, "AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH", file_expected=True)
     else:
-        report.warn(f"ContextSeek storage backend is {backend!r}; seekdb is the verified local persistent mode")
-    ensure_parent_writable(env, project_root, report, "AGENTSEEK_CTX_SEEKDB_PATH", path_is_directory=True)
+        report.warn(f"ContextSeek storage backend is {backend!r}; seekdb and pgvector are the verified persistent modes")
 
 
 def check_mcp(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
@@ -264,6 +288,12 @@ def contains_placeholder(value: str) -> bool:
 
 def truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in TRUE_VALUES
+
+
+def warn_if_placeholder_password(url: str, report: CheckReport, label: str) -> None:
+    normalized = str(url or "").lower()
+    if "<password>" in normalized or ":password@" in normalized or ":pass@" in normalized:
+        report.fail(f"{label} SQLAlchemy URL still contains a placeholder password")
 
 
 def _unquote(value: str) -> str:

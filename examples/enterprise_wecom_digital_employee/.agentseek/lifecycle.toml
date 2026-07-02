@@ -105,7 +105,29 @@ description = "High-entropy namespace secret for per-employee durable stores."
 [env.AGENTSEEK_CTX_STORAGE_BACKEND]
 required = false
 default = "seekdb"
-description = "ContextSeek semantic memory backend."
+description = "ContextSeek semantic memory backend: seekdb for local persistent storage, pgvector for PostgreSQL semantic memory."
+
+[env.AGENTSEEK_CTX_PGVECTOR_URL]
+required = false
+description = "PostgreSQL URL used when AGENTSEEK_CTX_STORAGE_BACKEND=pgvector."
+
+[env.AGENTSEEK_CTX_PGVECTOR_TABLE]
+required = false
+default = "contextseek_pgvector_items"
+description = "pgvector table for ContextSeek semantic memory."
+
+[env.AGENTSEEK_CTX_PGVECTOR_DIMS]
+required = false
+default = "1024"
+description = "Dense bge-m3 embedding dimensions for pgvector."
+
+[env.AGENTSEEK_CTX_BGE_M3_ONNX_MODEL_PATH]
+required = false
+description = "Path to the exported bge-m3 ONNX model used by the pgvector backend."
+
+[env.AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH]
+required = false
+description = "Path to bge-m3 tokenizer.json used by the pgvector backend."
 
 [services.wecom]
 url = "http://127.0.0.1:12000/ai-bot/callback/demo/<botid>"

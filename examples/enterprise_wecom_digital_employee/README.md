@@ -32,7 +32,8 @@ Fill `.env` with:
   `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` pointing at PostgreSQL/MySQL;
 - the tenant id, namespace secret, and durable store path, or
   `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` for PostgreSQL/MySQL;
-- local ContextSeek SeekDB storage and its first-start embedding-model download;
+- ContextSeek semantic storage: local `seekdb`, or PostgreSQL + `pgvector`
+  with bge-m3 dense embeddings exported to ONNX;
 - MCP servers in `.agents/mcp.json`;
 - MCP policy and audit settings for allowlists, write-tool confirmation, and
   JSONL audit logs.
@@ -40,6 +41,13 @@ Fill `.env` with:
 When you enable PostgreSQL/MySQL memory URLs, install the matching SQLAlchemy
 driver in the deployment environment, for example `psycopg[binary]` for
 `postgresql+psycopg://...` or `pymysql` for `mysql+pymysql://...`.
+
+When you enable `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`, install PostgreSQL
+with the `vector` extension and make `psycopg[binary]` available in the project
+environment. The gateway creates the semantic table on first startup. Point
+`AGENTSEEK_CTX_BGE_M3_ONNX_MODEL_PATH` plus
+`AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH` at an exported bge-m3 ONNX model
+directory. This path uses onnxruntime and `tokenizers`, not torch.
 
 When running this example from the AgentSeek repository root, keep the root
 `.env` small and point it at this project's dotenv file:
@@ -155,17 +163,19 @@ tools. Production deployments can set
 development falls back to `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`. This is
 explicit employee memory, not ContextSeek semantic recall.
 
-### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
+### D. Semantic Long-Term Memory (ContextSeek + SeekDB Or pgvector)
 
 ```text
 请长期记住：我的职责是负责数据架构工作
 我的工作职责是什么？
 ```
 
-Expected: ContextSeek retrieves the semantically related historical turn from
-SeekDB and the model answer includes the data-architecture responsibility. This
-is semantic memory from `AGENTSEEK_CTX_SEEKDB_PATH`, not the SQLiteStore durable
-memory tool.
+Expected: ContextSeek retrieves the semantically related historical turn and the
+model answer includes the data-architecture responsibility. With
+`AGENTSEEK_CTX_STORAGE_BACKEND=seekdb`, this comes from
+`AGENTSEEK_CTX_SEEKDB_PATH`. With `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`, this
+comes from `AGENTSEEK_CTX_PGVECTOR_TABLE` using bge-m3 dense vectors. This is
+semantic memory, not the explicit durable memory tool.
 
 ### E. MCP
 
@@ -264,7 +274,12 @@ tool result. Prefer bounded tool output, answer-first summaries, or an async
   `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH` and
   `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
-- ContextSeek only stores final conversation turns, not MCP calls or tool output. Retrieved history is marked as untrusted context and injected as a system message. SeekDB is the local vector backend; production storage is chosen through ContextSeek configuration, so it can later move to OceanBase or an adapter for Milvus without changing the employee scope contract.
+- ContextSeek only stores final conversation turns, not MCP calls or tool
+  output. Retrieved history is marked as untrusted context and injected as a
+  system message. SeekDB is the local vector backend. PostgreSQL + pgvector is
+  the production semantic backend when `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`;
+  it uses bge-m3 dense embeddings with `vector(1024)` and keeps the same
+  enterprise employee scope contract.
 - DM JDBC identity lookup can run in a short-lived subprocess or a persistent
   local sidecar process. Both keep JPype/libjvm out of the gateway process so
   SeekDB/ONNX can coexist with the DM driver. `subprocess` is the conservative

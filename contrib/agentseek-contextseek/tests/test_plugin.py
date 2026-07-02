@@ -14,6 +14,7 @@ from agentseek_contextseek.plugin import (
 @pytest.fixture(autouse=True)
 def _default_contextseek_plugin_env(monkeypatch):
     monkeypatch.setenv("AGENTSEEK_CTX_TENANT", "default")
+    monkeypatch.setenv("AGENTSEEK_CTX_STORAGE_BACKEND", "memory")
     monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "session")
     monkeypatch.setenv("AGENTSEEK_CTX_INJECTION_MODE", "prompt")
     monkeypatch.setenv("AGENTSEEK_CTX_STORE_USER_TURNS", "false")

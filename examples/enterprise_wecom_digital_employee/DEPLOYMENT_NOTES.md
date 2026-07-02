@@ -7,6 +7,72 @@ DM-connection root cause, the upstream integration context, the working
 configuration, known-issue workarounds, and the production-ready operating
 state.
 
+## v0.0.7 candidate: PostgreSQL auth + pgvector semantic backend (pending Mac mini verification)
+
+Branch: `enterprise/v0.0.7-pgvector`.
+
+Goal:
+
+- keep short-term memory and explicit durable employee memory on PostgreSQL via
+  `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
+  `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`;
+- move ContextSeek semantic memory from local SeekDB to PostgreSQL + pgvector
+  with `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`;
+- use bge-m3 dense embeddings only, exported to ONNX and loaded through
+  onnxruntime/tokenizers in the gateway process;
+- start with a fresh pgvector semantic table (`contextseek_pgvector_items` by
+  default). Do not migrate existing SeekDB data because dimensions/model
+  semantics differ.
+
+Expected pgvector schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS contextseek_pgvector_items (
+    id bigserial PRIMARY KEY,
+    scope text NOT NULL,
+    content text NOT NULL,
+    embedding vector(1024) NOT NULL,
+    source text,
+    source_type text,
+    tags jsonb,
+    created_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contextseek_pgvector_items_scope
+    ON contextseek_pgvector_items (scope);
+
+CREATE INDEX IF NOT EXISTS idx_contextseek_pgvector_items_embedding_hnsw
+    ON contextseek_pgvector_items USING hnsw (embedding vector_cosine_ops);
+```
+
+Candidate runtime env:
+
+```env
+AGENTSEEK_CTX_STORAGE_BACKEND=pgvector
+AGENTSEEK_CTX_PGVECTOR_URL=postgresql+psycopg://agentseek_app:<password>@localhost/agentseek
+AGENTSEEK_CTX_PGVECTOR_TABLE=contextseek_pgvector_items
+AGENTSEEK_CTX_PGVECTOR_DIMS=1024
+AGENTSEEK_CTX_BGE_M3_ONNX_MODEL_PATH=./models/bge-m3-onnx/model.onnx
+AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH=./models/bge-m3-onnx/tokenizer.json
+```
+
+The pgvector path requires `psycopg[binary]` in the project environment. The
+workspace lock was not changed in this candidate because the current repository
+lock resolution is constrained by the pinned `bub==0.3.9`; Mac mini should
+provide the driver in the deployment venv while verifying this branch.
+
+PostgreSQL auth target:
+
+- create a least-privilege `agentseek_app` login role;
+- use SCRAM passwords in the local SQLAlchemy URLs stored only in `.env`;
+- switch localhost `pg_hba.conf` rules from `trust` to `scram-sha-256`;
+- confirm `psql -U agentseek_app` fails without a password;
+- restart the gateway and re-run identity, short-term memory, explicit durable
+  memory, pgvector semantic recall, MCP list, and one confirmed MCP tool call.
+
+This candidate preserves the v0.0.6 MCP rollback constraint: do not change
+`mcp_policy.py`, `tools.py`, or confirmation behavior.
+
 ## Verified working (end-to-end)
 
 WeCom callback → signature verify/decrypt → `open_userid` → plaintext userid
