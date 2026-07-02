@@ -1568,3 +1568,84 @@ including the new `test_long_term_memory.py`).
   (profile is capped at 8 KB → O(n) over a few dozen bullets is fine). Do **not**
   call an embedding model on every `remember` call; if embedding-based dedup is
   wanted later, gate it behind an env flag and run it async/out-of-band.
+
+### Memory dedup verification (enterprise/memory-dedup, cdc6ea9) — PASS
+
+Mac mini pulled `enterprise/memory-dedup` (`cdc6ea9 Implement durable memory
+dedup`) and verified P0 (write-side near-duplicate dedup) + P3 (read-side
+read-only reconcile) in the pre-production environment. Codex changed only
+[`long_term_memory.py`](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py)
+(+269/-56) and added
+[`test_long_term_memory.py`](../../contrib/agentseek-enterprise/tests/test_long_term_memory.py)
+(+250).
+
+**Static / local checks**
+
+- `git diff origin/enterprise/wecom-mcp-policy-audit -- mcp_policy.py tools.py`
+  → **no output** (zero diff). The `68d7b25` revert and MCP confirmation behavior
+  are untouched — the hard constraint held.
+- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest contrib/agentseek-enterprise/tests -q`
+  → **53 passed**.
+- `uv run ruff check --no-fix long_term_memory.py test_long_term_memory.py`
+  → **All checks passed!** (Full-repo ruff not used as a blocker — pre-existing
+  issues in `mcp_policy.py`, out of scope.)
+
+**Implementation review (matches spec)**
+
+- P0: exact-match short-circuit → `_find_near_duplicate_line` (reverse iter,
+  same-category + `_similar`) → `_replace_durable_memory` replaces in place,
+  returns `"Updated an existing durable memory (near-duplicate)."`
+- P3: `_recall_employee_memory` returns `_deduped_profile_view(content)` — a
+  read-only view, store not mutated; header/boundary prompt verbatim.
+- Similarity: normalize (strip CJK/ASCII punct, lowercase, drop container words
+  like 企微回复偏好/回复方式) → char 2-shingle Jaccard; threshold env
+  `AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD` default 0.70; `<=0` disables,
+  `>=1` degrades to exact match.
+
+**Deterministic proof (fake store + the exact spec strings — stronger than
+relying on model behavior):**
+
+| Check | Input | Result |
+|-------|-------|--------|
+| P0 | store the 3 synonymous preferences in sequence | 3 → **1 line**, latest wording wins; returns `recorded` → `Updated near-duplicate` → `Updated near-duplicate` |
+| C | same text stored as `preference` + `work_context` | **both kept** (no cross-category merge) |
+| D | threshold=0.0, store the 3 | **3 kept** (dedup disabled) |
+| threshold=1.0 | the 3 different phrasings | **3 kept** (exact-match mode) |
+| exact-dup | identical string twice | 2nd → `"already recorded."` (backward compat) |
+| P3 (real data) | 朱春霖's stored profile (3 preferences) fed to `_deduped_profile_view` | **3 → 1** in the recall view (latest wording `偏好简洁、分点的回复方式`); the 4 conflicting 北京/深圳 travel entries correctly **not** merged (different strings = not near-duplicates; contradiction resolution is P1, out of scope) |
+
+**Live WeCom (gateway restarted on the branch, pid 51536, clean boot, FlClash
+system-proxy/TUN-off, DM sidecar cold-spawned pid 53420):**
+
+- **Test A — 朱春霖 `我的长期回复偏好是什么？`** → replied with a **single**
+  preference (简洁 + 分点呈现 as one preference's two aspects), **no** 3-way
+  duplicate listing, **no** 出差 mix-in, and **no** "多条重复记录，需要清理?"
+  waffle (which the model emitted pre-fix). P3 confirmed end-to-end through the
+  model.
+- **Identity regression** — 朱春霖 `我是谁` → full identity (团队长兼数据架构师 /
+  公司总部·信息技术部·数智产品研发团队 / 员工ID), cache hit after the cold
+  sidecar spawn. 0 SIGBUS.
+- **MCP regression** — `列一下当前可用的 MCP 工具` → 5 services listed with
+  correct risk labels (tavily `⚠️ risky 需确认`, agent-platform write, gildata
+  read). `mcp-audit.jsonl` still 17 lines (`list_mcp_tools` does not audit);
+  **0 new guard-reason strings** (the 8 historical guard entries are all
+  pre-`68d7b25`-restart — the revert's clean-reason behavior is intact).
+
+**Scope note.** Live B/C/D were not separately driven via WeCom because the
+deterministic probe already exercises them with the **exact** spec strings (the
+probe controls what is stored, so it is not subject to model phrasing
+non-determinism). Short-term memory and seekdb are **not touched** by this
+change (diff scope = `long_term_memory.py` only), so they were not re-driven
+live; seekdb write-side was confirmed healthy on the parent branch.
+
+**Verdict.** **P0 and P3 PASS** — near-duplicates collapse on write and on
+recall, latest wording wins, cross-category never merges, threshold is
+reversible (0.0 / 1.0), backward-compatible with exact-duplicate and old
+slot-less bullets. **No over-merge or under-merge observed.** No regression to
+identity / MCP / the `68d7b25` revert. P1 (slot supersession, the real fix for
+the 北京/深圳 contradiction) and P2/P4/P5 remain documented as follow-on.
+
+**Follow-on still open (not in this iteration):** the 北京/深圳 travel
+contradiction is **not** resolved by P0/P3 (those entries are different strings,
+correctly not merged) — it needs P1 (slot-based supersession). The local
+PostgreSQL `trust` auth hardening is also still pending (see ops notes).
