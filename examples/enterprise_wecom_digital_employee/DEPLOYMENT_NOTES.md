@@ -1649,3 +1649,108 @@ the 北京/深圳 contradiction) and P2/P4/P5 remain documented as follow-on.
 contradiction is **not** resolved by P0/P3 (those entries are different strings,
 correctly not merged) — it needs P1 (slot-based supersession). The local
 PostgreSQL `trust` auth hardening is also still pending (see ops notes).
+
+### Memory slot supersession verification (enterprise/memory-slots, 6dfe0b4) — PASS
+
+Mac mini pulled `enterprise/memory-slots` (`6dfe0b4 Add durable memory slot
+supersession`) on top of the verified P0+P3 baseline (`enterprise/memory-dedup`,
+`73d17fe`). Codex changed only
+[`long_term_memory.py`](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py)
+(+127) and extended
+[`test_long_term_memory.py`](../../contrib/agentseek-enterprise/tests/test_long_term_memory.py)
+(+170). This delivers P1 (slot-based supersession) + P5 (contradiction
+notification), which together resolve the 北京/深圳 contradiction that P0/P3
+could not.
+
+**Static / local**
+
+- `git diff origin/enterprise/memory-dedup -- mcp_policy.py tools.py` → **no
+  output** (zero diff). MCP confirmation / `68d7b25` revert untouched — hard
+  constraint held for a second iteration.
+- `pytest contrib/agentseek-enterprise/tests -q` → **60 passed** (was 53; +7
+  slot/P5 tests).
+- touched `ruff check --no-fix long_term_memory.py test_long_term_memory.py` →
+  **All checks passed!**
+
+**Implementation review (matches spec)**
+
+- `remember_employee_memory` gained `slot: str | None = None`; the docstring
+  guides the model with slot examples (`travel_plan`, `reply_style`, `manager`,
+  `responsibility`, `meeting_plan`).
+- Line format extended to `- [category|slot=<slot>] text`; old slot-less lines
+  parse with `slot=None` (backward compatible). `_parse_header` only parses the
+  slot when `_slot_supersession_enabled()` (env on).
+- Supersession logic in `_remember_employee_memory`: exact-match short-circuit →
+  if slot present, `_find_slot_line` (same category+slot) → if found, branch on
+  `_similar`: **similar → P0 silent** (`Updated … near-duplicate.`); **not
+  similar → P5** (`_replace_conflicting_slot_memory` → `已更新『<label>』: 之前
+  记的是「<old>」, 现在改为「<new>」。`). Different slot → append; no slot →
+  P0 near-dup (existing).
+- `_find_near_duplicate_line` additionally requires `entry.slot is None`, so the
+  slot path and the no-slot near-dup path cannot interfere.
+- `_dedupe_entries` (P3) uses `_same_memory_bucket` (category + slot), so recall
+  dedup respects slots.
+- Env gate `AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED` default
+  `true`; `0/false/no/off` disables → slot forced to None everywhere → pure
+  P0/P3 behavior. `_SLOT_LABELS` maps `travel_plan`→出差计划 etc. for the notify
+  message.
+
+**Deterministic proof (fake store, exact spec strings — the P0-vs-P5 boundary
+is the trickiest part and was stressed directly):**
+
+| Check | Input | Result |
+|-------|-------|--------|
+| P1+P5 | same `travel_plan`, 北京 → 深圳 | 2nd returns `已更新『出差计划』: 之前记的是「明天去北京出差」, 现在改为「明天去深圳出差」。`; only 深圳 in store |
+| P0 silent (via slot) | same `reply_style`, two near-dup phrasings | 2nd returns `Updated an existing durable memory (near-duplicate).` (NOT P5); 1 line, latest wording |
+| diff slots | `travel_plan` + `meeting_plan` | both kept (2 lines) |
+| env=false | same `travel_plan`, 北京 → 深圳 | both kept, **no slot tags**, no P5 → falls back to P0/P3 |
+| P3 respects slot | two near-dup entries in same slot | recall view collapses to 1 |
+
+**Live WeCom (gateway restarted on the branch, pid 68466, clean boot, slot env
+default on, FlClash system-proxy/TUN-off, DM sidecar cold-spawned):**
+
+- **Test A — 熊积健 P1+P5.** `请记住我明天去北京出差` → `请记住我明天去深圳出差`.
+  The model filled **`slot=travel_plan`** for both (postgres after step 1:
+  `- [work_context|slot=travel_plan] 2026-07-03 去北京出差`). Step 2 reply
+  surfaced the contradiction: *"已更新：明天（2026-07-03）去深圳出差。同时提醒一下：
+  你之前让我记住的是"明天去北京出差"，这次按"深圳"覆盖更新了。如果这两天分别要去
+  北京和深圳，或是我改错了，告诉我一声。"* Postgres after step 2: **only 深圳**
+  (`- [work_context|slot=travel_plan] 2026-07-03 去深圳出差`); 北京 superseded.
+  The model paraphrased the tool's P5 return into a conversational notice but
+  preserved the old→new semantics and offered to handle the two-trip case.
+- **Test B — 熊积健 P0 silent (the boundary complement).** Two near-duplicate
+  preferences with the same slot (`请记住我的企微回复偏好简洁、分点的回复方式` then
+  `…简洁、分点呈现`). Postgres: **1 line** `- [preference|slot=reply_style]
+  企微回复偏好：简洁、分点呈现` (latest wording). **No P5 contradiction
+  notice** in either reply (correct: same-slot near-duplicate is a silent
+  update, not a contradiction). The P0-silent-vs-P5-notify distinction is
+  confirmed end-to-end.
+- **Test E — 朱春霖 legacy backward compat.** `我的长期回复偏好是什么？` on the
+  old slot-less profile → single preference (`简洁、分点呈现`), the model noting
+  "目前偏好记录仅一条，无冗余". The slot-aware parser handles old slot-less
+  lines with **no errors**; P3 dedup still collapses the legacy 3-way duplicate
+  on recall.
+- **Regression / health.** Gateway served all live turns across two employees
+  (identity via DM sidecar, short-term, long-term recall) with **0 SIGBUS /
+  0 traceback**. `mcp-audit.jsonl` still 17 lines, **guard-reason count still 8
+  (all historical, pre-restart)** — the `68d7b25` revert's clean-reason behavior
+  is intact. MCP code is byte-identical to the verified baseline (zero diff),
+  so MCP list / tavily confirm / audit are structurally unaffected.
+
+**Scope notes.** Live C (different slots) and D (env=false) were not separately
+driven via WeCom because the deterministic probe already exercises them with
+the exact spec strings (the probe controls the slot/text, so it is not subject
+to model phrasing). seekdb and short-term memory are not touched by this change
+(diff = `long_term_memory.py` only) and were not re-driven live.
+
+**Verdict.** **P1 and P5 PASS** — slot-based supersession works, the
+北京/深圳 contradiction is resolved (same slot, different value → supersede +
+notify the user; same slot, near-duplicate → silent update), different slots
+coexist, the feature is reversible via env, and old slot-less data recalls
+correctly. **No over- or under-supersession observed.** No regression to P0/P3,
+identity, MCP, or the `68d7b25` revert.
+
+**Known limitations (carry forward, not blockers):** legacy slot-less data is
+not retroactively slotted (P1 applies only to new slot-tagged writes); the
+model is relied upon to fill consistent slots (no server-side slot
+normalization). The local PostgreSQL `trust` auth hardening remains pending.
