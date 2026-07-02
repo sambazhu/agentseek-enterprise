@@ -2061,3 +2061,102 @@ Carry-over caveats:
 **Verdict.** `enterprise-wecom-v0.0.6-ga-20260702` is the new immutable GA
 deployment baseline. Keep `enterprise-wecom-v0.0.5-ga-20260630` for rollback
 and audit history.
+
+## PostgreSQL auth + pgvector readiness for v0.0.7 (2026-07-02, prep only — no business code changed, no secrets committed)
+
+Prep work for v0.0.7 on the Mac mini against the existing PostgreSQL instance
+(reused; no new DB/account created). No `.env`, passwords, `mcp_policy.py`, or
+`tools.py` touched; no seekdb data migrated.
+
+**PostgreSQL instance (reused)**
+
+- Version: **PostgreSQL 17.10 (Homebrew)**, `aarch64-apple-darwin`.
+- Connection (from `.env` `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
+  `..._STORE_SQLALCHEMY_URL`): `postgresql+psycopg://localhost/agentseek` —
+  driver `psycopg`, host `localhost` (`127.0.0.1`), port `5432`, database
+  `agentseek`. **No credentials in the URL** (relies on `trust` today).
+- Server identity: `current_database()=agentseek`, `current_user=sambazhu`,
+  `inet_server_addr()=127.0.0.1`, `inet_server_port()=5432`.
+- `sambazhu` is **superuser** (`rolsuper=t`, `rolcreatedb=t`, `rolcreaterole=t`)
+  — sufficient for `CREATE EXTENSION`, `ALTER USER`, schema changes.
+- Config paths: `config_file=/opt/homebrew/var/postgresql@17/postgresql.conf`,
+  `hba_file=/opt/homebrew/var/postgresql@17/pg_hba.conf`.
+- `password_encryption = scram-sha-256` (already set — new passwords will be
+  SCRAM-hashed automatically).
+- `ssl = off` (local dev; no TLS). Acceptable while localhost-only; revisit if
+  the DB ever listens beyond loopback.
+- Both short-term and explicit long-term memory already point at PostgreSQL
+  (the `agentseek` DB); the v0.0.7 work is auth hardening + adding the pgvector
+  semantic backend, not a backend migration for those two.
+
+**pgvector — installed and verified**
+
+- Installed from source (Homebrew had no prebuilt formula reachable in this
+  network state; `brew install pgvector` timed out on formula fetch):
+  ```
+  git clone --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+  make PG_CONFIG=/opt/homebrew/opt/postgresql@17/bin/pg_config
+  make install PG_CONFIG=/opt/homebrew/opt/postgresql@17/bin/pg_config
+  ```
+  Files installed under `/opt/homebrew/{lib,share}/postgresql@17/...`
+  (`vector.dylib`, `vector.control`, version SQL). Built against the running
+  PG 17.10 (`pg_config --version` = PostgreSQL 17.10).
+- `CREATE EXTENSION IF NOT EXISTS vector;` in the `agentseek` DB → **success**.
+- `SELECT extname, extversion` → **`vector` / `0.8.4`**.
+- Self-test passed: created a throwaway `pgvector_probe(id bigserial, content
+  text, embedding vector(3))`, inserted `('[0.1,0.2,0.3]')`, ran an ANN query
+  `ORDER BY embedding <=> '[0.1,0.2,0.25]' LIMIT 1` → returned the row; then
+  `DROP TABLE pgvector_probe`. The `<=>` (cosine distance) operator works.
+
+**v0.0.7 semantic-memory table (reserved, not yet created)**
+
+- Reserved name: **`contextseek_pgvector_items`** (new table, new data —
+  **no seekdb data migrated**; v0.0.7 starts a fresh semantic store).
+- Schema intentionally **not** created in this prep step — that is Codex's
+  v0.0.7 design (columns, embedding dim, HNSW/IVFFlat index, namespace/scope
+  keying to match the existing `_enterprise_employee_scope` semantics). The
+  extension readiness above is all that was needed here.
+
+**Authentication — current state and minimal scram plan (NOT switched yet)**
+
+Current `pg_hba.conf` (via `pg_hba_file_rules`) is **all `trust`**:
+
+| line | type | address | auth_method |
+|------|------|---------|-------------|
+| 117  | local | — | trust |
+| 119  | host  | 127.0.0.1 | trust |
+| 121  | host  | ::1 | trust |
+| 124–126 | local/127.0.0.1/::1 (replication) | trust |
+
+Risk: any local process/user can connect as any role (incl. superuser) without
+a password. Not network-exposed (loopback only), but weak on a shared host.
+**Not switched in this prep step** — the running gateway authenticates via
+`trust`; reloading `pg_hba` to scram before the gateway has credentials would
+take it offline. Minimal switch sequence for v0.0.7 (execute in this order):
+
+1. `ALTER USER sambazhu WITH PASSWORD '<strong-secret>';` (auto SCRAM-hashed,
+   since `password_encryption=scram-sha-256`). Consider a dedicated
+   `agentseek_app` role (non-superuser, `CREATE` on the `agentseek` DB only)
+   instead of the superuser for the gateway connection.
+2. Provide the password to the gateway **without putting it in `.env`**: either
+   embed in the SQLAlchemy URL
+   (`postgresql+psycopg://agentseek_app:***@localhost/agentseek`) via a secret
+   manager / env injection, or set `PGPASSWORD` in the launch environment.
+3. Edit `pg_hba.conf`: change lines 119/121 (and 125/126) `trust` →
+   `scram-sha-256`; optionally line 117 too.
+4. `SELECT pg_reload_conf();` (or `brew services restart postgresql@17`).
+5. Bounce the gateway only after steps 1–3 are in place, then verify both
+   memory URLs still connect and a live `我是谁` + memory turn works end-to-end.
+
+**Does Codex need to add code for v0.0.7?** Yes. The contextseek plugin
+(`contrib/agentseek-contextseek`) currently supports `seekdb` (and `memory`)
+under `AGENTSEEK_CTX_STORAGE_BACKEND`. A `pgvector` backend is **new work**:
+a storage adapter that writes/embeds/retrieves into
+`contextseek_pgvector_items` (with the same enterprise-scope keying). The
+pgvector extension + `agentseek` DB readiness above is the prerequisite;
+Codex implements the backend + the `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`
+branch.
+
+**Artifacts of this prep (Mac mini only, not committed):** pgvector 0.8.4
+installed into the Homebrew PostgreSQL 17 extension dirs; `vector` extension
+enabled in the `agentseek` DB. No code, `.env`, or data changes.
