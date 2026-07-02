@@ -1939,3 +1939,78 @@ cross-process safe.
 previous failing D-step2 (`请记住我明天去深圳出差`) and confirm the model can make
 parallel memory calls without `UniqueViolation`, with the final profile showing
 the latest `travel_plan=深圳`.
+
+### D-step2 re-verification after concurrency fix (7b442a5) — PASS, blocker resolved
+
+Mac mini pulled `7b442a5 Serialize durable memory profile writes` (per-namespace
+`threading.RLock` around the full get→modify→put in `_remember_employee_memory`
+and `_forget_employee_memory`; +2 concurrent regression tests). The exact
+scenario that blocked GA was re-run and now passes.
+
+**Static — PASS.** MCP hard constraint `git diff 68d7b25 -- mcp_policy.py
+tools.py` → no output (revert intact); `pytest contrib/agentseek-enterprise/tests
+-q` → **62 passed** (+2 concurrent); touched `ruff` → All checks passed.
+
+**Fix review.** The `RLock` is acquired by namespace
+([long_term_memory.py:148](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L148)
+and
+[:210](../../contrib/agentseek-enterprise/src/agentseek_enterprise/long_term_memory.py#L210))
+and wraps the **entire** `store.get → modify → store.put` (not just the put),
+which is what makes the read-modify-write atomic per profile. Per-namespace
+granularity → different employees don't block each other. Root cause of the
+original crash confirmed independently: `SQLAlchemyStore._put_item` issues a
+plain `table.insert().values(...)` with no `ON CONFLICT`, so two concurrent puts
+to the same `(namespace, item_key)` race → `UniqueViolation`.
+
+**Deterministic proof against the REAL PostgreSQL store (not the fake):**
+spawned a real `SQLAlchemyStore` against `postgresql+psycopg://localhost/agentseek`
+and fired 2 concurrent ops on the same profile via `ThreadPoolExecutor`:
+
+| Variant | Result |
+|---------|--------|
+| **Lock ON** (`7b442a5`) — 2 concurrent `forget` | both return `…removed.`; both targets deleted; **no exception, no lost update** |
+| **Lock ON** — 2 concurrent `remember` (different facts) | both facts retained |
+| **Lock OFF (control)** — 2 concurrent `forget` + 100 ms put delay | `IntegrityError: UniqueViolation` (the original error reproduced) **and** a lost update (one target still present) |
+
+The control reproduces the original D-step2 failure precisely; the lock-on run
+passes. This proves both the fix and that the probe actually catches the
+regression (not a false pass).
+
+**Live WeCom (gateway restarted on `7b442a5`, pid 23736, clean boot, FlClash
+system-proxy/TUN-off) — the previously-failing message:**
+
+- 朱春霖 `请记住我明天去深圳出差` (travel_plan was `北京` from the earlier
+  successful D-step1):
+  - **`UniqueViolation` / "An error occurred at stage" count: 0** — the turn no
+    longer crashes (previously it always crashed here).
+  - Reply surfaced the P5 supersession: *"已更新，朱春霖：明天（7/3）去深圳出差
+    ✈️（之前的北京出差记录已替换为本条）"*.
+  - postgres: `- [work_context|slot=travel_plan] 明天（7/3）去深圳出差` — 北京
+    superseded by 深圳. ✅
+
+**Verdict.** **The GA blocker is resolved.** The concurrent durable-memory write
+defect (UniqueViolation + lost update on parallel memory tool calls within one
+turn) is fixed by per-namespace write serialization, verified by a deterministic
+real-PostgreSQL concurrency test (with a lock-off control that reproduces the
+original failure) and by the live re-run of the exact failing message. MCP
+revert, P0/P3, and P1/P5 remain sound (unchanged by the lock, which only affects
+the memory write path).
+
+**GA re-assessment: eligible.** With the blocker resolved and the full chain
+statically + live verified, `enterprise/wecom-mcp-policy-audit` @ `7b442a5`
+(supersedes RC tag `enterprise-wecom-v0.0.6-rc2-memory-slots`) is **eligible for
+GA promotion** at the user's discretion. Two carry-over caveats (non-blockers):
+
+1. **Single-process scope.** The `threading.RLock` serializes writes within one
+   gateway process only. The current deployment is a single gateway process, so
+   this is sufficient. If the gateway is ever scaled to multiple
+   processes/machines, replace/augment with a DB-level mechanism (Postgres
+   advisory lock, or drive `SQLAlchemyStore._put_item` to a real
+   `INSERT … ON CONFLICT DO UPDATE` upsert). Codex documented this.
+2. **Legacy slot-less data** is still not retroactively slotted/cleaned (P4
+   compaction not done); `AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED=false`
+   rolls back to P0/P3 if ever needed.
+
+**Health.** Gateway pid 23736 stable, :12000 listening, 0 SIGBUS / 0 traceback.
+The fix is isolated to the durable-memory write path; identity, short-term, and
+MCP remain unaffected (MCP zero-diff confirmed).
