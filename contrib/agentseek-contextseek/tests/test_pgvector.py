@@ -264,7 +264,7 @@ def _cosine_distance(left: list[float], right: list[float]) -> float:
 def _delete_real_rows(settings: PgVectorSettings, scope: str) -> None:
     import psycopg
 
-    with psycopg.connect(settings.url) as connection, connection.cursor() as cursor:
+    with psycopg.connect(_psycopg_url(settings.url)) as connection, connection.cursor() as cursor:
         # The table name is validated by PgVectorSettings.quoted_table; scope is parameterized.
         cursor.execute(f"DELETE FROM {settings.quoted_table} WHERE scope = %s", (scope,))  # noqa: S608
         connection.commit()

@@ -438,6 +438,12 @@ def _row_value(row: Any, key: str) -> Any:
 def _tags_from_row(value: Any) -> list[str]:
     if value is None:
         return []
+    wrapped = getattr(value, "obj", None)
+    if wrapped is not None:
+        return _tags_from_row(wrapped)
+    wrapped = getattr(value, "wrapped", None)
+    if wrapped is not None:
+        return _tags_from_row(wrapped)
     if isinstance(value, list):
         return [str(item) for item in value]
     if isinstance(value, str):
