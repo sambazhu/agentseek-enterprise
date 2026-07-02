@@ -5,36 +5,31 @@ WeCom digital employee runtime.
 
 ## Baseline
 
-- Branch: `enterprise/wecom-runtime-v0.0.4`
-- Final GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
-- Final GA tag commit: `5cce3a2`
-- Final verified integration commit: `5cce3a2`
-- Previous GA tag: `enterprise-wecom-v0.0.4-ga-20260629`
+- Branch: `enterprise/wecom-mcp-policy-audit`
+- Final GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
+- Final GA tag commit: tag target
+- Final verified integration commit: `60d0155`
+- Runtime implementation commit: `7b442a5`
+- Previous GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
+- Previous GA commit: `5cce3a2`
 - Previous production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
 - Previous production freeze commit: `6cd8d41`
 - Initial full runtime verification commit: `0c63850`
 - Verification host: company-network Mac mini
-- Verification date: 2026-06-30
-
-The final GA tag includes the v0.0.5 memory-store upgrade and verification
-record. Runtime code must remain equivalent to `5cce3a2` unless a new freeze is
-created. The older v0.0.4 `ga` and `prod` tags are kept immutable for audit
-history; use the v0.0.5 GA tag for new deployments.
-
-## Current v0.0.6 RC Candidate
-
-- RC tag: `enterprise-wecom-v0.0.6-rc2-memory-slots`
-- RC tag commit: tag target
-- Runtime implementation commit: `6dfe0b4`
-- Mac mini verification commit: `5ec346c`
-- Branch: `enterprise/memory-slots`
-- Verification host: company-network Mac mini
 - Verification date: 2026-07-02
 
-This RC includes the v0.0.6 MCP policy/audit and WeCom stream fixes, plus the
-durable employee memory slot-supersession upgrade. It is not yet the immutable
-GA baseline. Use it for candidate deployments that need the latest memory
-contradiction fix.
+The final GA tag includes the v0.0.6 MCP policy/audit path, WeCom stream
+placeholder delivery fix, durable employee memory dedup/slot supersession, and
+durable-memory concurrent-write serialization. Runtime code must remain
+equivalent to the GA tag target unless a new freeze is created. The older
+v0.0.5 and v0.0.4 tags are kept immutable for audit history; use the v0.0.6 GA
+tag for new deployments.
+
+## v0.0.6 Memory And MCP Runtime
+
+This GA includes the v0.0.6 MCP policy/audit and WeCom stream fixes, plus the
+durable employee memory slot-supersession upgrade and the follow-up concurrency
+fix validated by Mac mini.
 
 Durable employee memory now has these production-verified layers:
 
@@ -46,6 +41,10 @@ Durable employee memory now has these production-verified layers:
   `category + slot` as the identity. Same slot + similar value is a silent
   near-duplicate update; same slot + different value supersedes the old value
   and returns an explicit old-to-new notice for the employee.
+- Profile write serialization: `remember_employee_memory` and
+  `forget_employee_memory` serialize the full `get -> modify -> put` section per
+  employee namespace, preventing same-turn parallel tool calls from racing on
+  `/employee-profile.md`.
 
 The slot feature is enabled by default and can be disabled without code changes:
 
@@ -54,15 +53,20 @@ AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED=false
 ```
 
 When disabled, slot handling falls back to the P0/P3 behavior verified in
-`enterprise/memory-dedup`. Existing slot-less profiles remain readable. The RC
+`enterprise/memory-dedup`. Existing slot-less profiles remain readable. The GA
 does not retroactively slot or compact old memories; historical contradictions
 such as old 北京/深圳 travel entries still require a later P4 compaction pass.
+
+The profile write lock is process-local. It is sufficient for the current
+single-gateway deployment. If the gateway is scaled to multiple processes or
+hosts, add a database-level advisory lock or true upsert before treating durable
+memory writes as cross-process safe.
 
 ## Release And Mirrors
 
 | Location | Purpose | URL / ref |
 | --- | --- | --- |
-| GitHub release | External collaboration and release notes | `https://github.com/sambazhu/agentseek-enterprise/releases/tag/enterprise-wecom-v0.0.5-ga-20260630` |
+| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.6-ga-20260702` |
 | GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
 | Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
 
@@ -70,20 +74,21 @@ Published refs:
 
 | Ref | Commit | Use |
 | --- | --- | --- |
-| `enterprise/wecom-runtime-v0.0.4` | `5cce3a2` | Active internal production branch |
-| `enterprise-wecom-v0.0.6-rc2-memory-slots` | tag target | Current RC with memory slot supersession |
-| `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Final immutable GA deployment tag |
+| `enterprise/wecom-mcp-policy-audit` | tag target | Active internal production branch |
+| `enterprise-wecom-v0.0.6-ga-20260702` | tag target | Final immutable GA deployment tag |
+| `enterprise-wecom-v0.0.6-rc2-memory-slots` | `2c626ce` | Previous RC with memory slot supersession, kept for audit |
+| `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
 
 The branch may receive documentation-only updates after GA. Runtime deployments
-should still pin `enterprise-wecom-v0.0.5-ga-20260630` unless a new GA tag is
+should still pin `enterprise-wecom-v0.0.6-ga-20260702` unless a new GA tag is
 created.
 
 Recommended GitLab project settings:
 
-- default branch: `enterprise/wecom-runtime-v0.0.4`;
-- protected branch: `enterprise/wecom-runtime-v0.0.4`;
+- default branch: `enterprise/wecom-mcp-policy-audit`;
+- protected branch: `enterprise/wecom-mcp-policy-audit`;
 - protected tags: `enterprise-wecom-v0.0.*`.
 
 For production deployment from the company GitLab mirror:
@@ -91,7 +96,7 @@ For production deployment from the company GitLab mirror:
 ```bash
 git clone http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.5-ga-20260630
+git checkout enterprise-wecom-v0.0.6-ga-20260702
 ```
 
 For production deployment from GitHub:
@@ -99,7 +104,7 @@ For production deployment from GitHub:
 ```bash
 git clone https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.5-ga-20260630
+git checkout enterprise-wecom-v0.0.6-ga-20260702
 ```
 
 Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,
@@ -115,14 +120,23 @@ or local virtual environments to either remote.
 - Employee identity cache with a 10 minute TTL.
 - Per-session short-term memory persistence.
 - Employee-scoped durable memory tools backed by SQLite or SQLAlchemy.
+- Durable memory write-side near-duplicate deduplication and recall-side
+  duplicate cleanup.
+- Durable memory slot supersession with explicit contradiction notices for
+  same-slot value changes.
+- Per-employee durable memory profile write serialization for same-turn
+  parallel memory tool calls.
 - ContextSeek semantic long-term memory with local SeekDB.
 - ContextSeek retrieval enrichment reaches the model prompt.
 - MCP lifecycle channel with gildata and Tavily tools.
+- MCP policy/audit for read, write, and risky tool calls, with confirmation
+  support for write/risky tools.
 - WeCom retry deduplication by `msgid`.
+- WeCom stream placeholder delivery for slow confirmed tool calls.
 - LaunchAgent supervision with auto-restart.
 - No SIGBUS with DM sidecar and SeekDB/ONNX in the main gateway process.
 
-The v0.0.5 baseline keeps local SQLite fallback for short-term memory and
+The v0.0.6 baseline keeps local SQLite fallback for short-term memory and
 explicit durable memory, and can move those two relational layers to
 PostgreSQL/MySQL by setting `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`. ContextSeek semantic memory remains

@@ -2014,3 +2014,50 @@ GA promotion** at the user's discretion. Two carry-over caveats (non-blockers):
 **Health.** Gateway pid 23736 stable, :12000 listening, 0 SIGBUS / 0 traceback.
 The fix is isolated to the durable-memory write path; identity, short-term, and
 MCP remain unaffected (MCP zero-diff confirmed).
+
+### v0.0.6 GA tag (2026-07-02)
+
+Published the v0.0.6 GA baseline after Mac mini re-ran the blocker smoke test
+and confirmed that `7b442a5` resolves the durable-memory concurrent-write
+failure:
+
+- GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
+- GA tag commit: tag target
+- Final verified integration commit: `60d0155`
+- Runtime concurrency fix commit: `7b442a5`
+- Superseded RC tag: `enterprise-wecom-v0.0.6-rc2-memory-slots` -> `2c626ce`
+- Previous GA tag: `enterprise-wecom-v0.0.5-ga-20260630` -> `5cce3a2`
+- Production branch: `enterprise/wecom-mcp-policy-audit`
+
+This GA includes:
+
+- MCP policy/audit and the preserved `68d7b25` MCP confirmation revert.
+- WeCom stream placeholder delivery for slow confirmed tool calls.
+- Durable memory P0/P3 near-duplicate dedup and recall cleanup.
+- Durable memory P1/P5 slot supersession and contradiction notice.
+- Durable memory per-employee profile write serialization for same-turn
+  parallel memory tool calls.
+
+Final verification highlights:
+
+- MCP hard constraint: `mcp_policy.py` and the example `tools.py` are still
+  zero-diff from `68d7b25`.
+- Local enterprise regression: **62 passed**.
+- touched `ruff` on durable-memory code/tests: **All checks passed!**
+- Real PostgreSQL concurrency probe: lock-on passes for concurrent forget and
+  remember; lock-off reproduces the original `UniqueViolation`.
+- Live WeCom D-step2 re-run: P5 北京 -> 深圳 notice delivered, no
+  `UniqueViolation`, and postgres shows `travel_plan=深圳`.
+- Gateway health: pid 23736 stable, :12000 listening, 0 SIGBUS / 0 traceback.
+
+Carry-over caveats:
+
+- The profile write lock is process-local. The current deployment uses one
+  gateway process. Multi-process or multi-host scaling needs a database-level
+  advisory lock or true store upsert.
+- Legacy slot-less memories are not retroactively slotted or compacted. P4
+  compaction remains a future task.
+
+**Verdict.** `enterprise-wecom-v0.0.6-ga-20260702` is the new immutable GA
+deployment baseline. Keep `enterprise-wecom-v0.0.5-ga-20260630` for rollback
+and audit history.
