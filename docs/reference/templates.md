@@ -3,7 +3,7 @@ title: Templates
 type: reference
 audience: [A1, A2]
 runs: no
-verified_on: 2026-06-30
+verified_on: 2026-07-03
 sources:
   - templates/index.json
   - src/agentseek/cli/commands/create.py
@@ -22,7 +22,7 @@ sources:
 | `bub/default` | Lightweight Bub agent with AgentSeek lifecycle spec. |
 | `deepagents/content-builder` | DeepAgents content builder with writing workflows, image generation, local UI, and AgentSeek lifecycle spec. |
 | `deepagents/default` | Minimal DeepAgents app with AgentSeek lifecycle spec. |
-| `deepagents/enterprise-wecom` | Enterprise WeCom digital employee with employee identity, MCP tools, semantic memory, and AgentSeek lifecycle spec. |
+| `deepagents/enterprise-wecom` | Enterprise WeCom digital employee with employee identity, MCP tools, pgvector semantic memory, and AgentSeek lifecycle spec. |
 | `deepagents/research` | DeepAgents research app with search workflow, local UI, and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag` | LangChain agentic RAG with OceanBase vector search and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag-openvino` | LangChain agentic RAG with local OpenVINO models and AgentSeek lifecycle spec. |
@@ -64,7 +64,7 @@ sources:
 | MCP policy | Local allowlist/denylist, write/risky confirmation, and JSONL audit |
 | Short-term memory | Per-session SQLAlchemy memory, SQLite fallback |
 | Explicit durable memory | Employee-scoped LangGraph Store memory tools, SQLAlchemy or SQLite fallback |
-| Semantic memory | ContextSeek with SeekDB by default |
+| Semantic memory | ContextSeek with PostgreSQL + pgvector in production; SeekDB fallback for local development |
 | Production check | `scripts/prod_check.py --env-file .env` in the generated project |
 
 Create form:

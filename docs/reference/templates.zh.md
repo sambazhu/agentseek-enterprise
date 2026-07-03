@@ -3,7 +3,7 @@ title: 模板
 type: reference
 audience: [A1, A2]
 runs: no
-verified_on: 2026-06-30
+verified_on: 2026-07-03
 sources:
   - templates/index.json
   - src/agentseek/cli/commands/create.py
@@ -22,7 +22,7 @@ sources:
 | `bub/default` | 带 AgentSeek 生命周期规范的轻量 Bub agent。 |
 | `deepagents/content-builder` | 带写作流程、图像生成、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents 内容构建器。 |
 | `deepagents/default` | 带 AgentSeek 生命周期规范的最小 DeepAgents 应用。 |
-| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、MCP 工具、语义记忆和 AgentSeek 生命周期规范。 |
+| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、MCP 工具、pgvector 语义记忆和 AgentSeek 生命周期规范。 |
 | `deepagents/research` | 带检索流程、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents research 应用。 |
 | `langchain/agentic-rag` | 带 OceanBase vector search 和 AgentSeek 生命周期规范的 LangChain agentic RAG。 |
 | `langchain/agentic-rag-openvino` | 带本地 OpenVINO models 和 AgentSeek 生命周期规范的 LangChain agentic RAG。 |
@@ -64,7 +64,7 @@ sources:
 | MCP 策略 | 本地 allowlist/denylist、写入/高风险工具确认、JSONL 审计 |
 | 短期记忆 | 按 session 隔离的 SQLAlchemy 记忆，SQLite fallback |
 | 显式长期记忆 | 员工级 LangGraph Store memory tools，支持 SQLAlchemy 或 SQLite fallback |
-| 语义记忆 | 默认使用 ContextSeek + SeekDB |
+| 语义记忆 | 生产使用 ContextSeek + PostgreSQL + pgvector；本地开发可回退 SeekDB |
 | 生产检查 | 生成项目中的 `scripts/prod_check.py --env-file .env` |
 
 创建形式：

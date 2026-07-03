@@ -7,7 +7,9 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - `agentseek-enterprise` employee identity injection;
 - DeepAgents agent bound through `agentseek-langchain`;
 - MCP business tools loaded from `.agents/mcp.json`;
-- MCP policy and audit around the generated `call_mcp_tool` adapter.
+- MCP policy and audit around the generated `call_mcp_tool` adapter;
+- production semantic memory through ContextSeek + PostgreSQL + pgvector with
+  bge-m3 ONNX embeddings.
 
 ## Inputs
 

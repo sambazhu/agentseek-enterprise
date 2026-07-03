@@ -3,7 +3,7 @@ title: 企业微信模板
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-06-30
+verified_on: 2026-07-03
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
@@ -19,7 +19,7 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 
 ## 当前状态
 
-`enterprise-wecom-v0.0.5-ga-20260630` 是当前 GA 基线。
+`enterprise-wecom-v0.0.7-ga` 是当前 GA 基线。
 
 它已经完成两类验证：
 
@@ -50,7 +50,7 @@ runtime 细节。
 | --- | --- | --- |
 | 短期记忆 | SQLAlchemy URL；本地 fallback 为 SQLite | 最近的 per-session 对话上下文 |
 | 显式长期记忆 | 员工级 LangGraph Store；可由 SQLAlchemy URL 驱动，本地 fallback 为 SQLite | 员工明确要求助手长期记住的事实 |
-| 语义长期记忆 | ContextSeek + SeekDB | 历史对话的语义召回 |
+| 语义长期记忆 | ContextSeek + PostgreSQL + pgvector；本地开发可回退 SeekDB | 历史对话的语义召回 |
 
 这三层是刻意分开的。短期记忆服务最近追问；显式长期记忆通过 memory tools 控制；
 语义长期记忆自动检索相关历史上下文，不要求 agent 主动选择某个文件或笔记。
@@ -58,7 +58,9 @@ runtime 细节。
 生产环境可以把前两层迁到 PostgreSQL/MySQL：
 `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` 控制短期记忆，
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` 控制显式长期记忆。语义长期记忆仍由
-ContextSeek 的 backend 配置控制，例如本地 SeekDB 或后续的向量数据库适配器。
+ContextSeek 的 backend 配置控制。v0.0.7 生产基线使用
+`AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`、`AGENTSEEK_CTX_PGVECTOR_URL` 和
+bge-m3 ONNX embedding 路径。
 
 ## 隔离选择
 
@@ -66,8 +68,8 @@ ContextSeek 的 backend 配置控制，例如本地 SeekDB 或后续的向量数
 skills 暴露为只读虚拟文件系统，并把持久记忆映射到员工级 store。
 
 DM 身份查询可以使用 `subprocess` 或 `sidecar` 模式。两种模式都会把
-JPype/libjvm 隔离在 gateway 主进程之外，使 ContextSeek SeekDB 和 ONNX 可以在
-gateway 主进程中运行。
+JPype/libjvm 隔离在 gateway 主进程之外，使 pgvector embedding 的 ONNX Runtime
+可以在 gateway 主进程中运行。
 
 ## MCP 策略和审计
 
@@ -100,7 +102,7 @@ reason 和脱敏后的 arguments。它不是下游业务系统日志，也不能
 生产部署使用 GA tag：
 
 ```bash
-git checkout enterprise-wecom-v0.0.5-ga-20260630
+git checkout enterprise-wecom-v0.0.7-ga
 ```
 
 详细冻结记录在 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`。

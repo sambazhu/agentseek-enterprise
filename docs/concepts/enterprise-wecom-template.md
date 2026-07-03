@@ -3,7 +3,7 @@ title: Enterprise WeCom Template
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-06-30
+verified_on: 2026-07-03
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
@@ -20,7 +20,7 @@ layered memory.
 
 ## Current Status
 
-`enterprise-wecom-v0.0.5-ga-20260630` is the current GA baseline.
+`enterprise-wecom-v0.0.7-ga` is the current GA baseline.
 
 It was verified in two forms:
 
@@ -52,7 +52,7 @@ and `scripts/run_gateway.sh`.
 | --- | --- | --- |
 | Short-term memory | SQLAlchemy URL; SQLite fallback for local development | Recent per-session conversation context |
 | Explicit durable memory | Employee-scoped LangGraph Store; SQLAlchemy URL optional, SQLite fallback local | Facts the employee explicitly asks the assistant to remember |
-| Semantic memory | ContextSeek + SeekDB | Semantic recall of historical conversation turns |
+| Semantic memory | ContextSeek + PostgreSQL + pgvector; SeekDB fallback for local development | Semantic recall of historical conversation turns |
 
 These layers are intentionally separate. Short-term memory helps with recent
 follow-ups. Explicit durable memory is controlled through memory tools.
@@ -62,8 +62,9 @@ agent to choose a specific file or note.
 Production deployments can move the first two layers to PostgreSQL/MySQL:
 `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` controls short-term memory, and
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` controls explicit durable memory.
-Semantic memory remains controlled by ContextSeek backend settings, such as
-local SeekDB or a future vector database adapter.
+Semantic memory is controlled separately by ContextSeek backend settings. The
+v0.0.7 production baseline uses `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`,
+`AGENTSEEK_CTX_PGVECTOR_URL`, and bge-m3 ONNX embedding paths.
 
 ## Isolation Choices
 
@@ -72,8 +73,8 @@ read-only virtual filesystem for trusted instructions and skills, and maps
 durable memory to an employee-scoped store.
 
 DM identity lookup can run in `subprocess` or `sidecar` mode. Both keep
-JPype/libjvm out of the main gateway process so ContextSeek SeekDB and ONNX can
-run in the gateway process.
+JPype/libjvm out of the main gateway process so pgvector embedding through ONNX
+Runtime can run in the gateway process.
 
 ## MCP Policy And Audit
 
@@ -112,7 +113,7 @@ small, local approval and audit surface.
 Use the GA tag for deployments:
 
 ```bash
-git checkout enterprise-wecom-v0.0.5-ga-20260630
+git checkout enterprise-wecom-v0.0.7-ga
 ```
 
 The detailed freeze record lives in

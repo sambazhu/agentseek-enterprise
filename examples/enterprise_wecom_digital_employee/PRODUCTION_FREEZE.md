@@ -1,37 +1,50 @@
 # Enterprise WeCom Production Freeze
 
-This document freezes the first production-ready baseline for the enterprise
-WeCom digital employee runtime.
+This document freezes the current production baseline for the enterprise WeCom
+digital employee runtime.
 
 ## Baseline
 
-- Branch: `enterprise/wecom-mcp-policy-audit`
-- Final GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
-- Final GA tag commit: tag target
-- Final verified integration commit: `60d0155`
-- Runtime implementation commit: `7b442a5`
-- Previous GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
-- Previous GA commit: `5cce3a2`
-- Previous production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
-- Previous production freeze commit: `6cd8d41`
-- Initial full runtime verification commit: `0c63850`
+- Recommended deployment branch: `production`
+- Final GA tag: `enterprise-wecom-v0.0.7-ga`
+- Final GA tag commit: `0485453`
+- Documentation branch commit after GA: `f846e5a`
+- Previous GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
+- Previous GA commit: `7b442a5`
+- Earlier GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
+- Earlier production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
 - Verification host: company-network Mac mini
-- Verification date: 2026-07-02
+- Verification date: 2026-07-03
 
-The final GA tag includes the v0.0.6 MCP policy/audit path, WeCom stream
-placeholder delivery fix, durable employee memory dedup/slot supersession, and
-durable-memory concurrent-write serialization. Runtime code must remain
-equivalent to the GA tag target unless a new freeze is created. The older
-v0.0.5 and v0.0.4 tags are kept immutable for audit history; use the v0.0.6 GA
-tag for new deployments.
+The v0.0.7 GA includes the v0.0.6 MCP policy/audit path, WeCom stream
+placeholder delivery fix, durable employee memory dedup/slot supersession,
+durable-memory concurrent-write serialization, PostgreSQL SCRAM authentication,
+and ContextSeek semantic memory backed by PostgreSQL + pgvector with bge-m3
+ONNX embeddings. Runtime deployments should pin the GA tag for exact
+reproducibility or use `production` for the latest documented deployment
+baseline. The older v0.0.6, v0.0.5, and v0.0.4 tags are kept immutable for audit
+history.
 
-## v0.0.6 Memory And MCP Runtime
+## v0.0.7 PostgreSQL And pgvector Runtime
 
-This GA includes the v0.0.6 MCP policy/audit and WeCom stream fixes, plus the
-durable employee memory slot-supersession upgrade and the follow-up concurrency
-fix validated by Mac mini.
+This GA moves the production data path to PostgreSQL:
 
-Durable employee memory now has these production-verified layers:
+- short-term conversation memory can use
+  `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL`;
+- explicit durable employee memory can use
+  `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`;
+- ContextSeek semantic memory uses `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`;
+- the semantic backend stores employee-scoped bge-m3 dense vectors in
+  `contextseek_pgvector_items` by default;
+- the verified deployment uses a dedicated non-superuser `agentseek_app` role
+  and SCRAM authentication in `pg_hba.conf`.
+
+SeekDB remains available as a local development or rollback backend. It is not
+the v0.0.7 production semantic-memory baseline.
+
+## Durable Employee Memory
+
+Durable employee memory keeps the v0.0.6 behavior:
 
 - P0 write-side near-duplicate deduplication: same category, similar text,
   latest wording wins.
@@ -52,10 +65,10 @@ The slot feature is enabled by default and can be disabled without code changes:
 AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED=false
 ```
 
-When disabled, slot handling falls back to the P0/P3 behavior verified in
-`enterprise/memory-dedup`. Existing slot-less profiles remain readable. The GA
-does not retroactively slot or compact old memories; historical contradictions
-such as old 北京/深圳 travel entries still require a later P4 compaction pass.
+When disabled, slot handling falls back to the P0/P3 behavior. Existing
+slot-less profiles remain readable. The GA does not retroactively slot or
+compact old memories; historical contradictions still require a later
+compaction pass.
 
 The profile write lock is process-local. It is sufficient for the current
 single-gateway deployment. If the gateway is scaled to multiple processes or
@@ -66,7 +79,7 @@ memory writes as cross-process safe.
 
 | Location | Purpose | URL / ref |
 | --- | --- | --- |
-| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.6-ga-20260702` |
+| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.7-ga` |
 | GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
 | Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
 
@@ -74,46 +87,47 @@ Published refs:
 
 | Ref | Commit | Use |
 | --- | --- | --- |
-| `enterprise/wecom-mcp-policy-audit` | tag target | Active internal production branch |
-| `enterprise-wecom-v0.0.6-ga-20260702` | tag target | Final immutable GA deployment tag |
-| `enterprise-wecom-v0.0.6-rc2-memory-slots` | `2c626ce` | Previous RC with memory slot supersession, kept for audit |
+| `production` | `f846e5a` or newer docs-only commit | Recommended branch for internal deployment docs |
+| `enterprise-wecom-v0.0.7-ga` | `0485453` | Final immutable v0.0.7 runtime deployment tag |
+| `enterprise-wecom-v0.0.6-ga-20260702` | `7b442a5` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
 
-The branch may receive documentation-only updates after GA. Runtime deployments
-should still pin `enterprise-wecom-v0.0.6-ga-20260702` unless a new GA tag is
-created.
+Runtime deployments should pin `enterprise-wecom-v0.0.7-ga`. Teams that want
+the latest deployment instructions can clone `production` and then check out
+the GA tag before starting the service.
 
 Recommended GitLab project settings:
 
-- default branch: `enterprise/wecom-mcp-policy-audit`;
-- protected branch: `enterprise/wecom-mcp-policy-audit`;
+- default branch: `production`;
+- protected branch: `production`;
 - protected tags: `enterprise-wecom-v0.0.*`.
 
 For production deployment from the company GitLab mirror:
 
 ```bash
-git clone http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.6-ga-20260702
+git checkout enterprise-wecom-v0.0.7-ga
 ```
 
 For production deployment from GitHub:
 
 ```bash
-git clone https://github.com/sambazhu/agentseek-enterprise.git
+git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.6-ga-20260702
+git checkout enterprise-wecom-v0.0.7-ga
 ```
 
 Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,
-or local virtual environments to either remote.
+model files, or local virtual environments to either remote.
 
 ## Verified Capabilities
 
-- In-repository example deployment and a separately rendered standalone project
-  from `deepagents/enterprise-wecom` both passed the same live smoke tests.
+- In-repository example deployment passed live Mac mini smoke tests.
+- `deepagents/enterprise-wecom` generated project passed standalone smoke tests
+  in earlier GA validation and must be re-smoked after template changes.
 - WeCom intelligent robot callback on port `12000`.
 - Encrypted robot `open_userid` resolution through a self-built WeCom app.
 - Employee identity lookup through DM JDBC in an isolated `sidecar` process.
@@ -126,21 +140,19 @@ or local virtual environments to either remote.
   same-slot value changes.
 - Per-employee durable memory profile write serialization for same-turn
   parallel memory tool calls.
-- ContextSeek semantic long-term memory with local SeekDB.
+- ContextSeek semantic long-term memory with PostgreSQL + pgvector.
+- bge-m3 dense embeddings through ONNX Runtime and `tokenizers`; no torch in the
+  gateway process.
 - ContextSeek retrieval enrichment reaches the model prompt.
+- Semantic memory is scoped by tenant and employee.
+- PostgreSQL SCRAM authentication with a dedicated non-superuser gateway role.
 - MCP lifecycle channel with gildata and Tavily tools.
 - MCP policy/audit for read, write, and risky tool calls, with confirmation
   support for write/risky tools.
 - WeCom retry deduplication by `msgid`.
 - WeCom stream placeholder delivery for slow confirmed tool calls.
 - LaunchAgent supervision with auto-restart.
-- No SIGBUS with DM sidecar and SeekDB/ONNX in the main gateway process.
-
-The v0.0.6 baseline keeps local SQLite fallback for short-term memory and
-explicit durable memory, and can move those two relational layers to
-PostgreSQL/MySQL by setting `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` and
-`AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL`. ContextSeek semantic memory remains
-configured separately through its own backend settings.
+- No SIGBUS with DM sidecar and pgvector/ONNX in the main gateway process.
 
 ## Required Runtime Settings
 
@@ -158,7 +170,14 @@ AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=sidecar
 AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED=true
 AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS=600
 AGENTSEEK_ENTERPRISE_MEMORY_ENABLED=true
-AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL=postgresql+psycopg://agentseek_app:<password>@localhost/agentseek
+AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL=postgresql+psycopg://agentseek_app:<password>@localhost/agentseek
+AGENTSEEK_CTX_STORAGE_BACKEND=pgvector
+AGENTSEEK_CTX_PGVECTOR_URL=postgresql+psycopg://agentseek_app:<password>@localhost/agentseek
+AGENTSEEK_CTX_PGVECTOR_TABLE=contextseek_pgvector_items
+AGENTSEEK_CTX_PGVECTOR_DIMS=1024
+AGENTSEEK_CTX_BGE_M3_ONNX_MODEL_PATH=./models/bge-m3-onnx/model.onnx
+AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH=./models/bge-m3-onnx/tokenizer.json
 AGENTSEEK_CTX_SCOPE_MODE=enterprise_user
 AGENTSEEK_CTX_INJECTION_MODE=state
 AGENTSEEK_CTX_RETRIEVAL_RECALL_ROUTES=["vector"]
@@ -236,7 +255,7 @@ Expected: recalls the preference through the dedicated durable memory tools
 backed by `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` or the local fallback
 `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 
-### D. Semantic Long-Term Memory (ContextSeek + SeekDB)
+### D. Semantic Long-Term Memory (ContextSeek + pgvector)
 
 ```text
 请长期记住：我的职责是负责数据架构工作
@@ -244,9 +263,14 @@ backed by `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` or the local fallback
 ```
 
 Expected: ContextSeek retrieves the semantically related historical turn from
-SeekDB and the model answer includes the data-architecture responsibility.
+pgvector and the model answer includes the data-architecture responsibility.
 
-### E. MCP
+### E. Isolation
+
+Use another employee account and ask for the first employee's semantic memory.
+Expected: no cross-employee recall.
+
+### F. MCP
 
 ```text
 列一下当前可用的 MCP 工具
@@ -265,15 +289,23 @@ If the DM sidecar becomes stale or unstable:
 AGENTSEEK_IDENTITY_DM_EXECUTION_MODE=subprocess
 ```
 
-If ContextSeek/SeekDB causes startup failures and service continuity is more
-important than semantic recall:
+If pgvector setup blocks service continuity and semantic recall can be
+temporarily disabled:
 
 ```bash
 AGENTSEEK_CTX_STORAGE_BACKEND=memory
 ```
 
-These rollbacks preserve the gateway and identity path but reduce performance
-or semantic-memory durability. Restore `sidecar` + `seekdb` after investigation.
+If PostgreSQL + pgvector is unavailable but local semantic recall is acceptable:
+
+```bash
+AGENTSEEK_CTX_STORAGE_BACKEND=seekdb
+AGENTSEEK_CTX_SEEKDB_PATH=./runtime/contextseek
+```
+
+These rollbacks preserve the gateway and identity path but reduce semantic
+memory durability or move it back to local disk. Restore `sidecar` + `pgvector`
+after investigation.
 
 ## Change Control
 
@@ -282,5 +314,6 @@ Any code change after this freeze needs at least:
 - local regression tests for `agentseek-enterprise`, `agentseek-wecom`,
   `agentseek-contextseek`, and `agentseek-langchain`;
 - Mac mini live smoke test for identity, short-term memory, ContextSeek
-  retrieval, MCP, and WeCom retry behavior;
+  retrieval, isolation, MCP, and WeCom retry behavior;
+- a rendered-template standalone smoke test when template files change;
 - a new freeze entry or tag if it changes production runtime behavior.
