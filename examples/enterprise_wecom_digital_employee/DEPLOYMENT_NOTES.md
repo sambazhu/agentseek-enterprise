@@ -2284,3 +2284,63 @@ fully replaced. Recommend tagging **`enterprise-wecom-v0.0.7-ga`** at
 fp32/fp16 bge-m3 ONNX for production embedding quality; `agent-platform` MCP
 server availability is an external ops item; PG `ssl=off` is acceptable only
 while loopback-only.
+
+## Template render smoke + gateway log-persistence re-verify (production @ 2a3cf00) — PASS
+
+Mac mini rendered a clean standalone project from the `deepagents/enterprise-wecom`
+template (`agentseek create deepagents/enterprise-wecom --no-input` →
+`~/agentseek-template-smoke/enterprise_wecom_digital_employee/`), copied in the
+quasi-production config + assets, and smoke-tested it end-to-end. Confirms the
+v0.0.7 GA template produces a deployable standalone project, and that
+`run_gateway.sh`'s baked-in log persistence works on the rendered project.
+
+**Render + config.** Template rendered cleanly (project root, scripts/src/vendor/
+.agents/.agentseek/launchd/runtime structure). Copied in: `.env` (pgvector +
+scram `agentseek_app` URLs + bge-m3 paths), `.agents/mcp.local.json` (5 live MCP
+servers), `vendor/dameng/DmJdbcDriver18-8.1.3.62.jar`, `models/bge-m3-onnx/
+{model.onnx 570 MB, tokenizer.json}`. `uv sync` (deps from local editable
+agentseek packages + `bub-mcp` via git, via the 7890 proxy) → `.venv` 816 MB,
+exit 0. `prod_check.py --env-file .env` → **all OK, "Production preflight
+passed"** (pgvector backend, dims 1024, bge-m3 model+tokenizer paths exist,
+short-term + explicit-long-term use SQLAlchemy URL).
+
+**run_gateway.sh log persistence (rendered project):**
+- Default path: `bash scripts/run_gateway.sh` (no outer `>>`) → boot auto-appended
+  to `~/Library/Logs/agentseek-wecom/gateway.log` (44→53 lines). fd 1w/2w → that
+  file. ✅
+- Custom path: `AGENTSEEK_GATEWAY_LOG=/tmp/agentseek-template-gateway.log bash
+  scripts/run_gateway.sh` → boot written there; default untouched. ✅
+- Append mode (history preserved across restarts). The rendered `run_gateway.sh`
+  is identical to the in-repo one except `PROJECT_ROOT` (1 level) vs `REPO_ROOT`
+  (3 levels) — expected for a standalone project.
+
+**Live WeCom** (rendered gateway on the custom log path, pid 32432, :12000;
+the in-repo gateway was stopped to free the port):
+
+- **A identity** — `我是谁` (朱春霖) → full identity; rendered gateway's full
+  chain works (WeCom → DM sidecar pid 39362 → scram `agentseek_app` PG → model).
+  ✅
+- **D pgvector semantic** — `请长期记住：…负责数据架构工作` → `我的工作职责是什么？`
+  recalled "**负责数据架构工作**" via pgvector on the rendered project; new rows
+  in `contextseek_pgvector_items`. ✅
+- **F MCP** — `列一下当前可用的 MCP 工具` → 4/5 services + risk labels (tavily
+  ⚠️ 需确认); `agent-platform` ❌ external SSE down (not a regression). ✅
+- B (short-term) / C (explicit long-term) / E (isolation): share A's scram PG
+  connection + the same v0.0.7 code + the same shared `agentseek` DB, all
+  verified on prior rounds — not re-driven on the rendered project.
+
+**Extra checks (rendered project):** 0 SIGBUS / 0 traceback; rendered
+`runtime/contextseek` does not exist (pgvector backend, no seekdb); `mcp-audit`
+empty (no MCP tool *called*, only listed → no audit, no guard reason); msgid
+dedup fired 2× (normal WeCom retries). `git diff 68d7b25 -- mcp_policy.py
+tools.py` → **zero diff** (MCP revert intact).
+
+**Verdict.** The v0.0.7 GA template renders a working standalone project:
+preflight passes, gateway boots, log persistence (default + custom) works, and
+live identity + pgvector semantic + MCP all function on the rendered project.
+**Template sync + log-persistence change verified.**
+
+**State note.** The smoke rendered gateway (pid 32432, custom log path
+`/tmp/agentseek-template-gateway.log`) is currently on :12000; the in-repo
+gateway was stopped for the smoke. Switch back to the in-repo gateway when done
+with the smoke (the rendered `~/agentseek-template-smoke/` project is throwaway).
