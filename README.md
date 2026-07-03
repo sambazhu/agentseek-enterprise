@@ -16,6 +16,25 @@ the shared lifecycle workflow around those generated apps.
 > **"Deep Agents in Action"**: a free LangChain / DeepAgents course with AgentSeek labs.
 > [Course repo](https://github.com/datawhalechina/deepagents-in-action/)
 
+## Enterprise WeCom Deployment
+
+For the internally verified Enterprise WeCom digital employee deployment, use
+the `production` branch or the latest GA tag. Do not use `main` as the
+deployment baseline for this enterprise runtime.
+
+```bash
+git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
+```
+
+To reproduce the exact v0.0.7 GA build, pin the tag instead:
+
+```bash
+git clone --branch enterprise-wecom-v0.0.7-ga https://github.com/sambazhu/agentseek-enterprise.git
+```
+
+Company GitLab mirrors the same branch and tag at
+`http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git`.
+
 ## Quickstart
 
 Install the CLI for daily use.

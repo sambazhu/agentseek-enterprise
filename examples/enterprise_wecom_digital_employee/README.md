@@ -6,6 +6,25 @@ It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent
 
 The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context, plus ContextSeek semantic recall across the same employee's sessions.
 
+## Deployment Baseline
+
+Use the repository `production` branch for internal deployment and trial use.
+It points at the current Enterprise WeCom GA baseline. Use the GA tag when you
+need an immutable rollback or audit target.
+
+```bash
+git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
+```
+
+To pin the verified v0.0.7 build:
+
+```bash
+git clone --branch enterprise-wecom-v0.0.7-ga https://github.com/sambazhu/agentseek-enterprise.git
+```
+
+Company GitLab mirrors both refs at
+`http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git`.
+
 ## Setup
 
 ```bash
