@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -33,17 +34,54 @@ _SENSITIVE_KEY_FRAGMENTS = (
 )
 _IDENTITY_FIELD_MAP = {
     "chat_id": "chat_key",
+    "employee_name": "employee_key",
     "employee": "employee_key",
     "employee_id": "employee_key",
     "from_userid": "from_user_key",
     "namespace": "namespace_key",
+    "oa": "employee_key",
     "oa_account": "employee_key",
+    "oaaccount": "employee_key",
     "open_userid": "open_user_key",
+    "principal": "principal_key",
     "scope": "scope_key",
     "session_id": "session_key",
+    "user": "user_key",
     "user_id": "user_key",
+    "user_name": "user_key",
+    "username": "user_key",
     "userid": "user_key",
 }
+_CONTENT_KEY_FRAGMENTS = (
+    "content",
+    "message",
+    "model_output",
+    "prompt",
+    "raw",
+    "reply",
+    "text",
+)
+_CONTENT_LENGTH_SUFFIXES = (
+    "_chars",
+    "_length",
+    "_len",
+    "chars",
+    "length",
+    "len",
+)
+_LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES = (
+    "logfire",
+    "logfire.integrations.loguru",
+    "logfire.integrations.logging",
+    "loguru",
+)
+_SAFE_EVENT_NAME_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
+_RAW_IDENTITY_PATTERNS = (
+    re.compile(r"(?i)(session_id|oa_account|oaaccount|userid|user_id|from_userid|open_userid|principal)=([^\s|,;]+)"),
+    re.compile(r"(?i)\bwecom:[^\s|,;]+"),
+    re.compile(r"(?i)(stored for|lookup failed for|identified employee[:：]?|已识别员工[:：]?)[\s:：]+([^\s|,;。]+)"),
+)
+_CJK_NAME_RE = re.compile(r"[\u4e00-\u9fff]{2,4}")
 
 
 @dataclass(frozen=True)
@@ -166,11 +204,28 @@ class _LangfuseEmitter:
                 return False
             metadata = dict(payload)
             event_name = str(metadata.get("event") or "agentseek.enterprise.event")
+            event_name = _safe_event_name(event_name)
+            metadata = _sanitize_langfuse_payload(metadata, settings=self._settings)
             metadata["event"] = event_name
             metadata.setdefault("environment", self._settings.langfuse_environment)
             metadata.setdefault("release", self._settings.langfuse_release)
             metadata.setdefault("trace_name", self._settings.langfuse_trace_name)
-            self._record_event(client, name=event_name, metadata=metadata)
+            trace_name = event_name
+            self._record_event(
+                client,
+                trace_name=trace_name,
+                name=event_name,
+                metadata=metadata,
+                session_id=_metadata_text(metadata, "session_key"),
+                user_id=_metadata_text(
+                    metadata,
+                    "employee_key",
+                    "user_key",
+                    "principal_key",
+                    "from_user_key",
+                    "open_user_key",
+                ),
+            )
             if self._settings.langfuse_flush and hasattr(client, "flush"):
                 client.flush()
             self._last_status = "sent"
@@ -205,39 +260,128 @@ class _LangfuseEmitter:
             logger.warning("AGENTSEEK_LANGFUSE_ENABLED=true but the langfuse package is not installed")
             self._disabled = True
             return None
-        kwargs: dict[str, str] = {
+        kwargs: dict[str, Any] = {
             "public_key": self._settings.langfuse_public_key,
             "secret_key": self._settings.langfuse_secret_key,
         }
         if self._settings.langfuse_host:
             kwargs["host"] = self._settings.langfuse_host
+        if self._settings.langfuse_environment:
+            kwargs["environment"] = self._settings.langfuse_environment
+        if self._settings.langfuse_release:
+            kwargs["release"] = self._settings.langfuse_release
+        kwargs["mask"] = self._mask_langfuse_data
+        kwargs["blocked_instrumentation_scopes"] = list(_LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES)
         self._client = Langfuse(**kwargs)
         return self._client
 
-    def _record_event(self, client: Any, *, name: str, metadata: dict[str, Any]) -> None:
-        if hasattr(client, "create_event"):
-            client.create_event(name=name, metadata=metadata)
-            return
+    def _record_event(
+        self,
+        client: Any,
+        *,
+        trace_name: str,
+        name: str,
+        metadata: dict[str, Any],
+        session_id: str | None,
+        user_id: str | None,
+    ) -> None:
+        trace_context = {"trace_id": secrets.token_hex(16)}
         if hasattr(client, "start_as_current_span"):
-            self._close_observation(client.start_as_current_span(name=name, metadata=metadata))
+            observation = client.start_as_current_span(
+                trace_context=trace_context,
+                name=trace_name,
+                metadata=metadata,
+            )
+            self._close_observation(
+                observation,
+                client=client,
+                trace_name=trace_name,
+                metadata=metadata,
+                session_id=session_id,
+                user_id=user_id,
+            )
+            return
+        if hasattr(client, "create_event"):
+            client.create_event(trace_context=trace_context, name=name, metadata=metadata)
             return
         if hasattr(client, "start_span"):
-            self._close_observation(client.start_span(name=name, metadata=metadata))
+            observation = client.start_span(trace_context=trace_context, name=trace_name, metadata=metadata)
+            self._finish_observation(observation)
             return
         if hasattr(client, "start_observation"):
-            self._close_observation(client.start_observation(name=name, metadata=metadata))
+            observation = client.start_observation(trace_context=trace_context, name=trace_name, metadata=metadata)
+            self._finish_observation(observation)
             return
         raise RuntimeError("Unsupported Langfuse SDK: no create_event/start_span method found")
 
-    def _close_observation(self, observation: Any) -> None:
+    def _close_observation(
+        self,
+        observation: Any,
+        *,
+        client: Any,
+        trace_name: str,
+        metadata: dict[str, Any],
+        session_id: str | None,
+        user_id: str | None,
+    ) -> None:
         enter = getattr(observation, "__enter__", None)
         exit_method = getattr(observation, "__exit__", None)
         if callable(enter) and callable(exit_method):
             with observation:
+                self._update_current_trace(
+                    client,
+                    trace_name=trace_name,
+                    metadata=metadata,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
                 return
+        self._update_current_trace(
+            client,
+            trace_name=trace_name,
+            metadata=metadata,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        self._finish_observation(observation)
+
+    def _finish_observation(self, observation: Any) -> None:
         end = getattr(observation, "end", None)
         if callable(end):
             end()
+
+    def _update_current_trace(
+        self,
+        client: Any,
+        *,
+        trace_name: str,
+        metadata: dict[str, Any],
+        session_id: str | None,
+        user_id: str | None,
+    ) -> None:
+        update_current_trace = getattr(client, "update_current_trace", None)
+        if not callable(update_current_trace):
+            return
+        kwargs: dict[str, Any] = {
+            "name": trace_name,
+            "metadata": {
+                "event": metadata.get("event"),
+                "environment": metadata.get("environment"),
+                "release": metadata.get("release"),
+            },
+        }
+        if session_id:
+            kwargs["session_id"] = session_id
+        if user_id:
+            kwargs["user_id"] = user_id
+        update_current_trace(**kwargs)
+
+    def _mask_langfuse_data(self, *, data: Any, **_kwargs: Any) -> Any:
+        return _sanitize_langfuse_value(
+            data,
+            secret=self._settings.hash_secret,
+            max_chars=self._settings.max_value_chars,
+        )
 
 
 @lru_cache(maxsize=1)
@@ -275,9 +419,30 @@ def _sanitize_fields(fields: dict[str, Any], *, secret: str, max_chars: int) -> 
             safe[mapped_key] = _stable_hash(value, secret=secret)
         elif any(fragment in lowered for fragment in _SENSITIVE_KEY_FRAGMENTS):
             safe[key_text] = "[REDACTED]"
+        elif any(fragment in lowered for fragment in _CONTENT_KEY_FRAGMENTS):
+            safe[key_text] = _sanitize_content_field(lowered, value, secret=secret, max_chars=max_chars)
         else:
             safe[key_text] = _sanitize_value(value, secret=secret, max_chars=max_chars)
     return safe
+
+
+def _sanitize_content_field(key: str, value: Any, *, secret: str, max_chars: int) -> Any:
+    if isinstance(value, bool | int | float) and key.endswith(_CONTENT_LENGTH_SUFFIXES):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {"chars": len(value), "value": "[REDACTED]"}
+    if isinstance(value, (list, tuple, set)):
+        return {"items": len(value), "value": "[REDACTED]"}
+    if isinstance(value, dict):
+        if set(value) == {"chars", "value"} and value.get("value") == "[REDACTED]":
+            return value
+        return {"keys": len(value), "value": "[REDACTED]"}
+    text = str(value)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "...[truncated]"
+    return _sanitize_text_for_langfuse(text, secret=secret)
 
 
 def _sanitize_value(value: Any, *, secret: str, max_chars: int) -> Any:
@@ -295,6 +460,67 @@ def _sanitize_value(value: Any, *, secret: str, max_chars: int) -> Any:
     if len(text) > max_chars:
         return text[:max_chars] + "...[truncated]"
     return text
+
+
+def _sanitize_langfuse_payload(payload: dict[str, Any], *, settings: EnterpriseObservabilitySettings) -> dict[str, Any]:
+    return _sanitize_langfuse_value(
+        payload,
+        secret=settings.hash_secret,
+        max_chars=settings.max_value_chars,
+    )
+
+
+def _sanitize_langfuse_value(value: Any, *, secret: str, max_chars: int) -> Any:
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        return _sanitize_text_for_langfuse(value, secret=secret, max_chars=max_chars)
+    if isinstance(value, dict):
+        return _sanitize_langfuse_fields(dict(value), secret=secret, max_chars=max_chars)
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_langfuse_value(item, secret=secret, max_chars=max_chars) for item in list(value)[:20]]
+    return _sanitize_text_for_langfuse(str(value), secret=secret, max_chars=max_chars)
+
+
+def _sanitize_langfuse_fields(fields: dict[str, Any], *, secret: str, max_chars: int) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in fields.items():
+        key_text = str(key)
+        lowered = key_text.lower()
+        mapped_key = _IDENTITY_FIELD_MAP.get(lowered)
+        if mapped_key is not None:
+            safe[mapped_key] = _stable_hash(value, secret=secret)
+        elif any(fragment in lowered for fragment in _SENSITIVE_KEY_FRAGMENTS):
+            safe[key_text] = "[REDACTED]"
+        elif any(fragment in lowered for fragment in _CONTENT_KEY_FRAGMENTS):
+            safe[key_text] = _sanitize_content_field(lowered, value, secret=secret, max_chars=max_chars)
+        else:
+            safe[key_text] = _sanitize_langfuse_value(value, secret=secret, max_chars=max_chars)
+    return safe
+
+
+def _sanitize_text_for_langfuse(value: str, *, secret: str, max_chars: int | None = None) -> str:
+    text = value if max_chars is None or len(value) <= max_chars else value[:max_chars] + "...[truncated]"
+    for pattern in _RAW_IDENTITY_PATTERNS:
+        if pattern.pattern.startswith("(?i)\\bwecom"):
+            text = pattern.sub("wecom:[REDACTED]", text)
+        elif pattern.groups >= 2:
+            text = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
+    text = re.sub(r"(?i)(content|message|prompt|reply|model_output)=.*", r"\1=[REDACTED]", text)
+    return _CJK_NAME_RE.sub("[REDACTED]", text)
+
+
+def _safe_event_name(value: str) -> str:
+    cleaned = _SAFE_EVENT_NAME_RE.sub("_", value).strip("_.:-")
+    return cleaned or "agentseek.enterprise.event"
+
+
+def _metadata_text(metadata: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _stable_hash(value: Any, *, secret: str) -> str:

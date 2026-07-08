@@ -2780,3 +2780,56 @@ Mac mini verification requested:
 5. Restart gateway with `AGENTSEEK_LANGFUSE_ENABLED=true`, run live A-E smoke,
    and confirm local JSONL stays redacted while Langfuse receives runtime
    events.
+
+### v0.0.8 Langfuse privacy + frozen lock fix (Codex local development) — READY FOR MAC MINI VERIFY
+
+Mac mini re-test found two remaining blockers after the first SDK API fix:
+
+1. Langfuse traces inherited raw Logfire/loguru spans, exposing plaintext values
+   in trace names/attributes (`wecom:zhuchunlin`, `zhuchunlin`, and model reply
+   text such as `朱春霖，你好！`).
+2. Root `uv.lock` did not include the optional runtime packages needed for a
+   clean frozen deployment (`langfuse`, `psycopg`, `jaydebeapi`), and the
+   transitive `bub @ git+https://github.com/bubbuild/bub.git` dependency was not
+   pinned, so a fresh resolve used `HEAD` instead of the `0.3.9` revision.
+
+Fix:
+- Langfuse export now creates an isolated trace context per enterprise event and
+  uses the sanitized event name as the trace name.
+- The current Langfuse trace is explicitly updated with sanitized `session_id`
+  / `user_id` values only (`hmac-*` keys).
+- The Langfuse client is configured with a mask function that redacts raw
+  log-line payloads and blocks `logfire` / `loguru` instrumentation scopes so
+  ambient raw spans are not exported to Langfuse.
+- Content-like fields (`content`, `message`, `prompt`, `reply`, raw text) are
+  reduced to length-only redacted summaries before reaching Langfuse.
+- Root `pyproject.toml` now overrides `bub` to the `0.3.9` tag commit
+  `e5d8ceb3b30105e0d50e872be7d6ae6fb4066236`.
+- Runtime packaging now declares `langfuse>=3,<4`, `psycopg[binary]`,
+  `jaydebeapi`, `JPype1`, and `fastmcp` in the packages that need them, so a
+  root frozen sync has the expected imports without manual `uv pip install`.
+
+Local verification:
+- `uv sync --frozen --all-packages` → passed.
+- `uv run --offline python -c "import agentseek_enterprise, langfuse, psycopg, fastmcp, jaydebeapi, uvicorn"` → passed.
+- `uv run pytest contrib/agentseek-enterprise/tests -q` → 70 passed.
+- `uv run pytest contrib/agentseek-contextseek/tests -q` → 43 passed, 1 skipped.
+- `uv run ruff check --no-fix` on touched observability files → all checks
+  passed.
+- `git diff 68d7b25 -- mcp_policy.py tools.py` → zero output.
+
+Mac mini verification requested:
+1. Pull the updated `enterprise/v0.0.8-observability` commit.
+2. Run `rm -rf .venv && uv sync --frozen --all-packages`.
+3. Run `uv run --offline python -c "import agentseek_enterprise, langfuse,
+   psycopg, fastmcp, jaydebeapi, uvicorn"` and expect OK.
+4. Run `scripts/probe_langfuse_event.py --env-file
+   examples/enterprise_wecom_digital_employee/.env`; expect
+   `langfuse_status.status == "sent"`.
+5. Restart gateway with `AGENTSEEK_LANGFUSE_ENABLED=true`, send live "我是谁",
+   then query/grep Langfuse traces for `zhuchunlin`, `wecom:zhuchunlin`, and
+   `朱春霖`; expect 0 hits.
+6. Run B-E live smoke (short-term memory, explicit durable memory, pgvector
+   semantic recall, MCP list) and confirm events arrive in Langfuse while MCP
+   audit stays separate.
+7. Confirm 0 SIGBUS / 0 traceback / 0 exit-138 and MCP zero diff vs `68d7b25`.

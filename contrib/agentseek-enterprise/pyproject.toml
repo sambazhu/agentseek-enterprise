@@ -7,6 +7,9 @@ authors = [{ name = "Chojan Shang", email = "psiace@apache.org" }]
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "bub==0.3.9",
+    "fastmcp>=2.0",
+    "jaydebeapi>=1.2.3",
+    "JPype1>=1.5",
     "langgraph>=1.0",
     "langfuse>=3.0.0,<4",
 ]

@@ -76,6 +76,9 @@ skills = [
 #   UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple uv sync
 [tool.uv]
 index-url = "https://pypi.org/simple"
+override-dependencies = [
+    "bub @ git+https://github.com/bubbuild/bub.git@e5d8ceb3b30105e0d50e872be7d6ae6fb4066236",
+]
 
 [tool.uv.sources]
 # bub-contrib: pin to a specific commit so resolves are reproducible across environments.

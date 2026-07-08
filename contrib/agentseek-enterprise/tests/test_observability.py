@@ -76,53 +76,7 @@ def test_langfuse_enabled_without_package_does_not_break_local_events(monkeypatc
     assert json.loads(log_path.read_text(encoding="utf-8").strip())["event"] == "wecom_message_received"
 
 
-def test_langfuse_enabled_emits_create_event_with_fake_sdk(monkeypatch: Any, tmp_path: Any) -> None:
-    log_path = tmp_path / "enterprise-events.jsonl"
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    class FakeLangfuse:
-        def __init__(self, **kwargs: Any) -> None:
-            calls.append(("client", kwargs))
-
-        def create_event(self, *, name: str, metadata: dict[str, Any]) -> None:
-            calls.append((name, metadata))
-
-        def flush(self) -> None:
-            calls.append(("flush", {}))
-
-    fake_module = ModuleType("langfuse")
-    fake_module.Langfuse = FakeLangfuse
-    monkeypatch.setitem(sys.modules, "langfuse", fake_module)
-    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "true")
-    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
-    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
-    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.local")
-    monkeypatch.setenv("AGENTSEEK_LANGFUSE_TRACE_NAME", "agentseek.test")
-    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENV", "test")
-    monkeypatch.setenv("AGENTSEEK_LANGFUSE_RELEASE", "v-test")
-    monkeypatch.setenv("AGENTSEEK_LANGFUSE_SAMPLE_RATE", "1.0")
-    reset_observability_for_tests()
-
-    writer = EnterpriseEventWriter()
-    assert writer.emit("identity_lookup", oa_account="zhuchunlin", status="found")
-
-    assert calls[0] == (
-        "client",
-        {"public_key": "pk-test", "secret_key": "sk-test", "host": "http://langfuse.local"},
-    )
-    assert calls[1][0] == "identity_lookup"
-    assert calls[1][1]["event"] == "identity_lookup"
-    assert calls[1][1]["environment"] == "test"
-    assert calls[1][1]["release"] == "v-test"
-    assert calls[1][1]["trace_name"] == "agentseek.test"
-    assert calls[-1] == ("flush", {})
-    assert writer.langfuse_status() == {"status": "sent"}
-    assert "zhuchunlin" not in json.dumps(calls, ensure_ascii=False)
-
-
-def test_langfuse_event_falls_back_to_start_span(monkeypatch: Any, tmp_path: Any) -> None:
+def test_langfuse_enabled_emits_sanitized_trace_with_fake_sdk(monkeypatch: Any, tmp_path: Any) -> None:
     log_path = tmp_path / "enterprise-events.jsonl"
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -138,9 +92,104 @@ def test_langfuse_event_falls_back_to_start_span(monkeypatch: Any, tmp_path: Any
         def __init__(self, **kwargs: Any) -> None:
             calls.append(("client", kwargs))
 
-        def start_as_current_span(self, *, name: str, metadata: dict[str, Any]) -> FakeSpan:
-            calls.append((name, metadata))
+        def start_as_current_span(
+            self,
+            *,
+            trace_context: dict[str, str],
+            name: str,
+            metadata: dict[str, Any],
+        ) -> FakeSpan:
+            calls.append((name, {"trace_context": trace_context, "metadata": metadata}))
             return FakeSpan()
+
+        def update_current_trace(self, **kwargs: Any) -> None:
+            calls.append(("update_current_trace", kwargs))
+
+        def flush(self) -> None:
+            calls.append(("flush", {}))
+
+    fake_module = ModuleType("langfuse")
+    fake_module.Langfuse = FakeLangfuse
+    monkeypatch.setitem(sys.modules, "langfuse", fake_module)
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET", "test-secret")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.local")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_TRACE_NAME", "agentseek.test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENV", "test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_RELEASE", "v-test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_SAMPLE_RATE", "1.0")
+    reset_observability_for_tests()
+
+    writer = EnterpriseEventWriter()
+    assert writer.emit(
+        "session.run.outbound",
+        oa_account="zhuchunlin",
+        session_id="wecom:zhuchunlin",
+        status="found",
+        content="朱春霖，你好！",
+    )
+
+    assert calls[0][0] == "client"
+    assert calls[0][1]["public_key"] == "pk-test"
+    assert calls[0][1]["secret_key"].startswith("sk-")
+    assert calls[0][1]["host"] == "http://langfuse.local"
+    assert calls[0][1]["environment"] == "test"
+    assert calls[0][1]["release"] == "v-test"
+    assert "logfire" in calls[0][1]["blocked_instrumentation_scopes"]
+    assert callable(calls[0][1]["mask"])
+    assert calls[1][0] == "session.run.outbound"
+    assert calls[1][1]["trace_context"]["trace_id"]
+    metadata = calls[1][1]["metadata"]
+    assert metadata["event"] == "session.run.outbound"
+    assert metadata["environment"] == "test"
+    assert metadata["release"] == "v-test"
+    assert metadata["trace_name"] == "agentseek.test"
+    assert metadata["employee_key"].startswith("hmac-")
+    assert metadata["session_key"].startswith("hmac-")
+    assert metadata["content"] == {"chars": 7, "value": "[REDACTED]"}
+    assert calls[3][0] == "update_current_trace"
+    assert calls[3][1]["name"] == "session.run.outbound"
+    assert calls[3][1]["session_id"] == metadata["session_key"]
+    assert calls[3][1]["user_id"] == metadata["employee_key"]
+    assert calls[-1] == ("flush", {})
+    assert writer.langfuse_status() == {"status": "sent"}
+    emitted_payload = json.dumps(calls[1:], ensure_ascii=False)
+    assert "zhuchunlin" not in emitted_payload
+    assert "wecom:zhuchunlin" not in emitted_payload
+    assert "朱春霖" not in emitted_payload
+    mask = calls[0][1]["mask"]
+    masked_log_line = mask(
+        data={
+            "name": "session.run.outbound session_id=wecom:zhuchunlin content=朱春霖，你好！",
+            "attributes": {"log": "Employee identity cache stored for zhuchunlin ttl=600.0s"},
+        }
+    )
+    masked_text = json.dumps(masked_log_line, ensure_ascii=False)
+    assert "zhuchunlin" not in masked_text
+    assert "wecom:zhuchunlin" not in masked_text
+    assert "朱春霖" not in masked_text
+
+
+def test_langfuse_event_falls_back_to_create_event(monkeypatch: Any, tmp_path: Any) -> None:
+    log_path = tmp_path / "enterprise-events.jsonl"
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(("client", kwargs))
+
+        def create_event(
+            self,
+            *,
+            trace_context: dict[str, str],
+            name: str,
+            metadata: dict[str, Any],
+        ) -> None:
+            calls.append((name, {"trace_context": trace_context, "metadata": metadata}))
 
     fake_module = ModuleType("langfuse")
     fake_module.Langfuse = FakeLangfuse
@@ -155,7 +204,8 @@ def test_langfuse_event_falls_back_to_start_span(monkeypatch: Any, tmp_path: Any
     assert writer.emit("memory_recall", status="hit")
 
     assert calls[1][0] == "memory_recall"
-    assert calls[2:] == [("enter", {}), ("exit", {})]
+    assert calls[1][1]["trace_context"]["trace_id"]
+    assert calls[1][1]["metadata"]["event"] == "memory_recall"
     assert writer.langfuse_status() == {"status": "sent"}
 
 
