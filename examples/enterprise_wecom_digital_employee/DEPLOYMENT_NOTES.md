@@ -2981,3 +2981,45 @@ everything, no manual packages needed). Langfuse server deployed + serving
 traces. MCP revert + audit separation intact. 0 SIGBUS in session. Recommend
 tagging `enterprise-wecom-v0.0.8-rc2` after Codex drives B-E + confirms all
 event types arrive redacted in Langfuse.
+
+## v0.0.8 Langfuse B-E live smoke — PASS (81c4b22, 2026-07-08)
+
+Mac mini ran the full B-E live smoke (identity already verified in the prior
+round). Gateway running `81c4b22` via `uv run --offline` (run_gateway.sh,
+clean frozen-lock venv), `LANGFUSE_ENABLED=true`, Langfuse server up
+(`~/langfuse/` Docker Compose stack). GitLab synced (`658d5b3..81c4b22`).
+
+**B-E replies (朱春霖, 7 messages):**
+- B short-term store → "已长期记住" + recall ✅
+- C explicit long-term store → "已长期记住" + recall "回复偏好如下" ✅
+- D pgvector semantic store → "已长期记住" + recall "根据长期记忆记录" ✅
+- E MCP list → tool list normal ✅
+
+**Local events: 67 events across B-E, all event types fired:**
+`wecom_message_received` (8), `wecom_stream_started` (8), `wecom_stream_finished`
+(7), `identity_lookup` (8), `short_term_memory_load` (8), `short_term_memory_save`
+(7), `durable_memory_write` (3), `durable_memory_recall` (2),
+`contextseek_pgvector_add` (7), `contextseek_pgvector_retrieve` (8),
+`wecom_duplicate_msgid` (1).
+
+**Langfuse redaction — all clean (newest 20 traces):**
+- `zhuchunlin` (OA): 0 ✅
+- `wecom:zhuchunlin` (session): 0 ✅
+- `朱春霖` (name): 0 ✅
+- `password` / `token` / `secret` / `api_key`: 0 ✅
+
+**Langfuse trace names — structured event names (not raw payload):**
+`wecom.incoming msgtype=stream msgid=<hash>`, `wecom_stream_finished`, etc.
+No plaintext session_id / content / OA in any trace name.
+
+**MCP separation — ✅.** `enterprise-events.jsonl` contains 0 `mcp` entries.
+MCP audit stays in `runtime/mcp-audit.jsonl`. `git diff 68d7b25 -- mcp_policy.py
+tools.py` → zero diff.
+
+**Health.** Current session: 0 SIGBUS / 0 traceback / 0 exit-138. (4 stale
+tracebacks in the persistent log are from earlier broken-venv sessions.)
+
+**Verdict — v0.0.8 Langfuse B-E live smoke PASS. Ready for
+`enterprise-wecom-v0.0.8-rc2`.** All event types (wecom/identity/short-term/
+durable/pgvector) fire and reach Langfuse redacted; local JSONL continues;
+MCP untouched; 0 SIGBUS. Both GitHub and GitLab synced at `81c4b22`.
