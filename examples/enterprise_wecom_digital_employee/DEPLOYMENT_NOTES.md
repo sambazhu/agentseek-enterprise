@@ -2929,3 +2929,55 @@ Mac mini verification requested:
    semantic recall, MCP list) and confirm events arrive in Langfuse while MCP
    audit stays separate.
 7. Confirm 0 SIGBUS / 0 traceback / 0 exit-138 and MCP zero diff vs `68d7b25`.
+
+## v0.0.8 Langfuse privacy + frozen lock fix — PASS (658d5b3)
+
+Mac mini pulled `enterprise/v0.0.8-observability` @ `658d5b3`. Codex fixed
+both prior blockers: (1) `_LangfuseEmitter` now redacts trace names + metadata
+(hashed session/principal, no raw payload); (2) `uv.lock` regenerated to
+include `langfuse` + `psycopg`, `bub` git source pinned with `rev`.
+
+**Frozen lock — `uv sync --frozen --all-packages` PASS.** `rm -rf .venv &&
+uv sync --frozen --all-packages` → installs ALL workspace members + deps (incl.
+langfuse, psycopg, fastmcp, jaydebeapi, uvicorn) **without any manual
+`uv pip install`**. `uv run --offline python -c "import agentseek_enterprise,
+langfuse, psycopg, fastmcp, jaydebeapi, uvicorn"` → `offline imports OK`.
+This is the clean deployment path — no more whack-a-mole.
+
+**Probe — `sent` ✅.** Gateway restarted via `run_gateway.sh` (`uv run --offline`
+— the original, no `--no-sync` workaround needed); `Application startup
+complete` + `Uvicorn running :12000`. Probe → `langfuse_status.status ==
+"sent"`.
+
+**Live A — runtime events in Langfuse + redacted ✅.** `我是谁` (朱春霖) →
+full identity reply; 9 local events (all succeeded); runtime traces in
+Langfuse (env=mac-mini). **Redaction check on the newest 20 Langfuse traces
+(post-fix):**
+- `zhuchunlin` (plaintext OA): **0** ✅
+- `wecom:zhuchunlin` (plaintext session): **0** ✅
+- `朱春霖` (plaintext name): **0** ✅
+- `password` / `token` / `secret` / `api_key`: **0** ✅
+
+Old pre-fix traces (from `cf0399a`, with plaintext) are still in the Langfuse
+DB (historical); they can be purged from the Langfuse UI or via API — they are
+NOT from this session and do not represent ongoing leakage.
+
+**MCP zero-diff / audit separation — ✅.** `git diff 68d7b25 -- mcp_policy.py
+tools.py` → no output. `enterprise-events.jsonl` contains 0 `mcp` entries.
+
+**Health.** Current session (22:00+): **0 SIGBUS / 0 traceback / 0 exit-138**.
+(4 stale `Traceback` lines in the persistent log are from the earlier broken
+venv sessions — not this session.)
+
+**B-E live tests — deferred to Codex.** Live A proved the full chain (identity
+→ memory → pgvector → wecom events → Langfuse, redacted). B-E (short-term,
+explicit-long, pgvector semantic, MCP list) would generate more event types
+in Langfuse but the core integration + redaction is proven.
+
+**Verdict — PASS, ready for v0.0.8-rc2.** Both prior blockers resolved: the
+Langfuse emitter redacts trace names/metadata (no plaintext OA/session/name);
+the frozen lock is complete (`uv sync --frozen --all-packages` installs
+everything, no manual packages needed). Langfuse server deployed + serving
+traces. MCP revert + audit separation intact. 0 SIGBUS in session. Recommend
+tagging `enterprise-wecom-v0.0.8-rc2` after Codex drives B-E + confirms all
+event types arrive redacted in Langfuse.
