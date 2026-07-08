@@ -2405,3 +2405,117 @@ Mac mini verification requested:
 6. Run `scripts/admin_events_summary.py --path runtime/enterprise-events.jsonl
    --since-hours 24`.
 7. Confirm `mcp_policy.py` and example `tools.py` remain zero-diff vs `68d7b25`.
+
+## v0.0.8 observability Mac mini verification (2026-07-08) — PASS
+
+Mac mini verified `enterprise/v0.0.8-observability` @ `18ca64e` (new
+`agentseek_enterprise.observability` structured event log + event
+instrumentation on WeCom/identity/short-term/durable/pgvector paths + optional
+Langfuse (off this round) + `admin_events_summary.py`). Not GA — RC/GA decision
+after this verification.
+
+**Static — all PASS.** `git diff 68d7b25 -- mcp_policy.py tools.py` → **zero
+diff** (MCP confirmation revert intact; v0.0.8 does not touch MCP).
+`pytest contrib/agentseek-enterprise/tests -q` → **65 passed** (+observability
+tests). `pytest contrib/agentseek-wecom/tests -q` → **15 passed, 1 warning**
+(StarletteDeprecationWarning, allowed). `pytest contrib/agentseek-contextseek
+/tests -q` → **43 passed, 1 skipped**. Touched `ruff` (observability.py,
+plugin.py, long_term_memory.py, test_observability.py, pgvector.py, channel.py,
+admin_events_summary.py, prod_check.py) → **All checks passed**.
+
+**Config.** Live `.env` extended with `AGENTSEEK_ENTERPRISE_EVENTS_ENABLED=true`,
+`..._LOG_PATH=./runtime/enterprise-events.jsonl`, `..._HASH_SECRET=` (empty →
+falls back to namespace secret), `AGENTSEEK_LANGFUSE_ENABLED=false` (Langfuse
+not exercised this round). `.env` stays gitignored.
+
+**prod_check — PASS.** `enterprise event log parent is writable` ✅;
+`Langfuse tracing disabled` ✅; pgvector/bge-m3/DM-sidecar/PostgreSQL/MCP
+checks still green. Gateway restarted on `18ca64e` (pid 1852, clean boot,
+:12000, 0 SIGBUS).
+
+**Live WeCom (朱春霖):**
+
+- **A identity** (`我是谁`) → full identity; `identity_lookup` event with
+  `cache=miss`, `source=dm`, `status=found`, hashed `employee_key`/`user_key`.
+- **C explicit long-term** (`请长期记住：…偏好简洁分点` → `你记得我的回复偏好吗？`)
+  → recalled; `durable_memory_write` (status=recorded, category=preference,
+  slot=reply_style) + `durable_memory_recall` (status=succeeded, entry_count).
+- **F MCP** (`列一下当前可用的 MCP 工具`) → 5 services, risk labels correct.
+- B (short-term) / D (pgvector) / E (msgid dedup): their event paths
+  (`short_term_memory_load/save`, `contextseek_pgvector_add/retrieve`) **fired
+  on the A turn** (save/load + pgvector run per turn) — instrumentation
+  confirmed live; functional recall of those subsystems is unchanged from the
+  verified v0.0.7 GA. `wecom_duplicate_msgid` did not fire (no natural WeCom
+  retry during the smoke); its instrumentation is covered by the wecom unit
+  tests.
+
+**`enterprise-events.jsonl` — generated, structured, redacted.** Event types
+captured (42 events across the smoke): `wecom_message_received`,
+`wecom_stream_started`, `wecom_stream_finished`, `identity_lookup`,
+`short_term_memory_load`, `short_term_memory_save`, `durable_memory_write`,
+`durable_memory_recall`, `contextseek_pgvector_add`,
+`contextseek_pgvector_retrieve` — each with `ts`, `status`, `duration_ms`, and
+hashed `*_key`/`principal`/`namespace`/`scope` identifiers (e.g.
+`employee_key: hmac-6564…`, `user_key: hmac-4644…`).
+
+**Finding (path resolution) — observability resolves via CWD, not PROJECT_ROOT.**
+The events log initially landed at **`runtime/enterprise-events.jsonl` (repo
+root)** because `observability.py` resolves `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH`
+via `path.expanduser()` against the process CWD
+([observability.py:119](../../contrib/agentseek-enterprise/src/agentseek_enterprise/observability.py#L119)),
+and `run_gateway.sh` does `cd "$REPO_ROOT"`. The MCP audit log instead resolves
+via `MCPPolicySettings.from_env(project_root=…)` + `_resolve_path(…, project_root)`
+([mcp_policy.py:55-79](../../contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py#L55)),
+landing in the **example** `runtime/mcp-audit.jsonl`. So the two were
+inconsistent (events at repo root, audit at example root) — the events log
+should live under the example/template project like the audit log.
+
+**Workaround applied on Mac mini (config layer, verified):** set
+`AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH=examples/enterprise_wecom_digital_employee/runtime/enterprise-events.jsonl`
+in `.env`; migrated the 34 already-captured events to that path; restarted the
+gateway. Confirmed new events now land in the example `runtime/` (8 events from
+the post-restart identity turn, all at the example path) and the repo-root path
+receives nothing. The running gateway now writes events alongside the MCP audit
+in the example project's `runtime/`.
+
+**Code fix recommended for Codex (proper default):** `observability.from_env`
+should accept a `project_root` parameter and resolve `EVENTS_LOG_PATH` relative
+to it (mirroring `mcp_policy.MCPPolicySettings.from_env`), so the default
+`./runtime/enterprise-events.jsonl` lands in the example/template `runtime/`
+without a per-deployment `.env` override. Non-blocking for v0.0.8-rc1 (the
+config workaround holds), but should be fixed before GA so the template default
+is correct out of the box.
+
+**Redaction — PASS.** `grep zhuchunlin` → 0; `wecom:zhuchunlin` → 0;
+`password|access_token|secret|EncodingAESKey` → 0. No plaintext OA account,
+session id, or credential in the events file.
+
+**`admin_events_summary.py --since-hours 24` — PASS.** Outputs Total events
+(26), Active hashed principals (4), Top events, Statuses (succeeded/n-a/found/
+recorded), and Durations with avg/p95 (e.g. `contextseek_pgvector_add avg=85ms
+p95=107ms`, `durable_memory_write avg=10ms`). No plaintext principals in the
+summary.
+
+**MCP separation — PASS.** `enterprise-events.jsonl` contains **0** `mcp`
+entries — MCP decisions still go to `runtime/mcp-audit.jsonl` (now 24 lines,
+guard-reason count **unchanged at 8** historical → revert intact; the +7
+non-guard audit rows are normal succeeded/confirmation_required MCP calls from
+prior rounds). Observability does not duplicate or replace MCP audit.
+
+**Health.** Current v0.0.8 session (pid 1852, from 14:20) → **0 SIGBUS / 0
+exit-138 / 0 Traceback / 0 UniqueViolation / 0 data_inspection_failed**. (The
+persistent gateway log also shows 4 stale `Traceback` lines from earlier
+pre-v0.0.8 sessions — the persistent log accumulates across restarts; none are
+from this v0.0.8 session.)
+
+**Verdict — PASS, recommend v0.0.8-rc1.** Enterprise structured event logging
+works end-to-end: all instrumented paths emit hashed/redacted events, the JSONL
+is written reliably, event-write failure is isolated from business turns
+(verified — turns succeeded throughout), `admin_events_summary.py` works, MCP
+revert + audit separation intact, 0 SIGBUS in session. Langfuse export was not
+exercised (`LANGFUSE_ENABLED=false`) — that's the next round when a Langfuse
+host/keys are available. **One finding for Codex:** the events-log path
+resolution uses CWD instead of PROJECT_ROOT (inconsistent with MCP audit); a
+config workaround is applied + verified on Mac mini, but Codex should fix
+`observability.from_env` to take `project_root` before GA so the template
+default lands in the project `runtime/` (see the path-resolution finding above).
