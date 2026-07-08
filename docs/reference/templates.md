@@ -10,6 +10,7 @@ sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
   - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/observability.py
 ---
 
 # Templates
@@ -22,7 +23,7 @@ sources:
 | `bub/default` | Lightweight Bub agent with AgentSeek lifecycle spec. |
 | `deepagents/content-builder` | DeepAgents content builder with writing workflows, image generation, local UI, and AgentSeek lifecycle spec. |
 | `deepagents/default` | Minimal DeepAgents app with AgentSeek lifecycle spec. |
-| `deepagents/enterprise-wecom` | Enterprise WeCom digital employee with employee identity, MCP tools, pgvector semantic memory, and AgentSeek lifecycle spec. |
+| `deepagents/enterprise-wecom` | Enterprise WeCom digital employee with employee identity, MCP tools, pgvector semantic memory, enterprise events, and AgentSeek lifecycle spec. |
 | `deepagents/research` | DeepAgents research app with search workflow, local UI, and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag` | LangChain agentic RAG with OceanBase vector search and AgentSeek lifecycle spec. |
 | `langchain/agentic-rag-openvino` | LangChain agentic RAG with local OpenVINO models and AgentSeek lifecycle spec. |
@@ -62,6 +63,7 @@ sources:
 | Identity | Enterprise employee context through `agentseek-enterprise` |
 | Business tools | MCP servers from `.agents/mcp.json` |
 | MCP policy | Local allowlist/denylist, write/risky confirmation, and JSONL audit |
+| Observability | Redacted enterprise event JSONL with optional Langfuse export |
 | Short-term memory | Per-session SQLAlchemy memory, SQLite fallback |
 | Explicit durable memory | Employee-scoped LangGraph Store memory tools, SQLAlchemy or SQLite fallback |
 | Semantic memory | ContextSeek with PostgreSQL + pgvector in production; SeekDB fallback for local development |
@@ -91,6 +93,16 @@ Enterprise WeCom MCP policy settings:
 | `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | Require explicit confirmation for `write`, `risky`, and confirm-listed tools. |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | Write MCP decision events to JSONL. |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | Audit JSONL path relative to the project root unless absolute. |
+
+Enterprise event observability settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `AGENTSEEK_ENTERPRISE_EVENTS_ENABLED` | `true` | Write WeCom, identity, memory, and pgvector runtime events to JSONL; MCP decisions remain in the separate audit JSONL. |
+| `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH` | `./runtime/enterprise-events.jsonl` | Enterprise event JSONL path. |
+| `AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET` | empty | Optional hashing secret; falls back to `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET`. |
+| `AGENTSEEK_LANGFUSE_ENABLED` | `false` | Enable optional Langfuse export. |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | empty | Langfuse connection settings. |
 
 See [Enterprise WeCom Template](../concepts/enterprise-wecom-template.md) for
 the runtime and memory-layer design.

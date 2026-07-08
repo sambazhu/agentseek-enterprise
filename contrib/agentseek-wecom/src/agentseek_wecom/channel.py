@@ -115,6 +115,16 @@ class WeComChannel(Channel):
         if stream is None:
             return
         stream.update(content=content_of(message), finish=True)
+        _emit_enterprise_event(
+            "wecom_stream_finished",
+            status="succeeded",
+            stream_id=stream.stream_id,
+            session_id=stream.session_id,
+            chat_id=stream.chat_id,
+            from_userid=stream.from_userid,
+            content_chars=len(stream.content),
+            age_ms=round((time.time() - stream.created_at) * 1000),
+        )
 
     def stream_events(self, message: ChannelMessage, stream: AsyncIterable[StreamEvent]) -> AsyncIterable[StreamEvent]:
         return self._stream_events(message, stream)
@@ -133,6 +143,16 @@ class WeComChannel(Channel):
                         reply.update(append=str(event.data.get("delta", "")), finish=False)
                     elif event.kind == "error":
                         reply.update(content=str(event.data.get("message", "模型处理失败")), finish=True)
+                        _emit_enterprise_event(
+                            "wecom_stream_finished",
+                            status="error",
+                            stream_id=reply.stream_id,
+                            session_id=reply.session_id,
+                            chat_id=reply.chat_id,
+                            from_userid=reply.from_userid,
+                            error_message=reply.content,
+                            age_ms=round((time.time() - reply.created_at) * 1000),
+                        )
             yield event
 
     def _build_app(self) -> FastAPI:
@@ -236,8 +256,27 @@ class WeComChannel(Channel):
         )
         if is_duplicate:
             logger.info("wecom.duplicate_msgid stream_id={}", stream.stream_id)
+            _emit_enterprise_event(
+                "wecom_duplicate_msgid",
+                stream_id=stream.stream_id,
+                session_id=session_id,
+                chat_id=chat_id,
+                from_userid=from_userid,
+                msgtype=data.get("msgtype"),
+            )
             return await self._stream_response(stream.stream_id)
 
+        _emit_enterprise_event(
+            "wecom_message_received",
+            stream_id=stream.stream_id,
+            session_id=session_id,
+            chat_id=chat_id,
+            from_userid=from_userid,
+            userid=userid,
+            resolved=bool(resolved_userid),
+            msgtype=data.get("msgtype"),
+            content_chars=len(content),
+        )
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -331,6 +370,13 @@ class WeComChannel(Channel):
             self._streams[stream.stream_id] = stream
             if msgid:
                 self._stream_ids_by_msgid[msgid] = stream.stream_id
+        _emit_enterprise_event(
+            "wecom_stream_started",
+            stream_id=stream.stream_id,
+            session_id=session_id,
+            chat_id=chat_id,
+            from_userid=from_userid,
+        )
         return stream, False
 
     async def _get_stream(self, stream_id: str) -> StreamReply | None:
@@ -367,6 +413,7 @@ class WeComChannel(Channel):
             exc = task.exception()
             if exc is not None:
                 logger.opt(exception=exc).error("wecom.dispatch failed")
+                _emit_enterprise_event("wecom_dispatch_failed", error_type=type(exc).__name__)
 
     async def _stream_for_outbound(self, message: ChannelMessage) -> StreamReply | None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
@@ -483,3 +530,11 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
                 safe["event"] = safe_event
 
     return safe
+
+
+def _emit_enterprise_event(event: str, **fields: Any) -> None:
+    try:
+        from agentseek_enterprise.observability import emit_enterprise_event
+    except ImportError:  # pragma: no cover - agentseek-wecom can be installed without enterprise extras.
+        return
+    emit_enterprise_event(event, **fields)

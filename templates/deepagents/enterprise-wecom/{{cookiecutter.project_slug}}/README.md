@@ -239,6 +239,43 @@ the final WeCom reply times out if the model spends too long processing a large
 tool result. Prefer bounded tool output, answer-first summaries, or an async
 "正在处理" workflow for slow external tools.
 
+### Enterprise Observability
+
+The gateway can emit redacted structured events to
+`./runtime/enterprise-events.jsonl` when
+`AGENTSEEK_ENTERPRISE_EVENTS_ENABLED=true`. These events are separate from MCP
+audit logs:
+
+- enterprise events: runtime health, WeCom streams, identity lookup,
+  short-term memory, durable memory, and pgvector semantic memory;
+- MCP audit: policy decision records for regulated tool calls.
+
+Employee identifiers, sessions, ContextSeek scopes, and namespaces are hashed
+before they are written. Common secret fields such as password, token, secret,
+API key, credential, and private key are redacted.
+
+Quick summary:
+
+```bash
+scripts/admin_events_summary.py --path runtime/enterprise-events.jsonl --since-hours 24
+```
+
+Optional Langfuse export is controlled by:
+
+```env
+AGENTSEEK_LANGFUSE_ENABLED=false
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=
+AGENTSEEK_LANGFUSE_ENV=production
+AGENTSEEK_LANGFUSE_RELEASE=enterprise-wecom-v0.0.8
+AGENTSEEK_LANGFUSE_SAMPLE_RATE=1.0
+```
+
+Install the Langfuse Python SDK in the deployment environment before turning
+`AGENTSEEK_LANGFUSE_ENABLED=true`. If Langfuse is unavailable, local JSONL
+events continue to work and the gateway should keep serving WeCom requests.
+
 When reading gateway logs, remember that WeCom replies are often multi-line. Use
 enough trailing context such as `grep -A N`; `grep | tail -1` can truncate the
 reply and hide the relevant memory-enriched lines.

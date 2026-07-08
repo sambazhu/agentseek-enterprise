@@ -16,6 +16,20 @@ from contextseek.domain.provenance import Provenance
 from contextseek.domain.results import RetrieveResponse, SearchHit
 from contextseek.domain.stages import STAGE_CONFIDENCE, Stage
 
+try:
+    from agentseek_enterprise.observability import elapsed_ms, emit_enterprise_event, event_timer
+except ImportError:  # pragma: no cover - agentseek-contextseek can be installed standalone.
+    import time
+
+    def event_timer() -> float:
+        return time.monotonic()
+
+    def elapsed_ms(started_at: float) -> int:
+        return max(0, round((time.monotonic() - started_at) * 1000))
+
+    def emit_enterprise_event(event: str, **fields: Any) -> None:
+        del event, fields
+
 PGVECTOR_BACKEND = "pgvector"
 DEFAULT_PGVECTOR_TABLE = "contextseek_pgvector_items"
 DEFAULT_BGE_M3_DIMS = 1024
@@ -189,32 +203,45 @@ class PgVectorContextSeek:
         tags: list[str] | None = None,
         **_: Any,
     ) -> ContextItem:
-        self.initialize()
-        content_text = _content_text(content)
-        embedding = self.embedder.embed(content_text)
-        vector = _vector_literal(embedding, self.settings.dims)
-        table = self.settings.quoted_table
-        tags_json = _jsonb(tags or [])
-        # The table name is validated by _quote_table(); values stay parameterized.
-        insert_sql = f"""
-                INSERT INTO {table} (scope, content, embedding, source, source_type, tags)
-                VALUES (%(scope)s, %(content)s, %(embedding)s::vector, %(source)s, %(source_type)s, %(tags)s)
-                RETURNING id
-                """  # noqa: S608
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                insert_sql,
-                {
-                    "scope": scope,
-                    "content": content_text,
-                    "embedding": vector,
-                    "source": source,
-                    "source_type": source_type,
-                    "tags": tags_json,
-                },
+        started_at = event_timer()
+        try:
+            self.initialize()
+            content_text = _content_text(content)
+            embedding = self.embedder.embed(content_text)
+            vector = _vector_literal(embedding, self.settings.dims)
+            table = self.settings.quoted_table
+            tags_json = _jsonb(tags or [])
+            # The table name is validated by _quote_table(); values stay parameterized.
+            insert_sql = f"""
+                    INSERT INTO {table} (scope, content, embedding, source, source_type, tags)
+                    VALUES (%(scope)s, %(content)s, %(embedding)s::vector, %(source)s, %(source_type)s, %(tags)s)
+                    RETURNING id
+                    """  # noqa: S608
+            with self._connect() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    insert_sql,
+                    {
+                        "scope": scope,
+                        "content": content_text,
+                        "embedding": vector,
+                        "source": source,
+                        "source_type": source_type,
+                        "tags": tags_json,
+                    },
+                )
+                row = cursor.fetchone()
+                connection.commit()
+        except Exception as exc:
+            emit_enterprise_event(
+                "contextseek_pgvector_add",
+                status="error",
+                scope=scope,
+                table=self.settings.table,
+                source_type=source_type,
+                error_type=type(exc).__name__,
+                duration_ms=elapsed_ms(started_at),
             )
-            row = cursor.fetchone()
-            connection.commit()
+            raise
 
         item = _item_from_values(
             item_id=str(_row_value(row, "id") or ""),
@@ -225,6 +252,16 @@ class PgVectorContextSeek:
             tags=tags or [],
         )
         item.embedding = embedding
+        emit_enterprise_event(
+            "contextseek_pgvector_add",
+            status="succeeded",
+            scope=scope,
+            table=self.settings.table,
+            source_type=source_type,
+            tags_count=len(tags or []),
+            content_chars=len(content_text),
+            duration_ms=elapsed_ms(started_at),
+        )
         return item
 
     def retrieve(
@@ -235,26 +272,39 @@ class PgVectorContextSeek:
         k: int = 10,
         **_: Any,
     ) -> RetrieveResponse:
-        self.initialize()
-        query_embedding = self.embedder.embed(query)
-        vector = _vector_literal(query_embedding, self.settings.dims)
-        limit = max(1, int(k))
-        table = self.settings.quoted_table
-        # The table name is validated by _quote_table(); values stay parameterized.
-        select_sql = f"""
-                SELECT id, scope, content, source, source_type, tags, created_at,
-                       1 - (embedding <=> %(embedding)s::vector) AS score
-                FROM {table}
-                WHERE scope = %(scope)s
-                ORDER BY embedding <=> %(embedding)s::vector
-                LIMIT %(limit)s
-                """  # noqa: S608
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                select_sql,
-                {"scope": scope, "embedding": vector, "limit": limit},
+        started_at = event_timer()
+        try:
+            self.initialize()
+            query_embedding = self.embedder.embed(query)
+            vector = _vector_literal(query_embedding, self.settings.dims)
+            limit = max(1, int(k))
+            table = self.settings.quoted_table
+            # The table name is validated by _quote_table(); values stay parameterized.
+            select_sql = f"""
+                    SELECT id, scope, content, source, source_type, tags, created_at,
+                           1 - (embedding <=> %(embedding)s::vector) AS score
+                    FROM {table}
+                    WHERE scope = %(scope)s
+                    ORDER BY embedding <=> %(embedding)s::vector
+                    LIMIT %(limit)s
+                    """  # noqa: S608
+            with self._connect() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    select_sql,
+                    {"scope": scope, "embedding": vector, "limit": limit},
+                )
+                rows = cursor.fetchall()
+        except Exception as exc:
+            emit_enterprise_event(
+                "contextseek_pgvector_retrieve",
+                status="error",
+                scope=scope,
+                table=self.settings.table,
+                k=k,
+                error_type=type(exc).__name__,
+                duration_ms=elapsed_ms(started_at),
             )
-            rows = cursor.fetchall()
+            raise
 
         hits: list[SearchHit] = []
         for row in rows:
@@ -277,6 +327,15 @@ class PgVectorContextSeek:
                     recall_path="pgvector",
                 )
             )
+        emit_enterprise_event(
+            "contextseek_pgvector_retrieve",
+            status="succeeded",
+            scope=scope,
+            table=self.settings.table,
+            k=k,
+            hit_count=len(hits),
+            duration_ms=elapsed_ms(started_at),
+        )
         return RetrieveResponse(items=hits)
 
     def _connect(self) -> Any:

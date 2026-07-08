@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.store.base import BaseStore
 
+from agentseek_enterprise.observability import elapsed_ms, emit_enterprise_event, event_timer
 from agentseek_enterprise.runtime import enterprise_filesystem_namespace
 
 _PROFILE_PATH = "/employee-profile.md"
@@ -117,13 +118,25 @@ def _store(runtime: ToolRuntime) -> BaseStore:
 
 
 def _recall_employee_memory(runtime: ToolRuntime) -> str:
-    item = _store(runtime).get(enterprise_filesystem_namespace(runtime), _PROFILE_PATH)
+    store = _store(runtime)
+    namespace = enterprise_filesystem_namespace(runtime)
+    started_at = event_timer()
+    item = store.get(namespace, _PROFILE_PATH)
     if item is None:
+        _emit_memory_event("durable_memory_recall", namespace, status="empty", duration_ms=elapsed_ms(started_at))
         return "No durable employee memory is currently stored."
     content = item.value.get("content")
     if not isinstance(content, str):
+        _emit_memory_event("durable_memory_recall", namespace, status="empty", duration_ms=elapsed_ms(started_at))
         return "No durable employee memory is currently stored."
     content = _deduped_profile_view(content)
+    _emit_memory_event(
+        "durable_memory_recall",
+        namespace,
+        status="succeeded",
+        entry_count=len(_parse_profile(content)),
+        duration_ms=elapsed_ms(started_at),
+    )
     return (
         "[DurableEmployeeMemory]\n"
         "These are explicit durable memories saved for this authenticated employee. "
@@ -139,8 +152,17 @@ def _remember_employee_memory(
     *,
     slot: str | None = None,
 ) -> str:
+    started_at = event_timer()
     normalized = _normalize_memory(memory)
     if _contains_sensitive_marker(normalized):
+        _emit_memory_event(
+            "durable_memory_write",
+            enterprise_filesystem_namespace(runtime),
+            status="refused_sensitive",
+            category=category,
+            slot=slot,
+            duration_ms=elapsed_ms(started_at),
+        )
         return "Refused: durable employee memory cannot contain credentials or sensitive personal data."
 
     store = _store(runtime)
@@ -151,18 +173,69 @@ def _remember_employee_memory(
         normalized_slot = _normalize_slot(slot) if _slot_supersession_enabled() else None
         line = _format_memory_line(category, normalized, slot=normalized_slot)
         if line in content:
+            _emit_memory_event(
+                "durable_memory_write",
+                namespace,
+                status="already_recorded",
+                category=category,
+                slot=normalized_slot,
+                duration_ms=elapsed_ms(started_at),
+            )
             return "That durable employee memory is already recorded."
 
         if normalized_slot is not None:
             if match := _find_slot_line(content, category, normalized_slot):
                 if _similar(match.text, normalized):
-                    return _replace_durable_memory(store, namespace, content, match.line_index, line)
-                return _replace_conflicting_slot_memory(store, namespace, content, match, line, normalized)
-            return _append_durable_memory(store, namespace, content, line)
+                    result = _replace_durable_memory(store, namespace, content, match.line_index, line)
+                    _emit_memory_event(
+                        "durable_memory_write",
+                        namespace,
+                        status=_memory_result_status(result, default="updated_near_duplicate"),
+                        category=category,
+                        slot=normalized_slot,
+                        duration_ms=elapsed_ms(started_at),
+                    )
+                    return result
+                result = _replace_conflicting_slot_memory(store, namespace, content, match, line, normalized)
+                _emit_memory_event(
+                    "durable_memory_write",
+                    namespace,
+                    status=_memory_result_status(result, default="updated_conflict"),
+                    category=category,
+                    slot=normalized_slot,
+                    duration_ms=elapsed_ms(started_at),
+                )
+                return result
+            result = _append_durable_memory(store, namespace, content, line)
+            _emit_memory_event(
+                "durable_memory_write",
+                namespace,
+                status=_memory_result_status(result, default="recorded"),
+                category=category,
+                slot=normalized_slot,
+                duration_ms=elapsed_ms(started_at),
+            )
+            return result
 
         if match := _find_near_duplicate_line(content, category, normalized):
-            return _replace_durable_memory(store, namespace, content, match.line_index, line)
-        return _append_durable_memory(store, namespace, content, line)
+            result = _replace_durable_memory(store, namespace, content, match.line_index, line)
+            _emit_memory_event(
+                "durable_memory_write",
+                namespace,
+                status=_memory_result_status(result, default="updated_near_duplicate"),
+                category=category,
+                duration_ms=elapsed_ms(started_at),
+            )
+            return result
+        result = _append_durable_memory(store, namespace, content, line)
+        _emit_memory_event(
+            "durable_memory_write",
+            namespace,
+            status=_memory_result_status(result, default="recorded"),
+            category=category,
+            duration_ms=elapsed_ms(started_at),
+        )
+        return result
 
 
 def _append_durable_memory(store: BaseStore, namespace: tuple[str, ...], content: str, line: str) -> str:
@@ -207,17 +280,37 @@ def _forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
     normalized = _normalize_memory(memory)
     store = _store(runtime)
     namespace = enterprise_filesystem_namespace(runtime)
+    started_at = event_timer()
     with _profile_lock(namespace):
         existing = store.get(namespace, _PROFILE_PATH)
         if existing is None:
+            _emit_memory_event(
+                "durable_memory_forget",
+                namespace,
+                status="empty",
+                duration_ms=elapsed_ms(started_at),
+            )
             return "No durable employee memory is currently stored."
 
         content = str(existing.value.get("content", ""))
         retained_lines = [line for line in content.splitlines() if normalized not in line]
         if len(retained_lines) == len(content.splitlines()):
+            _emit_memory_event(
+                "durable_memory_forget",
+                namespace,
+                status="not_found",
+                duration_ms=elapsed_ms(started_at),
+            )
             return "No matching durable employee memory was found."
         updated = "\n".join(retained_lines).rstrip() + "\n"
         _put_profile(store, namespace, updated)
+        _emit_memory_event(
+            "durable_memory_forget",
+            namespace,
+            status="succeeded",
+            removed_count=len(content.splitlines()) - len(retained_lines),
+            duration_ms=elapsed_ms(started_at),
+        )
         return "The matching durable employee memory has been removed."
 
 
@@ -411,3 +504,13 @@ def _slot_supersession_enabled() -> bool:
 def _contains_sensitive_marker(value: str) -> bool:
     lowered = value.lower()
     return any(marker in lowered for marker in _SENSITIVE_MARKERS)
+
+
+def _memory_result_status(result: str, *, default: str) -> str:
+    if result.startswith("Refused:"):
+        return "refused_size"
+    return default
+
+
+def _emit_memory_event(event: str, namespace: tuple[str, ...], **fields: object) -> None:
+    emit_enterprise_event(event, namespace=namespace, profile_path=_PROFILE_PATH, **fields)

@@ -10,6 +10,7 @@ sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
   - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
+  - contrib/agentseek-enterprise/src/agentseek_enterprise/observability.py
 ---
 
 # 模板
@@ -22,7 +23,7 @@ sources:
 | `bub/default` | 带 AgentSeek 生命周期规范的轻量 Bub agent。 |
 | `deepagents/content-builder` | 带写作流程、图像生成、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents 内容构建器。 |
 | `deepagents/default` | 带 AgentSeek 生命周期规范的最小 DeepAgents 应用。 |
-| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、MCP 工具、pgvector 语义记忆和 AgentSeek 生命周期规范。 |
+| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、MCP 工具、pgvector 语义记忆、企业事件观测和 AgentSeek 生命周期规范。 |
 | `deepagents/research` | 带检索流程、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents research 应用。 |
 | `langchain/agentic-rag` | 带 OceanBase vector search 和 AgentSeek 生命周期规范的 LangChain agentic RAG。 |
 | `langchain/agentic-rag-openvino` | 带本地 OpenVINO models 和 AgentSeek 生命周期规范的 LangChain agentic RAG。 |
@@ -62,6 +63,7 @@ sources:
 | 身份 | 通过 `agentseek-enterprise` 注入员工身份上下文 |
 | 业务工具 | 从 `.agents/mcp.json` 加载 MCP servers |
 | MCP 策略 | 本地 allowlist/denylist、写入/高风险工具确认、JSONL 审计 |
+| 观测 | 脱敏企业事件 JSONL，支持可选 Langfuse 导出 |
 | 短期记忆 | 按 session 隔离的 SQLAlchemy 记忆，SQLite fallback |
 | 显式长期记忆 | 员工级 LangGraph Store memory tools，支持 SQLAlchemy 或 SQLite fallback |
 | 语义记忆 | 生产使用 ContextSeek + PostgreSQL + pgvector；本地开发可回退 SeekDB |
@@ -91,5 +93,15 @@ agentseek create deepagents/enterprise-wecom
 | `AGENTSEEK_ENTERPRISE_MCP_REQUIRE_CONFIRMATION` | `true` | 对 `write`、`risky` 和 confirm-listed 工具要求显式确认。 |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_ENABLED` | `true` | 将 MCP 决策事件写入 JSONL。 |
 | `AGENTSEEK_ENTERPRISE_MCP_AUDIT_LOG_PATH` | `./runtime/mcp-audit.jsonl` | 审计 JSONL 路径；相对路径基于项目根目录。 |
+
+企业事件观测配置项：
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `AGENTSEEK_ENTERPRISE_EVENTS_ENABLED` | `true` | 将 WeCom、身份、记忆、pgvector 等运行时事件写入 JSONL；MCP 决策继续写入独立 audit JSONL。 |
+| `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH` | `./runtime/enterprise-events.jsonl` | 企业事件 JSONL 路径。 |
+| `AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET` | 空 | 可选哈希密钥；为空时使用 `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET`。 |
+| `AGENTSEEK_LANGFUSE_ENABLED` | `false` | 启用可选 Langfuse 导出。 |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | 空 | Langfuse 连接配置。 |
 
 Runtime 和记忆分层设计见[企业微信模板](../concepts/enterprise-wecom-template.md)。

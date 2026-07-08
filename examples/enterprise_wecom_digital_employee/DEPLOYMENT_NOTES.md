@@ -2344,3 +2344,64 @@ live identity + pgvector semantic + MCP all function on the rendered project.
 `/tmp/agentseek-template-gateway.log`) is currently on :12000; the in-repo
 gateway was stopped for the smoke. Switch back to the in-repo gateway when done
 with the smoke (the rendered `~/agentseek-template-smoke/` project is throwaway).
+
+## v0.0.8 observability foundation (Codex local development) — READY FOR MAC MINI VERIFY
+
+Branch: `enterprise/v0.0.8-observability`.
+
+Scope:
+- Added `agentseek_enterprise.observability`, a best-effort enterprise event
+  writer. It writes redacted JSONL events to
+  `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH` when
+  `AGENTSEEK_ENTERPRISE_EVENTS_ENABLED=true`; employee/session/scope/namespace
+  values are hashed and common secret fields are redacted.
+- Added optional Langfuse export behind `AGENTSEEK_LANGFUSE_ENABLED=false` by
+  default. Missing Langfuse SDK or missing keys must not break local JSONL events
+  or WeCom serving.
+- Instrumented the non-MCP business runtime paths: WeCom stream/message/dedup,
+  employee identity lookup, short-term memory load/save, explicit durable memory
+  recall/write/forget, and pgvector add/retrieve. MCP confirmation behavior is
+  intentionally untouched; MCP decisions remain observable through the existing
+  `runtime/mcp-audit.jsonl`.
+- Added `scripts/admin_events_summary.py` to the example and template for
+  local summary of recent enterprise events.
+- Updated example/template `.env.example`, `prod_check.py`, README, and template
+  reference docs.
+
+Guardrails:
+- `git diff 68d7b25 -- contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py examples/enterprise_wecom_digital_employee/src/enterprise_wecom_digital_employee/tools.py`
+  is expected to stay empty. This preserves the MCP confirmation rollback state.
+- Observability must be best-effort only: event write or Langfuse failures should
+  never fail an employee turn.
+
+Local verification:
+- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest contrib/agentseek-enterprise/tests -q`
+  → 65 passed.
+- `uv run pytest contrib/agentseek-wecom/tests -q` → 15 passed, 1 Starlette
+  deprecation warning.
+- `uv run pytest contrib/agentseek-contextseek/tests -q` → 43 passed, 1 skipped
+  (real pgvector integration requires URL).
+- `uv run ruff check --no-fix` on touched enterprise/contextseek/wecom/example
+  Python files → all checks passed.
+- Raw template `tools.py` contains Jinja imports and cannot be parsed directly by
+  ruff; the added template `admin_events_summary.py` and `prod_check.py` pass
+  isolated ruff.
+
+Mac mini verification requested:
+1. Pull `enterprise/v0.0.8-observability`.
+2. Add/confirm these env keys in the example `.env`:
+   - `AGENTSEEK_ENTERPRISE_EVENTS_ENABLED=true`
+   - `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH=./runtime/enterprise-events.jsonl`
+   - `AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET=` (empty is OK; namespace secret is
+     used)
+   - `AGENTSEEK_LANGFUSE_ENABLED=false` for the first smoke.
+3. Run `scripts/prod_check.py --env-file .env` and verify the enterprise event
+   log parent is writable.
+4. Start the gateway, run live smoke: identity, short-term memory, explicit
+   durable memory, pgvector semantic recall, WeCom msgid dedup, and MCP list.
+5. Confirm `runtime/enterprise-events.jsonl` receives redacted events and does
+   not contain plaintext OA accounts, session ids, tokens, passwords, or
+   response URLs.
+6. Run `scripts/admin_events_summary.py --path runtime/enterprise-events.jsonl
+   --since-hours 24`.
+7. Confirm `mcp_policy.py` and example `tools.py` remain zero-diff vs `68d7b25`.

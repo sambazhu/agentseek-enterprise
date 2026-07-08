@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     check_contextseek(env, project_root, report)
     check_mcp(env, project_root, report)
     check_tracing(env, report)
+    check_observability(env, project_root, report)
     check_launchd(project_root, env_path.parent, report)
 
     if report.failures:
@@ -205,6 +206,24 @@ def check_tracing(env: dict[str, str], report: CheckReport) -> None:
         report.ok("LangSmith tracing enabled with production acknowledgement")
     else:
         report.warn("LANGSMITH_TRACING=true; set AGENTSEEK_PRODUCTION_TRACING_ACK=true if this is intentional")
+
+
+def check_observability(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
+    if truthy(env.get("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED")):
+        ensure_parent_writable(env, project_root, report, "AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH")
+    else:
+        report.warn("enterprise JSONL events are disabled")
+
+    if not truthy(env.get("AGENTSEEK_LANGFUSE_ENABLED")):
+        report.ok("Langfuse tracing disabled")
+        return
+    require(env, report, "LANGFUSE_PUBLIC_KEY")
+    require(env, report, "LANGFUSE_SECRET_KEY")
+    host = env.get("LANGFUSE_HOST", "").strip()
+    if host and not contains_placeholder(host):
+        report.ok("LANGFUSE_HOST is set")
+    else:
+        report.warn("LANGFUSE_HOST is empty; the Langfuse SDK default host will be used")
 
 
 def check_launchd(project_root: Path, env_dir: Path, report: CheckReport) -> None:

@@ -20,6 +20,7 @@ from agentseek_enterprise.memory import (
     short_term_memory_enabled_from_env,
     short_term_memory_state,
 )
+from agentseek_enterprise.observability import elapsed_ms, emit_enterprise_event, event_timer
 from agentseek_enterprise.runtime import LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY, enterprise_runtime_context
 from agentseek_enterprise.runtime_logging import get_logger
 
@@ -108,10 +109,16 @@ class EnterprisePlugin:
         after the active turn finishes. Returns ``None`` when the session is idle so
         Bub's default scheduling applies unchanged.
         """
-        del session_id, message  # the decision is driven entirely by the snapshot
+        del message  # the decision is driven entirely by the snapshot
         if not _serialize_turns_enabled():
             return None
         if turn.is_running or turn.pending_count > 0:
+            emit_enterprise_event(
+                "turn_serialized",
+                session_id=session_id,
+                pending_count=turn.pending_count,
+                is_running=turn.is_running,
+            )
             return AdmitDecision(action="follow_up", reason="serialize turns per session")
         return None
 
@@ -139,10 +146,27 @@ class EnterprisePlugin:
         assistant_content = str(model_output or "").strip()
         if not user_content and not assistant_content:
             return
+        started_at = event_timer()
         try:
             store.append_turn(session_id, user_content, assistant_content)
         except Exception as exc:
             logger.warning("Short-term memory save failed for {}: {}", session_id, exc)
+            emit_enterprise_event(
+                "short_term_memory_save",
+                status="error",
+                session_id=session_id,
+                error_type=type(exc).__name__,
+                duration_ms=elapsed_ms(started_at),
+            )
+        else:
+            emit_enterprise_event(
+                "short_term_memory_save",
+                status="succeeded",
+                session_id=session_id,
+                user_chars=len(user_content),
+                assistant_chars=len(assistant_content),
+                duration_ms=elapsed_ms(started_at),
+            )
 
     def _load_employee_state(self, message: Envelope) -> State:
         if not _identity_enabled():
@@ -154,6 +178,12 @@ class EnterprisePlugin:
 
         provider = self._get_identity_provider()
         if provider is None:
+            emit_enterprise_event(
+                "identity_lookup",
+                status="unavailable",
+                source=_identity_provider_name(),
+                oa_account=oa_account,
+            )
             return {
                 EMPLOYEE_IDENTITY_STATE_KEY: {
                     "source": _identity_provider_name(),
@@ -166,6 +196,13 @@ class EnterprisePlugin:
             context, cache_hit = self._get_employee_context(provider, oa_account)
         except Exception as exc:
             logger.warning("Employee identity lookup failed for {}: {}", oa_account, exc)
+            emit_enterprise_event(
+                "identity_lookup",
+                status="error",
+                source=_identity_provider_name(),
+                oa_account=oa_account,
+                error_type=type(exc).__name__,
+            )
             return {
                 EMPLOYEE_IDENTITY_STATE_KEY: {
                     "source": _identity_provider_name(),
@@ -176,6 +213,12 @@ class EnterprisePlugin:
             }
 
         if context is None:
+            emit_enterprise_event(
+                "identity_lookup",
+                status="not_found",
+                source=_identity_provider_name(),
+                oa_account=oa_account,
+            )
             return {
                 EMPLOYEE_IDENTITY_STATE_KEY: {
                     "source": _identity_provider_name(),
@@ -184,6 +227,16 @@ class EnterprisePlugin:
                 }
             }
 
+        emit_enterprise_event(
+            "identity_lookup",
+            status="found",
+            source=_identity_provider_name(),
+            oa_account=context.oa_account,
+            user_id=context.user_id,
+            cache="hit" if cache_hit else "miss",
+            has_org_path=bool(context.org_path_label),
+            role_label=context.role_label,
+        )
         return {
             EMPLOYEE_CONTEXT_STATE_KEY: context.to_dict(),
             EMPLOYEE_IDENTITY_STATE_KEY: {
@@ -236,11 +289,26 @@ class EnterprisePlugin:
         store = self._get_short_term_memory_store()
         if store is None:
             return {}
+        started_at = event_timer()
         try:
             messages = store.load_recent_messages(session_id)
         except Exception as exc:
             logger.warning("Short-term memory load failed for {}: {}", session_id, exc)
+            emit_enterprise_event(
+                "short_term_memory_load",
+                status="error",
+                session_id=session_id,
+                error_type=type(exc).__name__,
+                duration_ms=elapsed_ms(started_at),
+            )
             return {"_short_term_memory": {"status": "error", "error_type": type(exc).__name__}}
+        emit_enterprise_event(
+            "short_term_memory_load",
+            status="succeeded",
+            session_id=session_id,
+            message_count=len(messages),
+            duration_ms=elapsed_ms(started_at),
+        )
         if not messages:
             return {}
         return {SHORT_TERM_MEMORY_STATE_KEY: short_term_memory_state(session_id, messages)}
