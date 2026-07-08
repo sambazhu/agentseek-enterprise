@@ -2638,3 +2638,98 @@ Mac mini verification requested:
    - no gateway crash if Langfuse is temporarily unreachable;
    - MCP audit separation and zero diff vs `68d7b25` remain intact;
    - 0 SIGBUS / 0 traceback / 0 exit-138.
+
+## v0.0.8 Langfuse Mac mini verification (2026-07-08) — server deployed, integration BLOCKED by emitter API bug
+
+Mac mini pulled `enterprise/v0.0.8-observability` @ `a958830` (Langfuse export
+code: `_LangfuseEmitter`, `probe_langfuse_event.py`, prod_check Langfuse
+checks, `langfuse>=3.0.0` declared only in the *example* pyproject). MCP
+zero-diff vs `68d7b25` intact; `git diff 68d7b25 -- mcp_policy.py tools.py` →
+no output.
+
+**Langfuse server — deployed and working (self-hosted, Docker Desktop).**
+- Docker Compose stack up at `~/langfuse/` (official langfuse v3 compose, with
+  the Langfuse `postgres` host port mapping **removed** so it does not collide
+  with the Mac mini's existing brew PostgreSQL on `:5432`; Langfuse postgres
+  stays on the compose internal network). Containers: `langfuse-web` (:3000),
+  `langfuse-worker` (:3030), `clickhouse` (healthy), `minio` (healthy, :9090),
+  `redis` (healthy, :6379), `postgres` (healthy, internal only).
+- `docker.io` was blocked from the Mac mini (direct + via the 7890 proxy both
+  failed); images were pulled after adding `registry-1.docker.io`/`auth.docker.io`
+  to FlClash's proxy rules (so Docker pulls docker.io via the proxy node). The
+  `~/langfuse/.env` was generated with random secrets + `LANGFUSE_INIT_*`
+  bootstrap (org/project/user + pre-set keys).
+- Web UI `http://localhost:3000` → 200; migrations "All migrations successfully
+  applied / ✓ Ready"; API auth with project keys → 200.
+- The user also manually created org `wkzq` / project
+  `enterprise_wecom_digital_employee` in the UI; that project's
+  `LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` are in the agentseek `.env` (gitignored).
+
+**agentseek → Langfuse integration — BLOCKED by a Codex code bug.**
+`probe_langfuse_event.py` returns `langfuse_status.status == "error"`:
+`RuntimeError: Unsupported Langfuse SDK: no trace.event/span or
+client.event/span method found`. Root cause (verified by `dir()` on the
+installed client): `_LangfuseEmitter.emit` calls `client.trace(name=…)`,
+`trace.event(…)`, `trace.span(…)`, `client.event(…)`, `client.span(…)` — **none
+of these methods exist** on the `Langfuse` class in either langfuse **3.15.0**
+or **4.13.1**. The real langfuse client API (3.15.0) is OTel-style:
+`start_span`, `start_as_current_span`, `start_observation`, `start_generation`,
+`create_event`, `update_current_trace`, `update_current_span`, `flush`,
+`shutdown`, `auth_check`, `get_current_trace_id`. The emitter was written
+against a non-existent API.
+
+**Packaging gap.** `langfuse` is **not** declared in
+`contrib/agentseek-enterprise/pyproject.toml` (whose `observability.py` imports
+it); it is only in the *example* `pyproject.toml` as `langfuse>=3.0.0` (which
+resolves to v4, whose API the emitter also doesn't match). So `uv sync` does
+not install langfuse into the repo venv the gateway uses.
+
+**Local work on Mac mini to attempt unblock (not committed — all reverted).**
+- Installed `langfuse==3.15.0` into the uv cache (`uv pip install` +
+  `uv run --with "langfuse==3.15.0"` non-offline once to populate the cache, so
+  `--offline` resolution works). Confirmed the v3 API mismatch is the same on
+  3.15.0 as on 4.13.1.
+- The `uv pip install` operations corrupted the repo venv's `agentseek-enterprise`
+  editable install (a `uv sync --offline` then refused to restore it because
+  adding `langfuse` to the contrib pyproject stale-locked the workspace and
+  triggered a `bub` git fetch blocked by `--offline`). Restored
+  `agentseek-enterprise` via `uv pip install -e contrib/agentseek-enterprise
+  --offline`. Root cause: `uv pip install` is low-level and does not preserve
+  workspace editable linkage; `uv sync --offline` would not reinstall the
+  workspace member on its own after that.
+- Tried `--with "langfuse==3.15.0"` in `run_gateway.sh` (works for resolution
+  once cached) — reverted, since the emitter is broken regardless.
+- `.env`: set `AGENTSEEK_LANGFUSE_ENABLED=true` + host/keys/env/release/sample
+  rate; then set back to `false` to keep the gateway clean while Codex fixes.
+
+**Current Mac mini state.** Gateway running (pid 62633) on `a958830` with
+`AGENTSEEK_LANGFUSE_ENABLED=false` — local `enterprise-events.jsonl` continues
+to work (v0.0.8 observability path-resolution fix from `7504153` still holds;
+events land in the example `runtime/`). Langfuse server stack is up but idle
+(no traces yet, because the emitter can't send). `agentseek-enterprise` editable
+restored; repo venv has no langfuse (Langfuse off). `run_gateway.sh` and
+`contrib/agentseek-enterprise/pyproject.toml` are back to their committed state
+(no local tracked changes); `uv.lock` was restored after being touched by the
+`uv` operations.
+
+**Verdict — NOT v0.0.8-rc2-ready.** Langfuse *server* is ready; the agentseek
+*integration* is blocked by the `_LangfuseEmitter` API bug + the packaging gap.
+Fault isolation holds (the emitter's try/except disables Langfuse on error
+without crashing the turn), so a broken Langfuse does not take down the gateway
+— but no traces are exported.
+
+**Follow-on for Codex (blocking rc2):**
+1. Rewrite `_LangfuseEmitter.emit` to use the real langfuse OTel-style API —
+   e.g. `span = client.start_as_current_span(name=event_name, metadata=metadata);
+   span.end()` (or `client.create_event(name=…, metadata=…)` if that fits the
+   "event" semantics). Keep the existing failure-isolation (never break the
+   business turn).
+2. Declare `langfuse` in `contrib/agentseek-enterprise/pyproject.toml`
+   (observability.py imports it). Pin to match the self-hosted v3 server —
+   recommend `langfuse>=3.0.0,<4` (3.15.0 has the OTel API above; v4 also has
+   it but v3 SDK ↔ v3 server is the conservative match). Codex's choice on
+   v3-pin vs v4, but the emitter MUST use the real API.
+3. After the fix: Mac mini re-runs `probe_langfuse_event.py` (expect `sent`),
+   restarts the gateway with `LANGFUSE_ENABLED=true`, runs live A-E, and
+   confirms runtime events appear in the Langfuse UI (redacted — no plaintext
+   OA/session/credential).
