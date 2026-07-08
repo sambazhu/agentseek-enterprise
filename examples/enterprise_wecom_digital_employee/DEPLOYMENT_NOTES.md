@@ -2557,3 +2557,27 @@ resolution uses CWD instead of PROJECT_ROOT (inconsistent with MCP audit); a
 config workaround is applied + verified on Mac mini, but Codex should fix
 `observability.from_env` to take `project_root` before GA so the template
 default lands in the project `runtime/` (see the path-resolution finding above).
+
+### v0.0.8 path-resolution fix re-verified (7504153) — PASS, finding resolved
+
+Codex fixed the path-resolution finding in `7504153`:
+`EnterpriseObservabilitySettings.from_env(project_root=…)` +
+`EnterpriseEventWriter(…, project_root=…)`, default resolution order
+absolute → `project_root` → `AGENTSEEK_ENTERPRISE_PROJECT_ROOT` →
+`AGENTSEEK_ENV_FILE` dir → CWD. Mac mini re-tested with the **config workaround
+removed** (no `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH` in `.env`, so the code's
+default `./runtime/enterprise-events.jsonl` is exercised) and the gateway
+launched from repo root via `run_gateway.sh`
+(`AGENTSEEK_ENV_FILE=examples/…/.env`).
+
+Result — with no `.env` override, events **default-resolve to
+`examples/enterprise_wecom_digital_employee/runtime/enterprise-events.jsonl`**
+(8 events from one identity turn: `wecom_message_received`,
+`wecom_stream_started/finished`, `identity_lookup`, `short_term_memory_load/save`,
+`contextseek_pgvector_add/retrieve`), and the **repo-root
+`runtime/enterprise-events.jsonl` is not created**. The finding is resolved —
+the default now lands in the example/template project `runtime/`, consistent
+with the MCP audit log, no per-deployment `.env` override needed. `git diff
+68d7b25 -- mcp_policy.py tools.py` still zero; enterprise tests **68 passed**.
+The earlier `.env` `EVENTS_LOG_PATH` workaround was removed and is no longer
+required.
