@@ -64,6 +64,8 @@ class EnterpriseObservabilitySettings:
     langfuse_host: str = ""
     langfuse_environment: str = ""
     langfuse_release: str = ""
+    langfuse_trace_name: str = "agentseek.enterprise"
+    langfuse_flush: bool = True
     langfuse_sample_rate: float = 1.0
 
     @classmethod
@@ -88,6 +90,9 @@ class EnterpriseObservabilitySettings:
             langfuse_host=os.environ.get("LANGFUSE_HOST", "").strip(),
             langfuse_environment=os.environ.get("AGENTSEEK_LANGFUSE_ENV", "").strip(),
             langfuse_release=os.environ.get("AGENTSEEK_LANGFUSE_RELEASE", "").strip(),
+            langfuse_trace_name=os.environ.get("AGENTSEEK_LANGFUSE_TRACE_NAME", "agentseek.enterprise").strip()
+            or "agentseek.enterprise",
+            langfuse_flush=_truthy(os.environ.get("AGENTSEEK_LANGFUSE_FLUSH", "true")),
             langfuse_sample_rate=_bounded_float(os.environ.get("AGENTSEEK_LANGFUSE_SAMPLE_RATE"), 0.0, 1.0, 1.0),
         )
 
@@ -102,21 +107,29 @@ class EnterpriseEventWriter:
         self.settings = settings or EnterpriseObservabilitySettings.from_env(project_root=project_root)
         self._langfuse = _LangfuseEmitter(self.settings)
 
-    def emit(self, event: str, **fields: Any) -> None:
+    def emit(self, event: str, **fields: Any) -> bool:
         if not event:
-            return
+            return False
         if not self.settings.events_enabled and not self.settings.langfuse_enabled:
-            return
+            return False
         try:
             payload = self._payload(event, fields)
+            local_written = False
             if self.settings.events_enabled:
                 self._write_jsonl(payload)
-            self._langfuse.emit(payload)
+                local_written = True
+            langfuse_sent = self._langfuse.emit(payload)
         except Exception as exc:  # pragma: no cover - defensive, must never break runtime.
             logger.warning("enterprise event emission failed event={} error={}", event, exc)
+            return False
+        else:
+            return local_written or langfuse_sent
 
     def identity_key(self, value: Any) -> str:
         return _stable_hash(value, secret=self.settings.hash_secret)
+
+    def langfuse_status(self) -> dict[str, str]:
+        return self._langfuse.status()
 
     def _payload(self, event: str, fields: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -137,40 +150,57 @@ class _LangfuseEmitter:
         self._settings = settings
         self._disabled = False
         self._client: Any | None = None
+        self._last_status = "disabled" if not settings.langfuse_enabled else "ready"
+        self._last_error = ""
 
-    def emit(self, payload: dict[str, Any]) -> None:
+    def emit(self, payload: dict[str, Any]) -> bool:
         if self._disabled or not self._settings.langfuse_enabled:
-            return
+            self._last_status = "disabled"
+            return False
         if (secrets.randbelow(1_000_000) / 1_000_000) > self._settings.langfuse_sample_rate:
-            return
+            self._last_status = "sampled_out"
+            return False
         try:
             client = self._get_client()
             if client is None:
-                return
+                return False
             metadata = dict(payload)
             event_name = str(metadata.pop("event", "agentseek.enterprise.event"))
             metadata.setdefault("environment", self._settings.langfuse_environment)
             metadata.setdefault("release", self._settings.langfuse_release)
-            trace = client.trace(name="agentseek.enterprise", metadata=metadata)
-            span = trace.span(name=event_name, metadata=metadata) if hasattr(trace, "span") else None
-            if span is not None and hasattr(span, "end"):
-                span.end()
-            if hasattr(client, "flush"):
+            trace = self._create_trace(client, metadata=metadata)
+            self._record_event(client, trace, name=event_name, metadata=metadata)
+            if self._settings.langfuse_flush and hasattr(client, "flush"):
                 client.flush()
+            self._last_status = "sent"
+            self._last_error = ""
         except Exception as exc:  # pragma: no cover - depends on optional SDK/API version.
             self._disabled = True
+            self._last_status = "error"
+            self._last_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Langfuse enterprise event emission disabled after error: {}", exc)
+            return False
+        else:
+            return True
+
+    def status(self) -> dict[str, str]:
+        status = {"status": self._last_status}
+        if self._last_error:
+            status["error"] = self._last_error
+        return status
 
     def _get_client(self) -> Any | None:
         if self._client is not None:
             return self._client
         if not self._settings.langfuse_public_key or not self._settings.langfuse_secret_key:
+            self._last_status = "missing_config"
             logger.warning("AGENTSEEK_LANGFUSE_ENABLED=true but Langfuse keys are not configured")
             self._disabled = True
             return None
         try:
             from langfuse import Langfuse  # type: ignore[import-not-found]
         except ImportError:
+            self._last_status = "missing_sdk"
             logger.warning("AGENTSEEK_LANGFUSE_ENABLED=true but the langfuse package is not installed")
             self._disabled = True
             return None
@@ -183,14 +213,38 @@ class _LangfuseEmitter:
         self._client = Langfuse(**kwargs)
         return self._client
 
+    def _create_trace(self, client: Any, *, metadata: dict[str, Any]) -> Any | None:
+        if not hasattr(client, "trace"):
+            return None
+        return client.trace(name=self._settings.langfuse_trace_name, metadata=metadata)
+
+    def _record_event(self, client: Any, trace: Any | None, *, name: str, metadata: dict[str, Any]) -> None:
+        if trace is not None and hasattr(trace, "event"):
+            trace.event(name=name, metadata=metadata)
+            return
+        if trace is not None and hasattr(trace, "span"):
+            span = trace.span(name=name, metadata=metadata)
+            if hasattr(span, "end"):
+                span.end()
+            return
+        if hasattr(client, "event"):
+            client.event(name=name, metadata=metadata)
+            return
+        if hasattr(client, "span"):
+            span = client.span(name=name, metadata=metadata)
+            if hasattr(span, "end"):
+                span.end()
+            return
+        raise RuntimeError("Unsupported Langfuse SDK: no trace.event/span or client.event/span method found")
+
 
 @lru_cache(maxsize=1)
 def get_event_writer() -> EnterpriseEventWriter:
     return EnterpriseEventWriter()
 
 
-def emit_enterprise_event(event: str, **fields: Any) -> None:
-    get_event_writer().emit(event, **fields)
+def emit_enterprise_event(event: str, **fields: Any) -> bool:
+    return get_event_writer().emit(event, **fields)
 
 
 def enterprise_identity_key(value: Any) -> str:

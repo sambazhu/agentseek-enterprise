@@ -272,12 +272,24 @@ LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=
 AGENTSEEK_LANGFUSE_ENV=production
 AGENTSEEK_LANGFUSE_RELEASE=enterprise-wecom-v0.0.8
+AGENTSEEK_LANGFUSE_TRACE_NAME=agentseek.enterprise
+AGENTSEEK_LANGFUSE_FLUSH=true
 AGENTSEEK_LANGFUSE_SAMPLE_RATE=1.0
 ```
 
-Install the Langfuse Python SDK in the deployment environment before turning
-`AGENTSEEK_LANGFUSE_ENABLED=true`. If Langfuse is unavailable, local JSONL
-events continue to work and the gateway should keep serving WeCom requests.
+The template includes the Langfuse Python SDK in `pyproject.toml`. After setting
+the keys and host, run a single probe before enabling long-running gateway
+traffic:
+
+```bash
+uv sync
+scripts/probe_langfuse_event.py --env-file .env
+```
+
+The probe exits non-zero if Langfuse is disabled, keys are missing, the SDK is
+missing, or the SDK call fails. If Langfuse becomes unavailable during gateway
+runtime, local JSONL events continue to work and the gateway should keep serving
+WeCom requests.
 
 When reading gateway logs, remember that WeCom replies are often multi-line. Use
 enough trailing context such as `grep -A N`; `grep | tail -1` can truncate the

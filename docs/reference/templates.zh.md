@@ -103,5 +103,8 @@ agentseek create deepagents/enterprise-wecom
 | `AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET` | 空 | 可选哈希密钥；为空时使用 `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET`。 |
 | `AGENTSEEK_LANGFUSE_ENABLED` | `false` | 启用可选 Langfuse 导出。 |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | 空 | Langfuse 连接配置。 |
+| `AGENTSEEK_LANGFUSE_TRACE_NAME` | `agentseek.enterprise` | Langfuse trace 名称。 |
+| `AGENTSEEK_LANGFUSE_FLUSH` | `true` | 每个事件后调用 SDK flush，便于单实例调试。 |
+| `AGENTSEEK_LANGFUSE_SAMPLE_RATE` | `1.0` | Langfuse 事件采样率，范围 0 到 1。 |
 
 Runtime 和记忆分层设计见[企业微信模板](../concepts/enterprise-wecom-template.md)。

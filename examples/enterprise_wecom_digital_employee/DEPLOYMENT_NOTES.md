@@ -2581,3 +2581,60 @@ with the MCP audit log, no per-deployment `.env` override needed. `git diff
 68d7b25 -- mcp_policy.py tools.py` still zero; enterprise tests **68 passed**.
 The earlier `.env` `EVENTS_LOG_PATH` workaround was removed and is no longer
 required.
+
+## v0.0.8 Langfuse enablement (Codex local development) — READY FOR MAC MINI VERIFY
+
+Follow-up after `enterprise-wecom-v0.0.8-rc1`: local JSONL observability is
+stable, so this change turns the optional Langfuse hook into a deployable and
+probe-able path before GA.
+
+Scope:
+- Added `langfuse>=3.0.0` to the example/template deployment dependencies.
+  `agentseek-enterprise` itself still treats Langfuse as optional and does not
+  fail if the SDK is absent unless production preflight explicitly enables it.
+- Hardened `_LangfuseEmitter`: supports `trace.event`, `trace.span`,
+  `client.event`, and `client.span` SDK shapes; records last status
+  (`sent`, `missing_config`, `missing_sdk`, `sampled_out`, `error`) for probes.
+- Added `AGENTSEEK_LANGFUSE_TRACE_NAME` and `AGENTSEEK_LANGFUSE_FLUSH` env
+  settings; `AGENTSEEK_LANGFUSE_SAMPLE_RATE` remains 0..1.
+- Added `scripts/probe_langfuse_event.py` to example/template. It loads the
+  project `.env`, emits one `langfuse_probe` event, prints sanitized status, and
+  exits non-zero if Langfuse is disabled, unconfigured, missing SDK, or failed.
+- `prod_check.py` now verifies the SDK is importable when
+  `AGENTSEEK_LANGFUSE_ENABLED=true`, and validates sample rate.
+
+Local verification:
+- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest
+  contrib/agentseek-enterprise/tests -q` → 69 passed.
+- `uv run ruff check --no-fix` on touched observability/prod_check/probe files
+  → all checks passed.
+- Template `probe_langfuse_event.py` and `prod_check.py` pass isolated ruff.
+
+Mac mini verification requested:
+1. Pull the updated `enterprise/v0.0.8-observability` commit.
+2. Run `uv sync` in the example deployment so the Langfuse SDK is installed.
+3. Configure `.env`:
+   - `AGENTSEEK_LANGFUSE_ENABLED=true`
+   - `LANGFUSE_PUBLIC_KEY=<provided key>`
+   - `LANGFUSE_SECRET_KEY=<provided key>`
+   - `LANGFUSE_HOST=<Langfuse base URL>`
+   - `AGENTSEEK_LANGFUSE_ENV=mac-mini`
+   - `AGENTSEEK_LANGFUSE_RELEASE=enterprise-wecom-v0.0.8-rc1`
+   - `AGENTSEEK_LANGFUSE_TRACE_NAME=agentseek.enterprise`
+   - `AGENTSEEK_LANGFUSE_FLUSH=true`
+   - `AGENTSEEK_LANGFUSE_SAMPLE_RATE=1.0` for the initial soak; lower later if
+     event volume is high.
+4. Run `prod_check.py --env-file examples/enterprise_wecom_digital_employee/.env`
+   and confirm Langfuse SDK/key/sample checks pass.
+5. Run `scripts/probe_langfuse_event.py --env-file
+   examples/enterprise_wecom_digital_employee/.env`; expect
+   `langfuse_status.status == "sent"` and a `langfuse_probe` trace/event in the
+   Langfuse UI.
+6. Start the gateway and run live WeCom smoke: identity, short-term memory,
+   explicit durable memory, pgvector semantic recall, msgid dedup, MCP list.
+7. Let the Mac mini gateway run for a soak window. Confirm:
+   - local `runtime/enterprise-events.jsonl` still grows and stays redacted;
+   - Langfuse receives runtime events;
+   - no gateway crash if Langfuse is temporarily unreachable;
+   - MCP audit separation and zero diff vs `68d7b25` remain intact;
+   - 0 SIGBUS / 0 traceback / 0 exit-138.

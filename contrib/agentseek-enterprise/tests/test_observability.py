@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
+from types import ModuleType
 from typing import Any
 
 import pytest
 from agentseek_enterprise.observability import (
+    EnterpriseEventWriter,
     EnterpriseObservabilitySettings,
     emit_enterprise_event,
     reset_observability_for_tests,
@@ -71,6 +74,54 @@ def test_langfuse_enabled_without_package_does_not_break_local_events(monkeypatc
     emit_enterprise_event("wecom_message_received", session_id="wecom:zhuchunlin")
 
     assert json.loads(log_path.read_text(encoding="utf-8").strip())["event"] == "wecom_message_received"
+
+
+def test_langfuse_enabled_emits_trace_event_with_fake_sdk(monkeypatch: Any, tmp_path: Any) -> None:
+    log_path = tmp_path / "enterprise-events.jsonl"
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeTrace:
+        def event(self, *, name: str, metadata: dict[str, Any]) -> None:
+            calls.append((name, metadata))
+
+    class FakeLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(("client", kwargs))
+
+        def trace(self, *, name: str, metadata: dict[str, Any]) -> FakeTrace:
+            calls.append((name, metadata))
+            return FakeTrace()
+
+        def flush(self) -> None:
+            calls.append(("flush", {}))
+
+    fake_module = ModuleType("langfuse")
+    fake_module.Langfuse = FakeLangfuse
+    monkeypatch.setitem(sys.modules, "langfuse", fake_module)
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.local")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_TRACE_NAME", "agentseek.test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENV", "test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_RELEASE", "v-test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_SAMPLE_RATE", "1.0")
+    reset_observability_for_tests()
+
+    writer = EnterpriseEventWriter()
+    assert writer.emit("identity_lookup", oa_account="zhuchunlin", status="found")
+
+    assert calls[0] == (
+        "client",
+        {"public_key": "pk-test", "secret_key": "sk-test", "host": "http://langfuse.local"},
+    )
+    assert calls[1][0] == "agentseek.test"
+    assert calls[2][0] == "identity_lookup"
+    assert calls[-1] == ("flush", {})
+    assert writer.langfuse_status() == {"status": "sent"}
+    assert "zhuchunlin" not in json.dumps(calls, ensure_ascii=False)
 
 
 def test_relative_event_path_resolves_against_explicit_project_root(monkeypatch: Any, tmp_path: Any) -> None:

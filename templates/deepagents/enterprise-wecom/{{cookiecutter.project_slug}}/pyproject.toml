@@ -19,6 +19,7 @@ dependencies = [
     "JPype1>=1.5",
     "langchain>=1.0",
     "langchain-openai>=0.3.0",
+    "langfuse>=3.0.0",
     "onnxruntime>=1.27.0",
     "psycopg[binary]>=3.2.0",
     "pydantic-settings>=2.0.0",

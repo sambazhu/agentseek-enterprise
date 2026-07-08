@@ -103,6 +103,9 @@ Enterprise event observability settings:
 | `AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET` | empty | Optional hashing secret; falls back to `AGENTSEEK_ENTERPRISE_NAMESPACE_SECRET`. |
 | `AGENTSEEK_LANGFUSE_ENABLED` | `false` | Enable optional Langfuse export. |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | empty | Langfuse connection settings. |
+| `AGENTSEEK_LANGFUSE_TRACE_NAME` | `agentseek.enterprise` | Langfuse trace name. |
+| `AGENTSEEK_LANGFUSE_FLUSH` | `true` | Call SDK flush after each event, useful for single-instance debugging. |
+| `AGENTSEEK_LANGFUSE_SAMPLE_RATE` | `1.0` | Langfuse event sample rate, from 0 to 1. |
 
 See [Enterprise WeCom Template](../concepts/enterprise-wecom-template.md) for
 the runtime and memory-layer design.

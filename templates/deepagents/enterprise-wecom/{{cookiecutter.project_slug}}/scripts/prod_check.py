@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib.util
 import os
 import secrets
 from pathlib import Path
@@ -217,6 +218,10 @@ def check_observability(env: dict[str, str], project_root: Path, report: CheckRe
     if not truthy(env.get("AGENTSEEK_LANGFUSE_ENABLED")):
         report.ok("Langfuse tracing disabled")
         return
+    if importlib.util.find_spec("langfuse") is not None:
+        report.ok("langfuse Python SDK is installed")
+    else:
+        report.fail("AGENTSEEK_LANGFUSE_ENABLED=true but the langfuse Python SDK is not installed")
     require(env, report, "LANGFUSE_PUBLIC_KEY")
     require(env, report, "LANGFUSE_SECRET_KEY")
     host = env.get("LANGFUSE_HOST", "").strip()
@@ -224,6 +229,16 @@ def check_observability(env: dict[str, str], project_root: Path, report: CheckRe
         report.ok("LANGFUSE_HOST is set")
     else:
         report.warn("LANGFUSE_HOST is empty; the Langfuse SDK default host will be used")
+    sample_rate = env.get("AGENTSEEK_LANGFUSE_SAMPLE_RATE", "1.0").strip()
+    try:
+        parsed = float(sample_rate)
+    except ValueError:
+        report.fail("AGENTSEEK_LANGFUSE_SAMPLE_RATE must be a number between 0 and 1")
+    else:
+        if 0 <= parsed <= 1:
+            report.ok("AGENTSEEK_LANGFUSE_SAMPLE_RATE is valid")
+        else:
+            report.fail("AGENTSEEK_LANGFUSE_SAMPLE_RATE must be between 0 and 1")
 
 
 def check_launchd(project_root: Path, env_dir: Path, report: CheckReport) -> None:
