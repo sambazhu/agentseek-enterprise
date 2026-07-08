@@ -6,24 +6,43 @@ digital employee runtime.
 ## Baseline
 
 - Recommended deployment branch: `production`
-- Final GA tag: `enterprise-wecom-v0.0.7-ga`
-- Final GA tag commit: `0485453`
-- Documentation branch commit after GA: `f846e5a`
-- Previous GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
-- Previous GA commit: `7b442a5`
+- Final GA tag: `enterprise-wecom-v0.0.8-ga`
+- Final GA tag commit: `5833571`
+- Documentation branch commit after GA: current `production`
+- Previous GA tag: `enterprise-wecom-v0.0.7-ga`
+- Previous GA commit: `0485453`
+- Earlier GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
+- Earlier GA commit: `7b442a5`
 - Earlier GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
 - Earlier production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
 - Verification host: company-network Mac mini
-- Verification date: 2026-07-03
+- Verification date: 2026-07-08
 
-The v0.0.7 GA includes the v0.0.6 MCP policy/audit path, WeCom stream
-placeholder delivery fix, durable employee memory dedup/slot supersession,
-durable-memory concurrent-write serialization, PostgreSQL SCRAM authentication,
-and ContextSeek semantic memory backed by PostgreSQL + pgvector with bge-m3
-ONNX embeddings. Runtime deployments should pin the GA tag for exact
+The v0.0.8 GA includes the v0.0.7 PostgreSQL/pgvector runtime, the v0.0.6 MCP
+policy/audit path, WeCom stream placeholder delivery fix, durable employee
+memory dedup/slot supersession, durable-memory concurrent-write serialization,
+PostgreSQL SCRAM authentication, ContextSeek semantic memory backed by
+PostgreSQL + pgvector with bge-m3 ONNX embeddings, and Langfuse observability
+with HMAC/redacted trace metadata.
+Runtime deployments should pin the GA tag for exact
 reproducibility or use `production` for the latest documented deployment
-baseline. The older v0.0.6, v0.0.5, and v0.0.4 tags are kept immutable for audit
-history.
+baseline. The older v0.0.7, v0.0.6, v0.0.5, and v0.0.4 tags are kept immutable
+for audit history.
+
+## v0.0.8 Observability
+
+This GA adds a dual observability path:
+
+- local structured JSONL runtime events remain available for offline diagnosis;
+- Langfuse can receive sanitized runtime traces when enabled by environment;
+- trace names are structured event names, not raw log payloads;
+- employee identity, WeCom session ids, and content fields are HMAC-hashed or
+  redacted before leaving the gateway;
+- MCP audit remains separate in `runtime/mcp-audit.jsonl`.
+
+The Mac mini validation covered probe delivery, live identity, short-term
+memory, explicit durable memory, pgvector semantic recall, MCP tool listing,
+redaction checks in Langfuse, and frozen-lock installation from scratch.
 
 ## v0.0.7 PostgreSQL And pgvector Runtime
 
@@ -79,7 +98,7 @@ memory writes as cross-process safe.
 
 | Location | Purpose | URL / ref |
 | --- | --- | --- |
-| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.7-ga` |
+| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.8-ga` |
 | GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
 | Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
 
@@ -87,14 +106,15 @@ Published refs:
 
 | Ref | Commit | Use |
 | --- | --- | --- |
-| `production` | `f846e5a` or newer docs-only commit | Recommended branch for internal deployment docs |
-| `enterprise-wecom-v0.0.7-ga` | `0485453` | Final immutable v0.0.7 runtime deployment tag |
+| `production` | current docs-only successor of `5833571` | Recommended branch for internal deployment docs |
+| `enterprise-wecom-v0.0.8-ga` | `5833571` | Final immutable v0.0.8 runtime deployment tag |
+| `enterprise-wecom-v0.0.7-ga` | `0485453` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.6-ga-20260702` | `7b442a5` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
 
-Runtime deployments should pin `enterprise-wecom-v0.0.7-ga`. Teams that want
+Runtime deployments should pin `enterprise-wecom-v0.0.8-ga`. Teams that want
 the latest deployment instructions can clone `production` and then check out
 the GA tag before starting the service.
 
@@ -109,7 +129,7 @@ For production deployment from the company GitLab mirror:
 ```bash
 git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.7-ga
+git checkout enterprise-wecom-v0.0.8-ga
 ```
 
 For production deployment from GitHub:
@@ -117,7 +137,7 @@ For production deployment from GitHub:
 ```bash
 git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.7-ga
+git checkout enterprise-wecom-v0.0.8-ga
 ```
 
 Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,

@@ -23,17 +23,17 @@ the `production` branch or the latest GA tag. Do not use `main` as the
 deployment baseline for this enterprise runtime.
 
 ```bash
-git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
+git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-To reproduce the exact v0.0.7 GA build, pin the tag instead:
+To reproduce the exact v0.0.8 GA build, pin the tag instead:
 
 ```bash
-git clone --branch enterprise-wecom-v0.0.7-ga https://github.com/sambazhu/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.0.8-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-Company GitLab mirrors the same branch and tag at
-`http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git`.
+GitHub mirrors the same branch and tag at
+`https://github.com/sambazhu/agentseek-enterprise.git`.
 
 ## Quickstart
 

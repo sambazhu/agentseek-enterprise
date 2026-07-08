@@ -13,17 +13,16 @@ It points at the current Enterprise WeCom GA baseline. Use the GA tag when you
 need an immutable rollback or audit target.
 
 ```bash
-git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
+git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-To pin the verified v0.0.7 build:
+To pin the verified v0.0.8 build:
 
 ```bash
-git clone --branch enterprise-wecom-v0.0.7-ga https://github.com/sambazhu/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.0.8-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-Company GitLab mirrors both refs at
-`http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git`.
+GitHub mirrors both refs at `https://github.com/sambazhu/agentseek-enterprise.git`.
 
 ## Setup
 
@@ -117,7 +116,7 @@ smoke-test prompts, and rollback knobs before changing production behavior.
 For production deployment, prefer the immutable GA tag:
 
 ```bash
-git checkout enterprise-wecom-v0.0.7-ga
+git checkout enterprise-wecom-v0.0.8-ga
 ```
 
 For Mac mini process supervision, edit the repo path in
