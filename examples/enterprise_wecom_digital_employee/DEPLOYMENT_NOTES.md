@@ -2589,11 +2589,12 @@ stable, so this change turns the optional Langfuse hook into a deployable and
 probe-able path before GA.
 
 Scope:
-- Added `langfuse>=3.0.0` to the example/template deployment dependencies.
-  `agentseek-enterprise` itself still treats Langfuse as optional and does not
-  fail if the SDK is absent unless production preflight explicitly enables it.
-- Hardened `_LangfuseEmitter`: supports `trace.event`, `trace.span`,
-  `client.event`, and `client.span` SDK shapes; records last status
+- Added `langfuse>=3.0.0,<4` to the example/template deployment dependencies.
+  `agentseek-enterprise` itself also declares the dependency for editable
+  installs, while still failing closed only when Langfuse is explicitly enabled
+  but unavailable.
+- Hardened `_LangfuseEmitter`: emits through the real Langfuse v3 OTel-style
+  API (`create_event`, with span/observation fallbacks); records last status
   (`sent`, `missing_config`, `missing_sdk`, `sampled_out`, `error`) for probes.
 - Added `AGENTSEEK_LANGFUSE_TRACE_NAME` and `AGENTSEEK_LANGFUSE_FLUSH` env
   settings; `AGENTSEEK_LANGFUSE_SAMPLE_RATE` remains 0..1.
@@ -2604,10 +2605,10 @@ Scope:
   `AGENTSEEK_LANGFUSE_ENABLED=true`, and validates sample rate.
 
 Local verification:
-- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest
-  contrib/agentseek-enterprise/tests -q` → 69 passed.
-- `uv run ruff check --no-fix` on touched observability/prod_check/probe files
-  → all checks passed.
+- `.venv/bin/python -m pytest contrib/agentseek-enterprise/tests -q` →
+  70 passed.
+- `.venv/bin/ruff check --no-fix` on touched observability files → all checks
+  passed.
 - Template `probe_langfuse_event.py` and `prod_check.py` pass isolated ruff.
 
 Mac mini verification requested:
@@ -2638,3 +2639,49 @@ Mac mini verification requested:
    - no gateway crash if Langfuse is temporarily unreachable;
    - MCP audit separation and zero diff vs `68d7b25` remain intact;
    - 0 SIGBUS / 0 traceback / 0 exit-138.
+
+### v0.0.8 Langfuse SDK API fix (Codex local development) — READY FOR MAC MINI VERIFY
+
+Mac mini found that the first Langfuse emitter implementation used legacy-style
+methods (`client.trace(...)`, `trace.event(...)`, `client.event(...)`,
+`client.span(...)`) that do not exist in Langfuse SDK 3.15.0 or 4.13.1. The
+probe therefore returned `langfuse_status.status == "error"` with
+`Unsupported Langfuse SDK`.
+
+Fix:
+- `_LangfuseEmitter.emit` now uses the real OTel-style API:
+  `client.create_event(name=..., metadata=...)` as the primary event path.
+- Fallback paths use `start_as_current_span`, `start_span`, or
+  `start_observation` when `create_event` is not available.
+- Langfuse metadata now keeps the event name, environment, release, and
+  trace name while preserving the existing sanitized payload.
+- Failure isolation is unchanged: any Langfuse exception disables the emitter
+  and never breaks the business turn; local JSONL remains the source of truth.
+- `langfuse_flush=true` still calls `client.flush()`.
+- `agentseek-enterprise`, example, and template dependencies are pinned to
+  `langfuse>=3.0.0,<4` to match the self-hosted Langfuse v3 server and avoid
+  unreviewed SDK drift.
+
+Local verification:
+- `.venv/bin/python -m pytest contrib/agentseek-enterprise/tests -q` →
+  70 passed.
+- `.venv/bin/ruff check --no-fix` on touched observability files → all checks
+  passed.
+- `git diff 68d7b25 -- mcp_policy.py tools.py` → zero output.
+
+Note: `uv lock` and `uv run ...` currently fail before test execution because
+the workspace resolver cannot find the historical `bub==0.3.9` package even
+though it is present in the existing lock and venv. `uv.lock` was therefore not
+changed in this patch; Mac mini should validate `uv sync` in the deployment
+environment where `bub==0.3.9` is already known to resolve.
+
+Mac mini verification requested:
+1. Pull the updated `enterprise/v0.0.8-observability` commit.
+2. Run `uv sync` so `agentseek-enterprise` installs `langfuse>=3,<4`.
+3. Run `scripts/probe_langfuse_event.py --env-file
+   examples/enterprise_wecom_digital_employee/.env`.
+4. Expect `langfuse_status.status == "sent"` and a `langfuse_probe` event in
+   the Langfuse UI.
+5. Restart gateway with `AGENTSEEK_LANGFUSE_ENABLED=true`, run live A-E smoke,
+   and confirm local JSONL stays redacted while Langfuse receives runtime
+   events.

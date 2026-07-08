@@ -8,6 +8,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "bub==0.3.9",
     "langgraph>=1.0",
+    "langfuse>=3.0.0,<4",
 ]
 
 [project.entry-points."bub"]

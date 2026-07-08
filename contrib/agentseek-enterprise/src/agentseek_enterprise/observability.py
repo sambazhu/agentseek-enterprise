@@ -165,11 +165,12 @@ class _LangfuseEmitter:
             if client is None:
                 return False
             metadata = dict(payload)
-            event_name = str(metadata.pop("event", "agentseek.enterprise.event"))
+            event_name = str(metadata.get("event") or "agentseek.enterprise.event")
+            metadata["event"] = event_name
             metadata.setdefault("environment", self._settings.langfuse_environment)
             metadata.setdefault("release", self._settings.langfuse_release)
-            trace = self._create_trace(client, metadata=metadata)
-            self._record_event(client, trace, name=event_name, metadata=metadata)
+            metadata.setdefault("trace_name", self._settings.langfuse_trace_name)
+            self._record_event(client, name=event_name, metadata=metadata)
             if self._settings.langfuse_flush and hasattr(client, "flush"):
                 client.flush()
             self._last_status = "sent"
@@ -213,29 +214,30 @@ class _LangfuseEmitter:
         self._client = Langfuse(**kwargs)
         return self._client
 
-    def _create_trace(self, client: Any, *, metadata: dict[str, Any]) -> Any | None:
-        if not hasattr(client, "trace"):
-            return None
-        return client.trace(name=self._settings.langfuse_trace_name, metadata=metadata)
+    def _record_event(self, client: Any, *, name: str, metadata: dict[str, Any]) -> None:
+        if hasattr(client, "create_event"):
+            client.create_event(name=name, metadata=metadata)
+            return
+        if hasattr(client, "start_as_current_span"):
+            self._close_observation(client.start_as_current_span(name=name, metadata=metadata))
+            return
+        if hasattr(client, "start_span"):
+            self._close_observation(client.start_span(name=name, metadata=metadata))
+            return
+        if hasattr(client, "start_observation"):
+            self._close_observation(client.start_observation(name=name, metadata=metadata))
+            return
+        raise RuntimeError("Unsupported Langfuse SDK: no create_event/start_span method found")
 
-    def _record_event(self, client: Any, trace: Any | None, *, name: str, metadata: dict[str, Any]) -> None:
-        if trace is not None and hasattr(trace, "event"):
-            trace.event(name=name, metadata=metadata)
-            return
-        if trace is not None and hasattr(trace, "span"):
-            span = trace.span(name=name, metadata=metadata)
-            if hasattr(span, "end"):
-                span.end()
-            return
-        if hasattr(client, "event"):
-            client.event(name=name, metadata=metadata)
-            return
-        if hasattr(client, "span"):
-            span = client.span(name=name, metadata=metadata)
-            if hasattr(span, "end"):
-                span.end()
-            return
-        raise RuntimeError("Unsupported Langfuse SDK: no trace.event/span or client.event/span method found")
+    def _close_observation(self, observation: Any) -> None:
+        enter = getattr(observation, "__enter__", None)
+        exit_method = getattr(observation, "__exit__", None)
+        if callable(enter) and callable(exit_method):
+            with observation:
+                return
+        end = getattr(observation, "end", None)
+        if callable(end):
+            end()
 
 
 @lru_cache(maxsize=1)
