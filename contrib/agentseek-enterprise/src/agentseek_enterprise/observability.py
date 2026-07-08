@@ -67,10 +67,15 @@ class EnterpriseObservabilitySettings:
     langfuse_sample_rate: float = 1.0
 
     @classmethod
-    def from_env(cls) -> EnterpriseObservabilitySettings:
+    def from_env(cls, *, project_root: str | Path | None = None) -> EnterpriseObservabilitySettings:
+        root = _resolve_project_root(project_root)
+        events_log_path = _resolve_path(
+            os.environ.get("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", _DEFAULT_EVENTS_LOG_PATH),
+            root,
+        )
         return cls(
             events_enabled=_truthy(os.environ.get("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "false")),
-            events_log_path=Path(os.environ.get("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", _DEFAULT_EVENTS_LOG_PATH)),
+            events_log_path=events_log_path,
             max_value_chars=_bounded_int(os.environ.get("AGENTSEEK_ENTERPRISE_EVENTS_MAX_VALUE_CHARS"), 80, 10_000, 500),
             hash_secret=(
                 os.environ.get("AGENTSEEK_ENTERPRISE_EVENTS_HASH_SECRET")
@@ -88,8 +93,13 @@ class EnterpriseObservabilitySettings:
 
 
 class EnterpriseEventWriter:
-    def __init__(self, settings: EnterpriseObservabilitySettings | None = None) -> None:
-        self.settings = settings or EnterpriseObservabilitySettings.from_env()
+    def __init__(
+        self,
+        settings: EnterpriseObservabilitySettings | None = None,
+        *,
+        project_root: str | Path | None = None,
+    ) -> None:
+        self.settings = settings or EnterpriseObservabilitySettings.from_env(project_root=project_root)
         self._langfuse = _LangfuseEmitter(self.settings)
 
     def emit(self, event: str, **fields: Any) -> None:
@@ -238,6 +248,28 @@ def _stable_hash(value: Any, *, secret: str) -> str:
         text.encode("utf-8")
     ).hexdigest()
     return f"hmac-{digest[:24]}" if key else f"sha256-{digest[:24]}"
+
+
+def _resolve_project_root(project_root: str | Path | None) -> Path:
+    if project_root is not None:
+        return Path(project_root).expanduser().resolve()
+    explicit = os.environ.get("AGENTSEEK_ENTERPRISE_PROJECT_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env_file = os.environ.get("AGENTSEEK_ENV_FILE", "").strip()
+    if env_file:
+        path = Path(env_file).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        return path.parent.resolve()
+    return Path.cwd().resolve()
+
+
+def _resolve_path(value: str | Path, project_root: Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return project_root / path
 
 
 def _truthy(value: str | None) -> bool:

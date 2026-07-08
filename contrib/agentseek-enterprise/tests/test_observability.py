@@ -4,7 +4,11 @@ import json
 from typing import Any
 
 import pytest
-from agentseek_enterprise.observability import emit_enterprise_event, reset_observability_for_tests
+from agentseek_enterprise.observability import (
+    EnterpriseObservabilitySettings,
+    emit_enterprise_event,
+    reset_observability_for_tests,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -67,3 +71,31 @@ def test_langfuse_enabled_without_package_does_not_break_local_events(monkeypatc
     emit_enterprise_event("wecom_message_received", session_id="wecom:zhuchunlin")
 
     assert json.loads(log_path.read_text(encoding="utf-8").strip())["event"] == "wecom_message_received"
+
+
+def test_relative_event_path_resolves_against_explicit_project_root(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", "./runtime/enterprise-events.jsonl")
+
+    settings = EnterpriseObservabilitySettings.from_env(project_root=tmp_path / "project")
+
+    assert settings.events_log_path == tmp_path / "project" / "runtime" / "enterprise-events.jsonl"
+
+
+def test_relative_event_path_resolves_against_agentseek_env_file(monkeypatch: Any, tmp_path: Any) -> None:
+    project_root = tmp_path / "examples" / "enterprise_wecom_digital_employee"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENTSEEK_ENV_FILE", "examples/enterprise_wecom_digital_employee/.env")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", "./runtime/enterprise-events.jsonl")
+
+    settings = EnterpriseObservabilitySettings.from_env()
+
+    assert settings.events_log_path == project_root / "runtime" / "enterprise-events.jsonl"
+
+
+def test_absolute_event_path_is_not_rebased(monkeypatch: Any, tmp_path: Any) -> None:
+    absolute_path = tmp_path / "logs" / "enterprise-events.jsonl"
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(absolute_path))
+
+    settings = EnterpriseObservabilitySettings.from_env(project_root=tmp_path / "project")
+
+    assert settings.events_log_path == absolute_path

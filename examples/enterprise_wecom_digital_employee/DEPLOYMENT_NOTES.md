@@ -2406,6 +2406,44 @@ Mac mini verification requested:
    --since-hours 24`.
 7. Confirm `mcp_policy.py` and example `tools.py` remain zero-diff vs `68d7b25`.
 
+## v0.0.8 observability path fix (Codex local development) — READY FOR MAC MINI VERIFY
+
+Follow-up after Mac mini PASS report at `c8dcd5c`: the event log path worked
+when `.env` used an explicit example-relative value, but the default relative
+path in `EnterpriseObservabilitySettings.from_env()` was resolved against the
+current working directory. That made example runs launched from the repository
+root write to the repository root `runtime/` instead of the example project
+`runtime/`.
+
+Fix:
+- `EnterpriseObservabilitySettings.from_env(project_root=...)` now accepts an
+  explicit project root.
+- Without an explicit root, relative event paths are resolved against
+  `AGENTSEEK_ENTERPRISE_PROJECT_ROOT` when set, then against the parent
+  directory of `AGENTSEEK_ENV_FILE`, and only then against CWD.
+- `EnterpriseEventWriter(..., project_root=...)` exposes the same rule for
+  explicit construction.
+- `prod_check.py` in the example and template now checks observability paths
+  relative to the env file directory, matching runtime behavior.
+
+Local verification:
+- `PYTHONPATH=contrib/agentseek-enterprise/src uv run pytest
+  contrib/agentseek-enterprise/tests/test_observability.py -q` → 6 passed.
+- `uv run ruff check --no-fix` on touched observability/prod_check files → all
+  checks passed.
+
+Mac mini verification requested:
+1. Pull the updated `enterprise/v0.0.8-observability` commit.
+2. Use `AGENTSEEK_ENV_FILE=examples/enterprise_wecom_digital_employee/.env` and
+   set `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH=./runtime/enterprise-events.jsonl`.
+3. Launch from the repository root through
+   `examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh`.
+4. Confirm events are written to
+   `examples/enterprise_wecom_digital_employee/runtime/enterprise-events.jsonl`,
+   not the repository root `runtime/enterprise-events.jsonl`.
+5. Run `prod_check.py --env-file examples/enterprise_wecom_digital_employee/.env`
+   and confirm it checks the same directory.
+
 ## v0.0.8 observability Mac mini verification (2026-07-08) — PASS
 
 Mac mini verified `enterprise/v0.0.8-observability` @ `18ca64e` (new

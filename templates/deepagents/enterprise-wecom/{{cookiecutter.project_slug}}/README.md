@@ -254,6 +254,9 @@ Employee identifiers, sessions, ContextSeek scopes, and namespaces are hashed
 before they are written. Common secret fields such as password, token, secret,
 API key, credential, and private key are redacted.
 
+Relative `AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH` values are resolved against the
+project root, inferred from `AGENTSEEK_ENV_FILE` when available.
+
 Quick summary:
 
 ```bash

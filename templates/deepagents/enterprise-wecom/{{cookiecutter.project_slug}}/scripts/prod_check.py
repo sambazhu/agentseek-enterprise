@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     check_contextseek(env, project_root, report)
     check_mcp(env, project_root, report)
     check_tracing(env, report)
-    check_observability(env, project_root, report)
+    check_observability(env, env_path.parent, report)
     check_launchd(project_root, env_path.parent, report)
 
     if report.failures:
