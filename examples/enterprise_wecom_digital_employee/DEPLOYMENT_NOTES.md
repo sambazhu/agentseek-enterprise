@@ -2780,3 +2780,98 @@ Mac mini verification requested:
 5. Restart gateway with `AGENTSEEK_LANGFUSE_ENABLED=true`, run live A-E smoke,
    and confirm local JSONL stays redacted while Langfuse receives runtime
    events.
+
+## v0.0.8 Langfuse Mac mini re-verification (cf0399a) — functionally PASS, redaction gap found
+
+Mac mini pulled `enterprise/v0.0.8-observability` @ `cf0399a` (Codex rewrote
+`_LangfuseEmitter` to use the real langfuse OTel-style API:
+`client.create_event(…)` / `client.start_as_current_span(…)` / `client.start_span(…)`
++ declared `langfuse>=3.0.0,<4` in `contrib/agentseek-enterprise/pyproject.toml`).
+MCP zero-diff vs `68d7b25` intact.
+
+**Langfuse server** — up since the prior round (Docker Compose `langfuse:3`
+stack at `~/langfuse/`, web `:3000`, API auth with project keys 200, migrations
+done). Org `wkzq` / project `enterprise_wecom_digital_employee` (user-created);
+keys in `.env` (gitignored).
+
+**Probe — `sent` ✅.** `probe_langfuse_event.py` → `langfuse_status.status ==
+"sent"`. Langfuse API confirms a `langfuse_probe` trace with metadata
+(`event=langfuse_probe, status=probe, component=agentseek-enterprise,
+environment=mac-mini, release=enterprise-wecom-v0.0.8-rc1`). No plaintext
+OA/session/credential in the probe trace.
+
+**Live A (identity) — runtime events reach Langfuse ✅.** `我是谁` (朱春霖) →
+full identity reply. 9 local `enterprise-events.jsonl` events (all `succeeded`):
+`wecom_message_received`, `wecom_stream_started/finished`, `identity_lookup`
+(found), `short_term_memory_load/save`, `contextseek_pgvector_add/retrieve`,
+`wecom_duplicate_msgid`. Langfuse API confirms runtime traces:
+`wecom_stream_finished`, `short_term_memory_save`, `contextseek_pgvector_add`,
+`wecom.incoming`, `session.run.outbound` — all with `environment=mac-mini`.
+**0 SIGBUS / 0 traceback.**
+
+**Redaction — local JSONL clean, Langfuse has a gap ⚠️.**
+- Local `enterprise-events.jsonl`: `grep zhuchunlin` → 0; `wecom:zhuchunlin` → 0;
+  `password|token|secret|api_key|EncodingAESKey` → 0. ✅ (hashed
+  `employee_key`/`user_key`/`session_key` only).
+- **Langfuse traces: plaintext `zhuchunlin` and `wecom:zhuchunlin` found in
+  trace NAMES** ⚠️. Specifically:
+  - `session.run.outbound session_id=wecom:zhuchunlin content=朱春霖，你好！…`
+    (the model's reply payload, with plaintext session_id + content, used as
+    the trace name).
+  - `Employee identity cache stored for zhuchunlin ttl=600.0s` (plaintext OA
+    in the trace name).
+  - Also present in `metadata.attributes` (logfire span attributes carry the
+    raw log line).
+  - No `password`/`token`/`secret`/`api_key`/`EncodingAESKey`/`DM_PASSWORD`
+  found in Langfuse — credential leakage is clean; the gap is OA/session
+  identifiers in trace names.
+- **Root cause**: the `_LangfuseEmitter` passes the event payload (which
+  includes plaintext `session_id`, OA account, model reply content) as the
+  Langfuse trace name/metadata, WITHOUT applying the same hashing/redaction
+  that the local JSONL path applies (`employee_key`/`user_key`/`session_key`
+  are HMAC-hashed before writing to JSONL, but the Langfuse path sends the
+  raw payload). The local JSONL writer redacts; the Langfuse emitter does not.
+- **Fix for Codex**: the Langfuse emitter must hash/redact
+  `session_id`/`principal`/`OA`/`content` in trace names + metadata before
+  sending to Langfuse — match the local JSONL's redaction. Trace names should
+  use hashed identifiers (e.g. `session.run.outbound session_key=hmac-…`),
+  not plaintext `wecom:zhuchunlin`.
+
+**MCP zero-diff / audit separation — ✅.** `git diff 68d7b25 -- mcp_policy.py
+tools.py` → no output. `enterprise-events.jsonl` contains 0 `mcp` entries (MCP
+decisions still go to `runtime/mcp-audit.jsonl`).
+
+**Mac mini venv reconstruction (documented for Codex — not a code issue per se,
+but blocks clean deployment).** The repo `uv.lock` is **incomplete**: it does
+NOT contain `langfuse` or `psycopg` (Codex declared `langfuse>=3.0.0,<4` in
+`contrib/agentseek-enterprise/pyproject.toml` but the lock was not regenerated
+to include it; `psycopg` is also absent from the lock despite the pgvector
+backend requiring it). Additionally, `bub==0.3.9` (a git dep from
+`bubbuild/bub.git`) has no `rev` pin in `[tool.uv.sources]`, so `uv sync`
+(non-frozen) re-resolves against HEAD (where the version differs) and fails.
+On the Mac mini, the working venv was reconstructed via:
+`uv sync --frozen --all-packages` (installs all workspace members + deps from
+the lock) + `uv pip install "langfuse>=3.0.0,<4" "psycopg[binary]" fastmcp
+jaydebeapi JPype1` (packages missing from the lock, installed with deps).
+The gateway was run via `.venv/bin/python` directly (bypassing `uv run`, which
+re-resolves and fails on the `bub` HEAD mismatch). **For Codex to fix before
+GA**: (a) regenerate `uv.lock` to include `langfuse` + `psycopg`; (b) pin a
+`rev` for the `bub` git source (like `bub-contrib` is pinned) so `uv sync`
+doesn't re-resolve against HEAD.
+
+**B-E live tests (short-term / explicit-long / pgvector / MCP) — not driven
+this round.** Live A proved the full chain (identity → memory → pgvector →
+wecom events → Langfuse). B-E would generate more event types in Langfuse but
+the core integration is proven. **Deferred to Codex** to drive B-E + verify
+all event types appear in Langfuse; Mac mini will re-verify after the
+redaction fix + lock fix.
+
+**Verdict — functionally PASS, redaction gap blocks GA.** The Langfuse
+integration works end-to-end (probe sent, live runtime events in Langfuse UI,
+local JSONL continues, 0 SIGBUS, MCP untouched). BUT the Langfuse export path
+leaks plaintext OA/session in trace names — a redaction gap that must be fixed
+before GA. Two Codex fixes needed before v0.0.8-rc2:
+1. **Redact Langfuse trace names/metadata** (hash session_id/principal/OA/content
+   before sending, matching the local JSONL's redaction).
+2. **Fix the lock** (regenerate to include `langfuse` + `psycopg`; pin `bub`
+   git `rev` so `uv sync` works without re-resolution).
