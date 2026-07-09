@@ -33,10 +33,12 @@ Fill `.env` with:
   embeddings exported to ONNX. Local `seekdb` remains available for development
   or rollback only;
 - inbound file settings. `agentseek-wecom` can receive WeCom `file`, `image`,
-  and `voice` callbacks, download temporary media through the self-built WeCom
-  app, and pass bytes to `agentseek-files`. The files plugin stores attachments
-  under HMAC-scoped tenant/employee/session directories and exposes only
-  extracted text or safe metadata to the model;
+  `video`, and `mixed` callbacks. AI Bot file/image/video downloads use the
+  callback JSON's short-lived signed URL and decrypt the downloaded bytes with
+  the callback `EncodingAESKey`. `voice.content` is already transcribed text and
+  is handled as text input. `agentseek-files` stores attachments under
+  HMAC-scoped tenant/employee/session directories and exposes only extracted
+  text or safe metadata to the model;
 - MinerU settings when `AGENTSEEK_FILES_EXTRACTOR=mineru`. Text-like files
   (`.txt`, `.md`, `.csv`, `.json`) are extracted locally. PDF, Office, and image
   files are submitted to MinerU when configured. If extraction is still pending,
@@ -350,11 +352,11 @@ reply and hide the relevant memory-enriched lines.
   `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`; SeekDB remains a local fallback.
   it uses bge-m3 dense embeddings with `vector(1024)` and keeps the same
   enterprise employee scope contract.
-- `agentseek-files` handles inbound file storage and extraction. WeCom media
-  callbacks are downloaded with the self-built app token, saved under hashed
-  tenant/employee/session paths, and injected as `[CurrentFiles]` system context.
-  Host paths, media ids, response URLs, MinerU tokens, and raw file bytes are
-  not exposed to the model.
+- `agentseek-files` handles inbound file storage and extraction. WeCom AI Bot
+  media callbacks are downloaded from the signed callback URL, decrypted with
+  `EncodingAESKey`, saved under hashed tenant/employee/session paths, and
+  injected as `[CurrentFiles]` system context. Host paths, signed media URLs,
+  response URLs, MinerU tokens, and raw file bytes are not exposed to the model.
 - DM JDBC identity lookup can run in a short-lived subprocess or a persistent
   local sidecar process. Both keep JPype/libjvm out of the gateway process so
   pgvector/ONNX can coexist with the DM driver. `subprocess` is the

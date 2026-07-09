@@ -7,7 +7,9 @@ import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -21,7 +23,7 @@ from republic import StreamEvent
 
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
-from agentseek_wecom.media import MediaDownload, WeComMediaClient
+from agentseek_wecom.media import MediaDownload, WeComMediaClient, decode_encoding_aes_key
 from agentseek_wecom.messages import make_text, make_text_stream
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
@@ -30,6 +32,15 @@ _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
 
 class MediaClient(Protocol):
     def download(self, media_id: str, *, fallback_filename: str, fallback_mime_type: str) -> MediaDownload: ...
+
+    def download_media(
+        self,
+        url: str,
+        *,
+        aes_key: bytes,
+        fallback_filename: str,
+        fallback_mime_type: str,
+    ) -> MediaDownload: ...
 
 
 class InboundFileServiceProtocol(Protocol):
@@ -249,10 +260,12 @@ class WeComChannel(Channel):
         logger.debug("wecom.incoming msgtype={} msgid={}", msgtype, _extract_msgid(data))
         if msgtype == "text":
             return await self._handle_text(data)
-        if msgtype in {"file", "image"}:
+        if msgtype in {"file", "image", "video"}:
             return await self._handle_media_message(data)
         if msgtype == "voice":
             return await self._handle_voice(data)
+        if msgtype == "mixed":
+            return await self._handle_mixed(data)
         if msgtype == "stream":
             return await self._handle_stream_poll(data)
         if msgtype == "event":
@@ -266,15 +279,21 @@ class WeComChannel(Channel):
 
     async def _handle_voice(self, data: dict[str, Any]) -> str:
         content = str((data.get("voice") or {}).get("content") or "")
-        if _extract_media_id(data):
-            return await self._handle_media_message(data, fallback_content=content)
+        if not content:
+            content = "用户发送了一条语音消息，但回调未包含转写内容。"
         return await self._dispatch_user_message(data, content)
 
+    async def _handle_mixed(self, data: dict[str, Any]) -> str:
+        content = _mixed_text_content(data)
+        if _extract_media_items(data):
+            return await self._handle_media_message(data, fallback_content=content)
+        return await self._dispatch_user_message(data, content or "用户发送了一条图文混排消息。")
+
     async def _handle_media_message(self, data: dict[str, Any], *, fallback_content: str = "") -> str:
-        media = _extract_media_info(data)
+        media_items = _extract_media_items(data)
         content = fallback_content.strip()
-        if media is None:
-            content = content or f"用户发送了 {data.get('msgtype') or 'media'} 消息，但回调未包含可下载 media_id。"
+        if not media_items:
+            content = content or f"用户发送了 {data.get('msgtype') or 'media'} 消息，但回调未包含可下载 URL。"
             return await self._dispatch_user_message(data, content)
 
         from_userid = _extract_from_userid(data)
@@ -304,7 +323,7 @@ class WeComChannel(Channel):
         try:
             result = await self._download_and_store_media(
                 data=data,
-                media=media,
+                media=media_items[0],
                 session_id=session_id,
                 chat_id=chat_id,
                 userid=userid,
@@ -319,6 +338,7 @@ class WeComChannel(Channel):
                 chat_id=chat_id,
                 from_userid=from_userid,
                 msgtype=data.get("msgtype"),
+                media_kind=media_items[0].get("kind"),
                 error_type=type(exc).__name__,
             )
             content = content or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
@@ -646,12 +666,21 @@ class WeComChannel(Channel):
         file_service = self._get_file_service()
         if file_service is None:
             raise RuntimeError("agentseek-files is not installed or AGENTSEEK_FILES_ENABLED is false")
-        download = await asyncio.to_thread(
-            media_client.download,
-            media["media_id"],
-            fallback_filename=media["filename"],
-            fallback_mime_type=media["mime_type"],
-        )
+        if media.get("url"):
+            download = await asyncio.to_thread(
+                media_client.download_media,
+                media["url"],
+                aes_key=decode_encoding_aes_key(self.settings.encoding_aes_key),
+                fallback_filename=media["filename"],
+                fallback_mime_type=media["mime_type"],
+            )
+        else:
+            download = await asyncio.to_thread(
+                media_client.download,
+                media["media_id"],
+                fallback_filename=media["filename"],
+                fallback_mime_type=media["mime_type"],
+            )
         scope = _file_scope(
             tenant_id=os.environ.get("AGENTSEEK_ENTERPRISE_TENANT_ID", "default"),
             employee_id=userid or from_userid or "unknown",
@@ -760,11 +789,35 @@ def _extract_msgid(data: dict[str, Any]) -> str | None:
 
 
 def _extract_media_id(data: dict[str, Any]) -> str | None:
-    media = _extract_media_info(data)
+    media = _extract_legacy_media_info(data)
     return media["media_id"] if media is not None else None
 
 
-def _extract_media_info(data: dict[str, Any]) -> dict[str, str] | None:
+def _extract_media_items(data: dict[str, Any]) -> list[dict[str, str]]:
+    msgtype = str(data.get("msgtype") or "")
+    if msgtype == "mixed":
+        return _mixed_media_items(data)
+    item = _extract_ai_bot_media(data)
+    if item is not None:
+        return [item]
+    legacy = _extract_legacy_media_info(data)
+    return [legacy] if legacy is not None else []
+
+
+def _extract_ai_bot_media(data: dict[str, Any]) -> dict[str, str] | None:
+    msgtype = str(data.get("msgtype") or "")
+    payload = data.get(msgtype)
+    if not isinstance(payload, dict):
+        return None
+    url = _first_text(payload, "url")
+    if not url:
+        return None
+    filename = _first_text(payload, "filename", "file_name", "name") or _filename_from_media_url(url, msgtype)
+    mime_type = _first_text(payload, "mime_type", "mimetype", "content_type") or _default_media_mime_type(msgtype)
+    return {"url": url, "filename": filename, "mime_type": mime_type, "kind": msgtype}
+
+
+def _extract_legacy_media_info(data: dict[str, Any]) -> dict[str, str] | None:
     msgtype = str(data.get("msgtype") or "")
     payload = data.get(msgtype)
     if not isinstance(payload, dict):
@@ -784,7 +837,41 @@ def _extract_media_info(data: dict[str, Any]) -> dict[str, str] | None:
         str(data.get("msgid") or media_id),
     )
     mime_type = _first_text(payload, "mime_type", "mimetype", "content_type") or _default_media_mime_type(msgtype)
-    return {"media_id": media_id, "filename": filename, "mime_type": mime_type}
+    return {"media_id": media_id, "filename": filename, "mime_type": mime_type, "kind": msgtype}
+
+
+def _mixed_text_content(data: dict[str, Any]) -> str:
+    items = _mixed_items(data)
+    parts: list[str] = []
+    for item in items:
+        if str(item.get("msgtype") or "") != "text":
+            continue
+        text = item.get("text")
+        if isinstance(text, dict) and text.get("content") is not None:
+            parts.append(str(text["content"]))
+    return "\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _mixed_media_items(data: dict[str, Any]) -> list[dict[str, str]]:
+    media_items: list[dict[str, str]] = []
+    for item in _mixed_items(data):
+        msgtype = str(item.get("msgtype") or "")
+        if msgtype not in {"image", "file", "video"}:
+            continue
+        media = _extract_ai_bot_media(item) or _extract_legacy_media_info(item)
+        if media is not None:
+            media_items.append(media)
+    return media_items
+
+
+def _mixed_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    mixed = data.get("mixed")
+    if not isinstance(mixed, dict):
+        return []
+    items = mixed.get("msg_item")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _first_text(data: dict[str, Any], *keys: str) -> str | None:
@@ -803,6 +890,13 @@ def _default_media_filename(msgtype: str, identifier: str) -> str:
         "video": ".mp4",
     }.get(msgtype, ".bin")
     return f"{msgtype or 'file'}_{clean}{extension}"
+
+
+def _filename_from_media_url(url: str, msgtype: str) -> str:
+    path_name = Path(unquote(urlparse(url).path)).name
+    if path_name and "." in path_name:
+        return path_name
+    return _default_media_filename(msgtype, path_name or "upload")
 
 
 def _default_media_mime_type(msgtype: str) -> str:
@@ -880,17 +974,27 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
     elif msgtype in {"file", "image", "voice", "video"}:
         payload = data.get(msgtype)
         if isinstance(payload, dict):
-            safe_media: dict[str, Any] = {"has_media_id": bool(_extract_media_id(data))}
+            safe_media: dict[str, Any] = {
+                "has_url": bool(_extract_ai_bot_media(data)),
+                "has_media_id": bool(_extract_media_id(data)),
+            }
             for key in ("filename", "file_name", "size", "filesize", "mime_type", "content_type"):
                 if key in payload:
                     safe_media[key] = payload[key]
             if msgtype == "voice" and payload.get("content") is not None:
                 safe_media["content"] = str(payload["content"])
             safe[msgtype] = safe_media
-    elif msgtype == "voice":
-        voice = data.get("voice")
-        if isinstance(voice, dict) and voice.get("content") is not None:
-            safe["voice"] = {"content": str(voice["content"])}
+    elif msgtype == "mixed":
+        items: list[dict[str, Any]] = []
+        for item in _mixed_items(data):
+            item_type = str(item.get("msgtype") or "")
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, dict) and text.get("content") is not None:
+                    items.append({"msgtype": "text", "text": {"content": str(text["content"])}})
+            elif item_type in {"image", "file", "video"}:
+                items.append({"msgtype": item_type, item_type: {"has_url": bool(_extract_ai_bot_media(item))}})
+        safe["mixed"] = {"msg_item": items}
     elif msgtype == "event":
         event = data.get("event")
         if isinstance(event, dict):

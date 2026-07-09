@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 from email.message import Message
 from typing import Any
 
+from Crypto.Cipher import AES
+
 from agentseek_wecom.config import WeComSettings
+from agentseek_wecom.crypto import WeComCryptoError
 
 
 @dataclass
@@ -29,7 +32,13 @@ class _AccessToken:
 
 @dataclass
 class WeComMediaClient:
-    """Download temporary media from the self-built WeCom app API."""
+    """Download media for WeCom intelligent robots.
+
+    AI Bot callbacks provide signed temporary download URLs. The downloaded
+    bytes are encrypted with the same EncodingAESKey as callback messages. The
+    legacy self-built app ``media/get`` API is kept for compatibility, but the
+    enterprise-wecom runtime uses ``download_media`` for AI Bot callbacks.
+    """
 
     corp_id: str
     app_secret: str
@@ -38,9 +47,7 @@ class WeComMediaClient:
     _access_token: _AccessToken | None = field(default=None, init=False)
 
     @classmethod
-    def from_settings(cls, settings: WeComSettings) -> WeComMediaClient | None:
-        if not settings.corp_id or not settings.app_secret:
-            return None
+    def from_settings(cls, settings: WeComSettings) -> WeComMediaClient:
         return cls(
             corp_id=settings.corp_id,
             app_secret=settings.app_secret,
@@ -57,6 +64,7 @@ class WeComMediaClient:
         return base_url
 
     def download(self, media_id: str, *, fallback_filename: str, fallback_mime_type: str) -> MediaDownload:
+        """Download legacy self-built app temporary media by media_id."""
         media_id = str(media_id or "").strip()
         if not media_id:
             raise ValueError("media_id is required")
@@ -88,7 +96,45 @@ class WeComMediaClient:
         mime_type = content_type or fallback_mime_type or _guess_mime_type(filename)
         return MediaDownload(media_id=media_id, data=data, filename=filename, mime_type=mime_type)
 
+    def download_media(
+        self,
+        url: str,
+        *,
+        aes_key: bytes,
+        fallback_filename: str,
+        fallback_mime_type: str,
+    ) -> MediaDownload:
+        """Download and decrypt an AI Bot signed media URL."""
+        safe_url = _validate_signed_media_url(url)
+        request = urllib.request.Request(  # noqa: S310 - URL is validated to http(s).
+            safe_url,
+            headers={"Accept": "*/*"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+                encrypted = response.read()
+                headers = response.headers
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"aibot media download failed with HTTP {exc.code}: {body[:200]}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"aibot media download network error: {exc}") from exc
+
+        if headers.get_content_type() == "application/json":
+            error = _json_error(encrypted)
+            if error is not None:
+                raise RuntimeError(
+                    f"aibot media download failed: errcode={error.get('errcode')} errmsg={error.get('errmsg')}"
+                )
+
+        plaintext = decrypt_ai_bot_media(encrypted, aes_key=aes_key)
+        filename = _filename_from_headers(headers) or fallback_filename
+        mime_type = headers.get_content_type() or fallback_mime_type or _guess_mime_type(filename)
+        return MediaDownload(media_id=_redacted_media_source(safe_url), data=plaintext, filename=filename, mime_type=mime_type)
+
     def _get_access_token(self) -> str:
+        if not self.corp_id or not self.app_secret:
+            raise RuntimeError("legacy media/get requires WeCom corp_id and app_secret")
         now = time.time()
         if self._access_token is not None and now < self._access_token.expires_at:
             return self._access_token.value
@@ -131,6 +177,52 @@ def _filename_from_headers(headers: Message) -> str | None:
 
 def _guess_mime_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def decode_encoding_aes_key(encoding_aes_key: str) -> bytes:
+    try:
+        import base64
+
+        key = base64.b64decode(f"{encoding_aes_key.strip()}=")
+    except Exception as exc:
+        raise WeComCryptoError("Invalid EncodingAESKey") from exc
+    if len(key) != 32:
+        raise WeComCryptoError("Invalid EncodingAESKey length")
+    return key
+
+
+def decrypt_ai_bot_media(encrypted: bytes, *, aes_key: bytes) -> bytes:
+    if len(aes_key) != 32:
+        raise WeComCryptoError("Invalid EncodingAESKey length")
+    if not encrypted or len(encrypted) % AES.block_size != 0:
+        raise WeComCryptoError("Invalid encrypted media payload length")
+    cipher = AES.new(aes_key, AES.MODE_CBC, aes_key[:16])
+    plaintext = cipher.decrypt(encrypted)
+    return _pkcs7_unpad_32(plaintext)
+
+
+def _pkcs7_unpad_32(value: bytes) -> bytes:
+    if not value:
+        raise WeComCryptoError("Empty decrypted media payload")
+    pad_size = value[-1]
+    if pad_size < 1 or pad_size > 32:
+        raise WeComCryptoError("Invalid decrypted media payload padding")
+    if value[-pad_size:] != bytes([pad_size]) * pad_size:
+        raise WeComCryptoError("Invalid decrypted media payload padding bytes")
+    return value[:-pad_size]
+
+
+def _validate_signed_media_url(url: str) -> str:
+    safe_url = str(url or "").strip()
+    parsed = urllib.parse.urlparse(safe_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("AI Bot media URL must be http(s)")
+    return safe_url
+
+
+def _redacted_media_source(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def _json_error(data: bytes) -> dict[str, Any] | None:

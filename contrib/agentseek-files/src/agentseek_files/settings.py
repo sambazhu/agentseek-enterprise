@@ -26,6 +26,7 @@ class FilesSettings:
         ".bmp",
         ".webp",
         ".amr",
+        ".mp4",
         ".mp3",
         ".wav",
         ".m4a",

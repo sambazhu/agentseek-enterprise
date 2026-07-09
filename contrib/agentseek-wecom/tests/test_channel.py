@@ -38,6 +38,23 @@ class FakeMediaClient:
             mime_type=fallback_mime_type,
         )
 
+    def download_media(
+        self,
+        url: str,
+        *,
+        aes_key: bytes,
+        fallback_filename: str,
+        fallback_mime_type: str,
+    ) -> MediaDownload:
+        assert len(aes_key) == 32
+        self.calls.append(url)
+        return MediaDownload(
+            media_id="redacted-url",
+            data=b"hello file",
+            filename=fallback_filename,
+            mime_type=fallback_mime_type,
+        )
+
 
 class FakeFileService:
     def __init__(self) -> None:
@@ -137,8 +154,7 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
                 "msgtype": "file",
                 "from": {"userid": "chenkang2"},
                 "file": {
-                    "media_id": "secret-media-id",
-                    "filename": "report.txt",
+                    "url": "https://ww-aibot-img.example.com/report.txt?sign=secret",
                     "filesize": 10,
                 },
             }
@@ -147,11 +163,11 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
     payload = json.loads(plain or "{}")
 
     assert payload["stream"]["content"] == "文件处理完成"
-    assert media_client.calls == ["secret-media-id"]
+    assert media_client.calls == ["https://ww-aibot-img.example.com/report.txt?sign=secret"]
     assert file_service.calls[0]["filename"] == "report.txt"
     assert received[0].context["files"]["current_files_context"].startswith("[CurrentFiles]")
-    assert received[0].context["wecom"]["raw"]["file"]["has_media_id"] is True
-    assert "media_id" not in received[0].context["wecom"]["raw"]["file"]
+    assert received[0].context["wecom"]["raw"]["file"]["has_url"] is True
+    assert "url" not in received[0].context["wecom"]["raw"]["file"]
     assert "已收到并解析文件" in received[0].content
 
 

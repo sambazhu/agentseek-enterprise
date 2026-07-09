@@ -10,8 +10,9 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - MCP policy and audit around the generated `call_mcp_tool` adapter;
 - production semantic memory through ContextSeek + PostgreSQL + pgvector with
   bge-m3 ONNX embeddings;
-- inbound WeCom file/image/voice media intake through `agentseek-files`, with
-  HMAC-scoped storage and `[CurrentFiles]` prompt context.
+- inbound WeCom AI Bot file/image/video/mixed media intake through
+  `agentseek-files`, with AES decrypt, HMAC-scoped storage, and
+  `[CurrentFiles]` prompt context.
 
 ## Inputs
 

@@ -138,7 +138,8 @@ contrib/agentseek-files
 - 为后续文件发送预留接口。
 
 Channel 插件负责接入具体平台。
-例如 `agentseek-wecom` 知道如何从企微拿 `media_id`、下载文件和发送文件。
+例如 `agentseek-wecom` 知道如何从企微智能机器人回调里读取短期有效的
+media URL、下载并解密文件，以及发送文件。
 `agentseek-files` 不关心文件来自企微、飞书还是 Web。
 
 ### DeepResearch 第一版放在 template
@@ -411,10 +412,13 @@ FilesExtractionPoller
 
 `agentseek-wecom` 负责：
 
-- 识别企业微信 file/image/voice 消息；
-- 解析 `media_id`；
-- 调企业微信 media API 下载文件；
-- 把文件流交给 `agentseek-files`。
+- 识别企业微信智能机器人 `file`、`image`、`video`、`voice`、`mixed`
+  消息；
+- 从 `file.url`、`image.url`、`video.url` 读取 5 分钟有效的下载 URL；
+- 立即下载加密文件；
+- 使用回调 `EncodingAESKey` 按 AES-256-CBC 解密；
+- 直接使用 `voice.content` 作为语音转写文本；
+- 把解密后的文件流交给 `agentseek-files`。
 
 `agentseek-files` 负责：
 
@@ -450,7 +454,7 @@ v0.0.9 必须默认做到：
 - Langfuse 不记录文件正文；
 - 本地 JSONL 不记录文件正文；
 - 不向模型暴露宿主机真实路径；
-- 不向 Langfuse 暴露文件正文、MinerU Token、OSS 签名 URL；
+- 不向 Langfuse 暴露文件正文、MinerU Token、企微签名下载 URL；
 - MinerU Token 只从环境变量读取；
 - 解析失败时优雅降级。
 
