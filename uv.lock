@@ -8,6 +8,7 @@ members = [
     "agentseek-ag-ui",
     "agentseek-contextseek",
     "agentseek-enterprise",
+    "agentseek-files",
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-tapestore-oceanbase",
@@ -61,6 +62,7 @@ plugins = [
     { name = "agentseek-ag-ui" },
     { name = "agentseek-contextseek" },
     { name = "agentseek-enterprise" },
+    { name = "agentseek-files" },
     { name = "agentseek-langchain" },
     { name = "agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase" },
@@ -101,6 +103,7 @@ plugins = [
     { name = "agentseek-ag-ui", editable = "contrib/agentseek-ag-ui" },
     { name = "agentseek-contextseek", editable = "contrib/agentseek-contextseek" },
     { name = "agentseek-enterprise", editable = "contrib/agentseek-enterprise" },
+    { name = "agentseek-files", editable = "contrib/agentseek-files" },
     { name = "agentseek-langchain", editable = "contrib/agentseek-langchain" },
     { name = "agentseek-schedule-sqlalchemy", editable = "contrib/agentseek-schedule-sqlalchemy" },
     { name = "agentseek-tapestore-oceanbase", editable = "contrib/agentseek-tapestore-oceanbase" },
@@ -173,6 +176,21 @@ requires-dist = [
     { name = "jpype1", specifier = ">=1.5" },
     { name = "langfuse", specifier = ">=3.0.0,<4" },
     { name = "langgraph", specifier = ">=1.0" },
+]
+
+[[package]]
+name = "agentseek-files"
+version = "0.1.0"
+source = { editable = "contrib/agentseek-files" }
+dependencies = [
+    { name = "bub" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bub", specifier = "==0.3.9" },
+    { name = "httpx", specifier = ">=0.28" },
 ]
 
 [[package]]

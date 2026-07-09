@@ -1,0 +1,22 @@
+[project]
+name = "agentseek-files"
+version = "0.1.0"
+description = "File intake, scoped storage, extraction, and context helpers for AgentSeek"
+readme = "README.md"
+authors = [{ name = "Chojan Shang", email = "psiace@apache.org" }]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "bub==0.3.9",
+    "httpx>=0.28",
+]
+
+[project.entry-points."bub"]
+files = "agentseek_files.plugin:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_files"]
