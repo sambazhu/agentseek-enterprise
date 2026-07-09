@@ -224,7 +224,7 @@ Files 提供材料输入和交付物输出。
 
 ## v0.0.9：agentseek-files 插件
 
-v0.0.9 建议开新分支：
+v0.0.9 已在以下分支启动：
 
 ```text
 enterprise/v0.0.9-files-plugin
@@ -236,8 +236,23 @@ enterprise/v0.0.9-files-plugin
 contrib/agentseek-files
 ```
 
-本轮开发采用该分支作为起点。插件先提供通用文件能力，后续再由
-`agentseek-wecom` 接入企业微信文件消息。
+本轮开发采用该分支作为起点。当前分支已经加入：
+
+- `contrib/agentseek-files` 文件插件；
+- `agentseek-wecom` 对 `file`、`image`、`voice` 回调的媒体下载接线；
+- HMAC scope 的本地文件存储；
+- 本地文本提取器；
+- MinerU remote extractor 的提交/轮询接口；
+- `[CurrentFiles]` state 注入和 `enterprise-wecom` prompt 注入；
+- example/template 依赖、preflight 和 README 配置说明。
+
+仍需继续补齐：
+
+- 真企微文件消息 live 验证；
+- MinerU 真实 API live 验证；
+- 慢解析完成后的独立主动通知持久 poller；
+- 文件观测事件和 Langfuse 脱敏专项验收；
+- 生成文件回传能力。
 
 ### 目标闭环
 

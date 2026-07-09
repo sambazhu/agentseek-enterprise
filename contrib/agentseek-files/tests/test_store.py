@@ -53,5 +53,5 @@ def test_store_rejects_oversize_file(tmp_path):
 
 
 def test_sanitize_filename_strips_path_and_unsafe_chars():
-    assert sanitize_filename("../../企微 报告?.pdf") == "pdf"
+    assert sanitize_filename("../../企微 报告?.pdf") == "file.pdf"
     assert sanitize_filename("normal-file_1.txt") == "normal-file_1.txt"

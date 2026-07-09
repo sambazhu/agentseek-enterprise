@@ -8,6 +8,7 @@ dependencies = [
     "agentseek",
     "agentseek-contextseek",
     "agentseek-enterprise",
+    "agentseek-files",
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-wecom",
@@ -41,6 +42,7 @@ where = ["src"]
 agentseek = { path = "{{ cookiecutter._agentseek_source_path }}", editable = true }
 agentseek-contextseek = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-contextseek", editable = true }
 agentseek-enterprise = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-enterprise", editable = true }
+agentseek-files = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-files", editable = true }
 agentseek-langchain = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-langchain", editable = true }
 agentseek-schedule-sqlalchemy = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-schedule-sqlalchemy", editable = true }
 agentseek-wecom = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-wecom", editable = true }
@@ -48,6 +50,7 @@ agentseek-wecom = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/ag
 agentseek = { git = "{{ cookiecutter._agentseek_source_url }}" }
 agentseek-contextseek = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-contextseek" }
 agentseek-enterprise = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-enterprise" }
+agentseek-files = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-files" }
 agentseek-langchain = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-langchain" }
 agentseek-schedule-sqlalchemy = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-schedule-sqlalchemy" }
 agentseek-wecom = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-wecom" }

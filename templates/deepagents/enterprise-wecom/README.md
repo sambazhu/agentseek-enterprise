@@ -9,7 +9,9 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - MCP business tools loaded from `.agents/mcp.json`;
 - MCP policy and audit around the generated `call_mcp_tool` adapter;
 - production semantic memory through ContextSeek + PostgreSQL + pgvector with
-  bge-m3 ONNX embeddings.
+  bge-m3 ONNX embeddings;
+- inbound WeCom file/image/voice media intake through `agentseek-files`, with
+  HMAC-scoped storage and `[CurrentFiles]` prompt context.
 
 ## Inputs
 

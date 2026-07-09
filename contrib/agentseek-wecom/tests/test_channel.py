@@ -4,9 +4,12 @@ import asyncio
 import json
 from typing import Any
 
+from agentseek_files.inbound import InboundFileResult
+from agentseek_files.models import FileRecord
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComJsonCrypto
+from agentseek_wecom.media import MediaDownload
 from bub.channels.message import ChannelMessage
 from fastapi.testclient import TestClient
 from republic import StreamEvent
@@ -22,6 +25,65 @@ class FakeUseridResolver:
         return self.userid
 
 
+class FakeMediaClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def download(self, media_id: str, *, fallback_filename: str, fallback_mime_type: str) -> MediaDownload:
+        self.calls.append(media_id)
+        return MediaDownload(
+            media_id=media_id,
+            data=b"hello file",
+            filename=fallback_filename,
+            mime_type=fallback_mime_type,
+        )
+
+
+class FakeFileService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def handle_bytes(
+        self,
+        *,
+        scope: Any,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+    ) -> InboundFileResult:
+        self.calls.append({"scope": scope, "filename": filename, "data": data, "mime_type": mime_type})
+        record = FileRecord(
+            file_id="file_abc",
+            direction="inbound",
+            tenant_key=scope.tenant_key,
+            employee_key=scope.employee_key,
+            session_key=scope.session_key,
+            date="2026-07-09",
+            filename=filename,
+            sanitized_filename=filename,
+            mime_type=mime_type,
+            size_bytes=len(data),
+            sha256="abc",
+            relative_dir="hmac-t/hmac-e/2026-07-09/hmac-s/inbound/file_abc",
+            created_at="2026-07-09T00:00:00+00:00",
+            extract_status="done",
+            extract_chars=10,
+        )
+        return InboundFileResult(
+            record=record,
+            context_block="[CurrentFiles]\n- file_id: file_abc\n  excerpt: hello file",
+            user_notice="已收到并解析文件：report.txt。",
+            extract_text="hello file",
+        )
+
+    async def poll_pending(self, record: Any) -> Any:
+        raise UnexpectedPollError
+
+
+class UnexpectedPollError(AssertionError):
+    pass
+
+
 def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     return WeComChannel(
         on_receive=None,
@@ -35,6 +97,62 @@ def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
         ),
         userid_resolver=userid_resolver,
     )
+
+
+def test_file_message_downloads_media_and_injects_file_context() -> None:
+    received: list[ChannelMessage] = []
+    media_client = FakeMediaClient()
+    file_service = FakeFileService()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            callback_path="/callback/{botid}",
+            initial_wait_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+        media_client=media_client,
+        file_service=file_service,
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="文件处理完成",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+
+    plain = asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgid": "file-msg-1",
+                "msgtype": "file",
+                "from": {"userid": "chenkang2"},
+                "file": {
+                    "media_id": "secret-media-id",
+                    "filename": "report.txt",
+                    "filesize": 10,
+                },
+            }
+        )
+    )
+    payload = json.loads(plain or "{}")
+
+    assert payload["stream"]["content"] == "文件处理完成"
+    assert media_client.calls == ["secret-media-id"]
+    assert file_service.calls[0]["filename"] == "report.txt"
+    assert received[0].context["files"]["current_files_context"].startswith("[CurrentFiles]")
+    assert received[0].context["wecom"]["raw"]["file"]["has_media_id"] is True
+    assert "media_id" not in received[0].context["wecom"]["raw"]["file"]
+    assert "已收到并解析文件" in received[0].content
 
 
 def test_text_message_creates_stream_and_emits_channel_message() -> None:
@@ -320,7 +438,7 @@ def test_stream_events_appends_text_chunks() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
     message = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="hi")
-    setattr(message, "_agentseek_wecom_stream_id", stream.stream_id)
+    message._agentseek_wecom_stream_id = stream.stream_id
 
     async def events():
         yield StreamEvent("text", {"delta": "你"})
@@ -440,7 +558,7 @@ def test_outbound_with_stream_id_attr_routes_to_that_stream() -> None:
     stream_b = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
 
     reply = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="定向回复")
-    setattr(reply, "_agentseek_wecom_stream_id", stream_a.stream_id)
+    reply._agentseek_wecom_stream_id = stream_a.stream_id
     asyncio.run(channel.send(reply))
 
     assert stream_a.content == "定向回复"

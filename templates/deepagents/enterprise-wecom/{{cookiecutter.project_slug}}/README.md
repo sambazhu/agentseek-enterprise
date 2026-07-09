@@ -32,6 +32,16 @@ Fill `.env` with:
 - ContextSeek semantic storage: PostgreSQL + `pgvector` with bge-m3 dense
   embeddings exported to ONNX. Local `seekdb` remains available for development
   or rollback only;
+- inbound file settings. `agentseek-wecom` can receive WeCom `file`, `image`,
+  and `voice` callbacks, download temporary media through the self-built WeCom
+  app, and pass bytes to `agentseek-files`. The files plugin stores attachments
+  under HMAC-scoped tenant/employee/session directories and exposes only
+  extracted text or safe metadata to the model;
+- MinerU settings when `AGENTSEEK_FILES_EXTRACTOR=mineru`. Text-like files
+  (`.txt`, `.md`, `.csv`, `.json`) are extracted locally. PDF, Office, and image
+  files are submitted to MinerU when configured. If extraction is still pending,
+  the WeCom stream says the file is being parsed and the runtime records the
+  pending task for follow-up processing;
 - MCP servers in `.agents/mcp.json`;
 - MCP policy and audit settings for allowlists, write-tool confirmation, and
   JSONL audit logs.
@@ -164,6 +174,32 @@ After adding servers to `.agents/mcp.json`, restart the gateway, then ask:
 ```
 
 Expected: the answer lists the configured MCP services and tools.
+
+### F. Inbound Files
+
+Send a small `.txt` file from WeCom, then ask:
+
+```text
+总结一下我刚才发的文件
+```
+
+Expected: the file is stored below `runtime/files/<tenant>/<employee>/<date>/<session>/inbound/`,
+the path uses HMAC keys rather than plaintext OA accounts, and the answer uses
+the `[CurrentFiles]` context injected by `agentseek-files`.
+
+For PDF, Office, or image files, set:
+
+```env
+AGENTSEEK_FILES_ENABLED=true
+AGENTSEEK_FILES_EXTRACTOR=mineru
+AGENTSEEK_MINERU_BASE_URL=https://mineru.net
+AGENTSEEK_MINERU_TOKEN=<your-token-if-using-token-api>
+```
+
+Expected: the file is accepted and submitted to MinerU when the extension is in
+`AGENTSEEK_FILES_ALLOWED_EXTENSIONS`. If MinerU has not finished within the
+short polling window, the first WeCom reply says the file is parsing instead of
+blocking the whole turn.
 
 ### MCP Policy And Audit
 
@@ -314,6 +350,11 @@ reply and hide the relevant memory-enriched lines.
   `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`; SeekDB remains a local fallback.
   it uses bge-m3 dense embeddings with `vector(1024)` and keeps the same
   enterprise employee scope contract.
+- `agentseek-files` handles inbound file storage and extraction. WeCom media
+  callbacks are downloaded with the self-built app token, saved under hashed
+  tenant/employee/session paths, and injected as `[CurrentFiles]` system context.
+  Host paths, media ids, response URLs, MinerU tokens, and raw file bytes are
+  not exposed to the model.
 - DM JDBC identity lookup can run in a short-lived subprocess or a persistent
   local sidecar process. Both keep JPype/libjvm out of the gateway process so
   pgvector/ONNX can coexist with the DM driver. `subprocess` is the

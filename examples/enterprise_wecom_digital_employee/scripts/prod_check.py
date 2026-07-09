@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     check_identity(env, project_root, report)
     check_memory(env, project_root, report)
     check_contextseek(env, project_root, report)
+    check_files(env, project_root, report)
     check_mcp(env, project_root, report)
     check_tracing(env, report)
     check_observability(env, env_path.parent, report)
@@ -191,6 +192,41 @@ def check_contextseek(env: dict[str, str], project_root: Path, report: CheckRepo
         check_existing_path(env, project_root, report, "AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH", file_expected=True)
     else:
         report.warn(f"ContextSeek storage backend is {backend!r}; seekdb and pgvector are the verified persistent modes")
+
+
+def check_files(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
+    if not truthy(env.get("AGENTSEEK_FILES_ENABLED")):
+        report.warn("inbound file intake is disabled")
+        return
+
+    ensure_parent_writable(env, project_root, report, "AGENTSEEK_FILES_DIR", path_is_directory=True)
+    max_bytes = env.get("AGENTSEEK_FILES_MAX_BYTES", "10485760").strip()
+    try:
+        parsed_max_bytes = int(max_bytes)
+    except ValueError:
+        report.fail("AGENTSEEK_FILES_MAX_BYTES must be an integer")
+    else:
+        if 0 < parsed_max_bytes <= 200 * 1024 * 1024:
+            report.ok("AGENTSEEK_FILES_MAX_BYTES is valid")
+        else:
+            report.fail("AGENTSEEK_FILES_MAX_BYTES must be between 1 byte and 200MB")
+
+    extractor = env.get("AGENTSEEK_FILES_EXTRACTOR", "local").strip().lower()
+    if extractor == "mineru":
+        report.ok("inbound file extractor is MinerU")
+        base_url = env.get("AGENTSEEK_MINERU_BASE_URL", "").strip()
+        if base_url and not contains_placeholder(base_url):
+            report.ok("AGENTSEEK_MINERU_BASE_URL is set")
+        else:
+            report.fail("AGENTSEEK_MINERU_BASE_URL is missing")
+        if env.get("AGENTSEEK_MINERU_TOKEN", "").strip():
+            report.ok("AGENTSEEK_MINERU_TOKEN is set")
+        else:
+            report.warn("AGENTSEEK_MINERU_TOKEN is empty; only unauthenticated lightweight MinerU APIs can be used")
+    elif extractor == "local":
+        report.ok("inbound file extractor is local")
+    else:
+        report.warn(f"AGENTSEEK_FILES_EXTRACTOR={extractor!r} is not a verified extractor")
 
 
 def check_mcp(env: dict[str, str], project_root: Path, report: CheckReport) -> None:

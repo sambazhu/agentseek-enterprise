@@ -22,6 +22,13 @@ class FilesSettings:
         ".png",
         ".jpg",
         ".jpeg",
+        ".gif",
+        ".bmp",
+        ".webp",
+        ".amr",
+        ".mp3",
+        ".wav",
+        ".m4a",
     )
     extract_max_chars: int = 12_000
     retention_days: int = 7

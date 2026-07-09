@@ -8,6 +8,7 @@ dependencies = [
     "agentseek",
     "agentseek-contextseek",
     "agentseek-enterprise",
+    "agentseek-files",
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-wecom",
@@ -41,6 +42,7 @@ where = ["src"]
 agentseek = { path = "../..", editable = true }
 agentseek-contextseek = { path = "../../contrib/agentseek-contextseek", editable = true }
 agentseek-enterprise = { path = "../../contrib/agentseek-enterprise", editable = true }
+agentseek-files = { path = "../../contrib/agentseek-files", editable = true }
 agentseek-langchain = { path = "../../contrib/agentseek-langchain", editable = true }
 agentseek-schedule-sqlalchemy = { path = "../../contrib/agentseek-schedule-sqlalchemy", editable = true }
 agentseek-wecom = { path = "../../contrib/agentseek-wecom", editable = true }

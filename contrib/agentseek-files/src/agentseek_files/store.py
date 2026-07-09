@@ -126,6 +126,11 @@ class LocalFileStore:
 
 def sanitize_filename(filename: str) -> str:
     name = Path(filename or "file").name.strip() or "file"
-    safe = _SAFE_FILENAME_RE.sub("_", name)
-    safe = safe.strip("._") or "file"
+    suffix = Path(name).suffix.lower()
+    stem = name[: -len(suffix)] if suffix else name
+    safe_stem = _SAFE_FILENAME_RE.sub("_", stem).strip("._")
+    safe_suffix = _SAFE_FILENAME_RE.sub("", suffix)
+    if not safe_stem:
+        safe_stem = "file"
+    safe = f"{safe_stem}{safe_suffix}"
     return safe[:180]

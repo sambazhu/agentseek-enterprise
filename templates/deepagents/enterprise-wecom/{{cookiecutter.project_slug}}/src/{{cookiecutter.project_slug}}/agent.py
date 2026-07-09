@@ -127,6 +127,8 @@ def _runtime_context_messages(state: Mapping[str, object]) -> list[SystemMessage
         messages.append(memory_message)
     if semantic_memory_message := _semantic_memory_message(state):
         messages.append(semantic_memory_message)
+    if files_message := _current_files_message(state):
+        messages.append(files_message)
     return messages
 
 
@@ -173,6 +175,11 @@ def _short_term_memory_message(state: Mapping[str, object]) -> SystemMessage | N
 
 def _semantic_memory_message(state: Mapping[str, object]) -> SystemMessage | None:
     content = _clean(state.get("_contextseek_block"))
+    return SystemMessage(content=content) if content else None
+
+
+def _current_files_message(state: Mapping[str, object]) -> SystemMessage | None:
+    content = _clean(state.get("current_files_context"))
     return SystemMessage(content=content) if content else None
 
 
