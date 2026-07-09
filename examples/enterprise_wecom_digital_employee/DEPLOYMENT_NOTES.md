@@ -3023,3 +3023,47 @@ tracebacks in the persistent log are from earlier broken-venv sessions.)
 `enterprise-wecom-v0.0.8-rc2`.** All event types (wecom/identity/short-term/
 durable/pgvector) fire and reach Langfuse redacted; local JSONL continues;
 MCP untouched; 0 SIGBUS. Both GitHub and GitLab synced at `81c4b22`.
+
+## v0.0.9 files plugin live verification (c002463, 2026-07-09)
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `c002463`. New:
+`agentseek-files` package, WeCom `media.py` (file download), `channel.py`
+file/image/voice handling, `agent.py` CurrentFiles prompt injection,
+`prod_check.py` file checks, MinerU extractor config.
+
+**Static — all PASS.** `uv sync --frozen --all-packages --all-extras --group
+plugins` → installs everything incl. agentseek-files + bub-feishu/mcp/otel.
+`pytest contrib/agentseek-files/tests` → **7 passed**. `pytest
+contrib/agentseek-wecom/tests` → **16 passed**. `pytest
+contrib/agentseek-enterprise/tests` → **70 passed**. Touched `ruff` → All
+checks passed. MCP zero-diff vs `68d7b25` intact.
+
+**prod_check — PASS.** `AGENTSEEK_FILES_DIR parent is writable`,
+`AGENTSEEK_FILES_MAX_BYTES valid`, `inbound file extractor is MinerU`,
+`AGENTSEEK_MINERU_BASE_URL/TOKEN set`. `.env` extended with v0.0.9 files +
+MinerU config (token in .env, gitignored, not committed).
+
+**A-E regression — PASS.** Identity / short-term / explicit-long / pgvector /
+MCP all correct (8 text replies, 79 local events, all event types fired incl.
+new `turn_serialized`). 0 SIGBUS. MCP audit separation intact.
+
+**F file test (PDF) — BLOCKED: wrong API format.** User sent a PDF via WeCom.
+The gateway received `msgtype=file` and correctly routed to
+`_handle_media_message`, but reported "回调未包含可下载的 media_id".
+
+**Root cause: the deployment uses a WeCom 智能机器人 (AI Bot), NOT a 自建应用
+(self-built app). The two APIs have completely different media callback
+formats.** The current code (`media.py` + `channel.py`) was written for the
+self-built app API (`media_id` + `media/get` download), but the AI Bot gives a
+direct `url` + the file is AES-256-CBC encrypted. See the detailed API
+comparison + Codex fix spec in the prompt below.
+
+**Known issue: `msgtype=mixed` (图文混排) and `msgtype=video` not yet handled
+either** (the AI Bot supports these but the current code doesn't parse them).
+
+**Files not landing in `runtime/files/`** (no download happened — blocked by the
+API mismatch above).
+
+**Health.** 0 SIGBUS / 0 traceback (current session). The file handling failure
+is graceful (the bot replies "未能接收" rather than crashing). A-E message
+handling unaffected.
