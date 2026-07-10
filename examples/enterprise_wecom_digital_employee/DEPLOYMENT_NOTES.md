@@ -3706,3 +3706,23 @@ deleted from postgres; profile now clean with only the two correct entries.
    admin tool or P4 compaction for production).
 4. VLM image description for non-text images (signatures, seals, logos, diagrams)
    — future enhancement beyond OCR.
+
+### Office 三件套验证 (8025831, 2026-07-10) — docx PASS, Scheme C 不触发 docx BLOCKED
+
+**docx 纯文字 — PASS ✅.** 下载+AES+扩展名(`application/vnd.openxmlformats-
+officedocument.wordprocessingml.document`)+MinerU `chars=42`+bot 回复内容 ✅。
+
+**docx 表格+文字 — PASS ✅.** `chars=619`, `<table>` HTML 结构提取 ✅。
+
+**docx 图文表混合 — BLOCKED ❌.** `chars=701`, 1 个 `![](images/...png)` 图片引用
+(图片是**表格截图**, 含文字数据)。但 **Scheme C 后台 OCR 没触发** —— DEBUG 无
+`is_ocr=true` 提交, `bg_ocr` 无日志。
+
+**根因(精确到代码):** `mineru.py is_auto_non_ocr_pdf_result()` 第一个条件:
+```python
+Path(record.sanitized_filename).suffix.lower() == ".pdf"
+```
+**Scheme C 只对 `.pdf` 触发。** `.docx`/`.pptx`/`.xlsx` 即使有图片引用+实质文字,
+`should_run_mixed_pdf_background_ocr()` 返回 `False`, 后台 OCR 被跳过。
+
+extract.json 确认: 图片引用格式是标准 markdown `![](images/...png)`, `has_image_references()` 能检测到; `chars=701 > 100`, `has_substantive_text()` 也通过。唯一阻断点就是 suffix 检查只允许 `.pdf`。
