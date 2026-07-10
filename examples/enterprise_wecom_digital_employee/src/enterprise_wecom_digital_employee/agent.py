@@ -182,7 +182,16 @@ def _semantic_memory_message(state: Mapping[str, object]) -> SystemMessage | Non
 
 def _current_files_message(state: Mapping[str, object]) -> SystemMessage | None:
     content = _clean(state.get("current_files_context"))
-    return SystemMessage(content=content) if content else None
+    if not content:
+        return None
+    guidance = (
+        "[CurrentFilesUsage]\n"
+        "CurrentFiles 中 ImageOCR status=parsed 表示图片已经转换为可读 OCR 文本/表格，"
+        "必须使用其后内容回答，不得声称无法读取图片。只有 status=unparsed 才表示没有可用图片内容，"
+        "此时不得猜测图片可能是 logo、公章、签名或其他类型。\n"
+        "[/CurrentFilesUsage]"
+    )
+    return SystemMessage(content=f"{guidance}\n{content}")
 
 
 def _clean(value: object) -> str:
