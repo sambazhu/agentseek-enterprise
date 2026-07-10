@@ -3569,6 +3569,74 @@ Config: `AGENTSEEK_FILES_MIXED_PDF_BG_OCR=true` (default true) to enable/
 disable the background second pass for mixed PDFs. Set false to skip (accept
 text-only result for mixed PDFs, current behavior).
 
+### v0.0.9 Scheme C full verification (23e1342, 2026-07-10) — PASS + 1 bug found
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `23e1342` (Codex: mixed
+PDF background OCR Scheme C; auto-detect OCR; v4 API `files[].is_ocr`; pipeline
+model for OCR retry; DEBUG request body logging). Static: files 18, wecom 33,
+enterprise 70, template 25; ruff + ty clean; MCP zero-diff. `.env`:
+`IS_OCR=false` (auto), `MODEL_VERSION=vlm`, `OCR_MODEL_VERSION=pipeline`,
+`MIXED_PDF_BG_OCR=true`, `POLL_TIMEOUT=300`.
+
+**Test 1 — Digital PDF (auto-detect, no bg OCR):** sent "纯数字PDF01" → first
+pass `is_ocr=false` got only 13 chars → auto-retry `is_ocr=true` → `ocr_attempt=2`.
+`mixed_pdf_bg_ocr` NOT triggered (correct — first pass <100 chars, not mixed).
+Bot replied with content. ✅
+
+**Test 2 — Mixed PDF (Scheme C triggered):** sent "混合pdf.pdf" (东方财富证券
+年度报告, 2.7MB, 19 image refs). First pass `is_ocr=false` → digital text
+extracted + 19 image refs detected → **Scheme C triggered** → background
+`is_ocr=true, model=pipeline` → completed in 44s → `bg_ocr done`.
+Final: `chars=59219` (digital text + OCR'd table images). Bot replied with
+full content summary on first turn. ✅
+DEBUG confirmed: `is_ocr` correctly placed in `files[].is_ocr`; `data_id`/
+`name` redacted. ✅
+OCR'd scanned table content: financial figures (资产 265,876,676,306.75;
+营业收入 7,151,267,052.88), balance sheets, cash flow statements — all in
+`<table>` tags from OCR. Signatures/seals still as `![](...)` (expected).
+
+**Test 3 — Digital PDF (东海证券, 85K chars):** auto-detect first pass
+`is_ocr=false` → 85282 chars instantly. `ocr_attempt=1`. Bot replied with
+content on first turn. ✅
+
+**Test 4 — txt regression:** `provider=local`, instant, bot read content. ✅
+**Test 5 — voice regression:** `voice.content` direct, no download. ✅
+**Test 6 — A-E regression:** 67 events, all types (identity/short-term/
+durable/pgvector/MCP), 0 SIGBUS, MCP zero-diff, audit separation. ✅
+
+**Security:** enterprise-events: 0 plaintext OA/token/URL/AES-key. Gateway
+log: 0 token, 0 signed URL, 8 `redacted` markers. runtime/files: all
+hmac-hashed paths. ✅
+
+**Health:** 0 SIGBUS/Traceback/UniqueViolation/CRITICAL. HTTP: 2486×200,
+6×422 (WeCom normal). Gateway uptime 51min, RSS 78MB. ✅
+
+**BUG FOUND (non-blocking for files, but blocking for durable memory):**
+Durable memory slot supersession (P1) wrongly deletes distinct work duties.
+User stored "负责数据架构工作" (earlier) + "AI架构工作" (this session) as
+two `[work_context]` entries. Bot correctly reported both at 14:43:23
+("两条工作职责"). Then a `durable_memory_forget` event fired at 14:44:33
+→ "数据架构工作" was deleted → bot reported only 1 entry at 14:45:24.
+Root cause: P1 slot supersession treats "数据架构" and "AI架构" as the same
+slot (e.g. `responsibility`) → last-write-wins → old entry replaced.
+Fix for Codex: either (a) finer-grained slot classification
+(`responsibility.data_arch` vs `responsibility.ai_arch`), or (b) higher
+dedup threshold so semantically distinct duties are not merged, or (c) when
+replacing a slot, preserve the old value as a secondary entry instead of
+deleting it.
+
+**Minor (non-blocking):**
+- `mixed_pdf_bg_ocr` / `bg_ocr_status` fields not persisted in metadata.json
+  (background OCR runs and completes per DEBUG log, but status not written
+  to metadata). Fix: persist bg_ocr fields in metadata.json after completion.
+- 6 × HTTP 422 (WeCom sending malformed callbacks, not gateway error).
+
+**Verdict — v0.0.9 files plugin PASS.** All file types work (txt/digital PDF/
+mixed PDF/scan PDF/image/voice). Scheme C (mixed PDF background OCR) verified.
+Auto-detect OCR working. CurrentFiles refresh working. MCP untouched.
+1 durable memory bug found (slot supersession deletes distinct duties) —
+non-blocking for files, to be fixed by Codex.
+
 **Summary (5b62c61):**
 
 | Type | auto-detect | chars | time | bot reply |
