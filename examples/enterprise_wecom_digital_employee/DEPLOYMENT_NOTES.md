@@ -3777,3 +3777,38 @@ DEBUG 确认:
    - 哪些 `![](...)` 后面无实质内容 = 未 OCR → 说"图片内容无法识别"
 
 这个 bug 不是管道问题(OCR 成功了), 是**结果呈现/上下文理解**问题。bot 有数据但不用。
+
+### Office 三件套完整验证 (8ee8940, 2026-07-10) — 全 PASS + 大文件 context 问题
+
+**docx 全 PASS ✅.**
+- 纯文字: chars=42 ✅
+- 表格+文字: chars=619, `<table>` HTML ✅
+- 图文表混合: 第一遍 701 字 → Scheme C bg OCR → 9864 字(资产负债表 OCR) →
+  bot 回答"图片内容：证券有限公司资产负债表, 左右双栏式排版, 左侧资产,
+  右侧负债及所有者权益" ✅ (修复后 bot 读到 OCR 内容, 不再说"无法读取")
+- ImageOCR 标注生效: bot 正确区分 parsed/unparsed 图片, 不猜"公章/logo"
+- metadata 字段持久化: `mixed_pdf_bg_ocr=True, bg_ocr_status=done` ✅ (之前不写入, 已修)
+
+**xlsx 纯数据 PASS ✅.**
+- 下载+AES+扩展名(`spreadsheetml.sheet`) → `.xlsx` ✅
+- MinerU 提取 360762 字(36 万字! 学生午餐退费明细, 全部 `<table>` 单元格数据) ✅
+- 无图片 → Scheme C 不触发(`bg_ocr_status=skipped`) ✅
+- bot 回复"已成功接收并解析完成" ✅
+
+**大文件 context 问题(新发现, 记给 Codex):**
+xlsx 有 360K 字解析数据, 但 `build_current_files_context()` excerpt 上限 12000 字
+(`max_chars_per_file=extract_max_chars=12000`)。bot 只能看到前 60 条记录(3.3%)。
+用户问"有多少个人退餐" → bot 答不了(只能看到 60 条, 诚实告知"我只能看到60条")。
+
+**问题**: extracted.md 完整数据在磁盘上(360K 字), bot 有完整解析文件, 但 CurrentFiles
+context 只给截断摘录。bot 没法读全文做统计。
+
+**给 Codex 的优化方向**:
+1. **文件查询工具**: bot 调 `analyze_file(file_id, query="统计每班退餐人数")` → 读
+   完整 extracted.md → 返回结构化统计(不塞全文进 context)
+2. **大文件自动摘要**: chars > 50000 时, excerpt 外额外生成: 总行数 N, 列字段名,
+   最后序号, 数据范围, 前/后 N 行 — bot 至少能回答统计性问题
+3. **数据文件提大 excerpt**: csv/xlsx 数据文件 excerpt 可放到 50K-100K(纯表格密度高,
+   12000 字只覆盖 3%); 文字文档保持 12K
+
+**pptx**: 待测。
