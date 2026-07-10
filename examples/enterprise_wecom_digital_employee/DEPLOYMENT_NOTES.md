@@ -3726,3 +3726,54 @@ Path(record.sanitized_filename).suffix.lower() == ".pdf"
 `should_run_mixed_pdf_background_ocr()` 返回 `False`, 后台 OCR 被跳过。
 
 extract.json 确认: 图片引用格式是标准 markdown `![](images/...png)`, `has_image_references()` 能检测到; `chars=701 > 100`, `has_substantive_text()` 也通过。唯一阻断点就是 suffix 检查只允许 `.pdf`。
+
+### docx Scheme C 修复后复测 + OCR 结果呈现问题 (12e793b, 2026-07-10)
+
+**Scheme C 对 docx 触发 — PASS ✅.** 修复后重发同一 docx(图文表混合)。
+DEBUG 确认:
+- 第一遍 `is_ocr=false, model=vlm` → 701 chars
+- 后台 `is_ocr=true, model=pipeline` → 触发了(之前对 docx 不触发)
+- `files.mixed_pdf_bg_ocr done` → 17 秒完成
+- 最终 `chars=9864` (OCR 从表格图片提取 ~9000 字资产负债表数据)
+
+**OCR 数据确实提取了** — 图片引用后面的内容:
+```
+![](images/3a90b73...jpg)
+
+填报单位：证券有限公司（母公司）
+日期：2025年6月30日
+## 资产负债表
+<table>货币资金 | 期末余额 | 年初余额 | 资产 | 负债...</table>
+```
+
+**BUG: bot 不读 OCR 出来的内容, 说"无法读取图片" ❌.**
+
+用户问"图片内容是什么" → bot 回复:
+> "其中嵌入的图片（images/3a90b73...jpg）仅以哈希引用形式存在于提取文本中，实际图像数据我无法读取。根据上下文推测，图片可能是公司公章、logo、或签章扫描件..."
+
+**问题**: OCR 出来的表格数据(9000+字)**就在 `![](images/...jpg)` 引用后面**, 在 bot 的 CurrentFiles context 里。但 bot 看到图片引用就说"无法读取", 没有读后面的 `<table>` 内容。
+
+**根因**: `build_current_files_context()` 把 MinerU 返回的 markdown 原样放进 excerpt, 没有标注哪些内容是图片 OCR 结果。bot 无法区分:
+- `![](images/xxx.jpg)` + 后面跟的 `<table>` → 这是**图片被 OCR 出来的表格内容**
+- `![](images/xxx.jpg)` + 后面没有内容 → 这是**无法 OCR 的图片(如 logo/签名)**
+
+**修法给 Codex**:
+
+1. **在 `context.py build_current_files_context()` 里标注 OCR 结果**:
+   - 当 text 里有 `![](images/xxx.jpg)` 时, 检查图片引用**后面**是否有实质性内容(非空 table/text)
+   - 如果有 → 在图片引用前加标注: `<!-- 此图片已 OCR 解析, 以下为提取内容 -->`
+   - 如果后面无实质内容 → 加标注: `<!-- 此图片无法 OCR, 可能是 logo/签名/印章 -->
+
+2. **或者在 `extracted.md` 里替换图片引用**:
+   - MinerU 返回 `![](images/xxx.jpg)\n\n<table>...财务数据...</table>`
+   - 改为: `[图片: 已解析为表格] 资产负债表数据: 货币资金...资产...负债...`
+   - 去掉 `![](images/...)` 引用(because OCR content 已经替代了它)
+
+3. **或者在 prompt/system message 里加引导**:
+   - "CurrentFiles 里的 `![](images/xxx.jpg)` 后面如果跟着 `<table>` 或文字内容, 那是 MinerU 对该图片的 OCR 提取结果, 应视为图片内容用于回答用户关于图片的问题。"
+
+4. **最根本的修法**: 让 bot 在回答前分析整个 excerpt 的结构:
+   - 哪些 `![](...)` 后面有实质内容 = 已 OCR → 可以回答"图片内容是..."
+   - 哪些 `![](...)` 后面无实质内容 = 未 OCR → 说"图片内容无法识别"
+
+这个 bug 不是管道问题(OCR 成功了), 是**结果呈现/上下文理解**问题。bot 有数据但不用。
