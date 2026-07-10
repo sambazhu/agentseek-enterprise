@@ -116,8 +116,8 @@ class InboundFileService:
             if mixed_pdf and self.settings.mixed_pdf_bg_ocr:
                 self._schedule_mixed_pdf_background_ocr(record)
             else:
-                record.metadata["mixed_pdf_bg_ocr"] = False
-                record.metadata["bg_ocr_status"] = "skipped"
+                record.mixed_pdf_bg_ocr = False
+                record.bg_ocr_status = "skipped"
                 self.store.save_record(record)
         text = result.markdown or result.text
         context_block = build_current_files_context(
@@ -134,11 +134,11 @@ class InboundFileService:
         )
 
     def _schedule_mixed_pdf_background_ocr(self, record: FileRecord) -> None:
-        status = str(record.metadata.get("bg_ocr_status") or "")
+        status = record.bg_ocr_status
         if record.file_id in self._background_file_ids or status in {"pending", "running", "done"}:
             return
-        record.metadata["mixed_pdf_bg_ocr"] = True
-        record.metadata["bg_ocr_status"] = "pending"
+        record.mixed_pdf_bg_ocr = True
+        record.bg_ocr_status = "pending"
         self.store.save_record(record)
         self._background_file_ids.add(record.file_id)
         task = asyncio.create_task(
@@ -157,7 +157,7 @@ class InboundFileService:
     async def _background_ocr_retry(self, relative_dir: str) -> None:
         try:
             record = self.store.load_record(relative_dir)
-            record.metadata["bg_ocr_status"] = "running"
+            record.bg_ocr_status = "running"
             self.store.save_record(record)
             pending = await self._mineru_extractor.retry_with_ocr(
                 record,
@@ -165,7 +165,7 @@ class InboundFileService:
             )
             if pending.status not in {"pending", "running"} or not pending.provider_task_id:
                 record = self.store.load_record(relative_dir)
-                record.metadata["bg_ocr_status"] = "failed"
+                record.bg_ocr_status = "failed"
                 self.store.save_record(record)
                 logger.warning(
                     "files.mixed_pdf_bg_ocr failed file_id={} error=missing_task_id",
@@ -174,8 +174,8 @@ class InboundFileService:
                 return
 
             record = self.store.load_record(relative_dir)
-            record.metadata["bg_ocr_status"] = "running"
-            record.metadata["bg_ocr_task_id"] = pending.provider_task_id
+            record.bg_ocr_status = "running"
+            record.bg_ocr_task_id = pending.provider_task_id
             self.store.save_record(record)
 
             task_record = FileRecord.from_dict(record.to_dict())
@@ -192,12 +192,13 @@ class InboundFileService:
 
             record = self.store.load_record(relative_dir)
             if result.status == "done":
-                record.metadata["mixed_pdf_bg_ocr"] = True
-                record.metadata["bg_ocr_status"] = "done"
+                record.mixed_pdf_bg_ocr = True
+                record.bg_ocr_status = "done"
+                record.bg_ocr_task_id = pending.provider_task_id
                 self.store.save_extract(record, result)
                 logger.info("files.mixed_pdf_bg_ocr done file_id={}", record.file_id)
                 return
-            record.metadata["bg_ocr_status"] = "failed"
+            record.bg_ocr_status = "failed"
             self.store.save_record(record)
             logger.warning("files.mixed_pdf_bg_ocr failed file_id={}", record.file_id)
         except asyncio.CancelledError:
@@ -205,7 +206,7 @@ class InboundFileService:
         except Exception as exc:
             try:
                 record = self.store.load_record(relative_dir)
-                record.metadata["bg_ocr_status"] = "failed"
+                record.bg_ocr_status = "failed"
                 self.store.save_record(record)
                 file_id = record.file_id
             except Exception:

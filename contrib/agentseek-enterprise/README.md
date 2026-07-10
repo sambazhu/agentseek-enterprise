@@ -112,13 +112,16 @@ AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH=./runtime/enterprise-long-term-store.sqli
 ```
 
 The template does not grant generic filesystem tools access to `/memories`. Only its narrow
-`remember_employee_memory`, `recall_employee_memory`, and `forget_employee_memory` tools can
-reach the authenticated employee's namespace. This keeps durable preferences and work context
-isolated while avoiding arbitrary prompt content becoming a writable filesystem.
+`remember_employee_memory`, `recall_employee_memory`, `forget_employee_memory`, and
+`compact_employee_memory` tools can reach the authenticated employee's namespace. This keeps
+durable preferences and work context isolated while avoiding arbitrary prompt content becoming
+a writable filesystem.
 Work responsibilities are multi-valued: the tool prompt uses scoped slots such as
 `responsibility.data_arch` and `responsibility.ai_arch`, while the server preserves distinct
 values even if a model supplies the legacy bare `responsibility` slot. Forget operations require
 explicit forget/delete wording in the latest employee message and an exact stored-memory match.
+Compaction likewise requires an explicit cleanup request; optional temporal cleanup only removes
+past absolute dates from travel/meeting entries when the employee explicitly requests it.
 
 Configure MCP policy and audit for template adapters with:
 

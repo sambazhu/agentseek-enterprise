@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 FileDirection = Literal["inbound", "outbound"]
 ExtractStatus = Literal["not_started", "pending", "running", "done", "failed"]
+BackgroundOcrStatus = Literal["not_started", "pending", "running", "done", "failed", "skipped"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class FileRecord:
     extract_chars: int = 0
     notify_on_done: bool = False
     notified_at: str | None = None
+    mixed_pdf_bg_ocr: bool = False
+    bg_ocr_status: BackgroundOcrStatus = "not_started"
+    bg_ocr_task_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,7 +56,15 @@ class FileRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FileRecord:
-        return cls(**data)
+        payload = dict(data)
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            metadata = dict(metadata)
+            for field_name in ("mixed_pdf_bg_ocr", "bg_ocr_status", "bg_ocr_task_id"):
+                if field_name not in payload and field_name in metadata:
+                    payload[field_name] = metadata.pop(field_name)
+            payload["metadata"] = metadata
+        return cls(**payload)
 
 
 @dataclass

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from typing import Any
 
 import pytest
@@ -478,6 +479,97 @@ def test_forget_requires_exact_memory_text(monkeypatch: pytest.MonkeyPatch, tmp_
 
     assert result == "No matching durable employee memory was found."
     assert "负责数据架构工作" in _profile_content(store, runtime)
+
+
+def test_compact_memory_dedupes_slots_and_preserves_distinct_responsibilities(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+    _put_profile(
+        store,
+        runtime,
+        "# Employee Memory\n"
+        "- [preference] 企微回复偏好简洁、分点的回复方式\n"
+        "- [preference|slot=reply_style] 偏好简洁、分点的回复方式\n"
+        "- [work_context|slot=responsibility_ai] 负责 AI 架构工作\n"
+        "- [work_context|slot=responsibility.ai_arch] 负责 AI 架构工作\n"
+        "- [work_context|slot=responsibility] 负责数据架构工作\n"
+        "- [work_context|slot=responsibility] 负责 AI 架构工作\n"
+        "- [work_context|slot=travel_plan] 2026-07-12 去北京出差\n"
+        "- [work_context|slot=travel_plan] 2026-07-13 去深圳出差\n",
+    )
+    _set_latest_user_message(runtime, "请清理重复记忆")
+
+    result = tools["compact_employee_memory"].func(runtime=runtime)
+
+    profile = _profile_content(store, runtime)
+    assert result == "Compacted durable employee memory: removed 3 redundant or expired entries; 5 entries remain."
+    assert _memory_lines(profile, "preference") == [
+        "- [preference|slot=reply_style] 偏好简洁、分点的回复方式"
+    ]
+    assert "responsibility_ai" not in profile
+    assert profile.count("slot=responsibility.ai_arch") == 1
+    assert "- [work_context|slot=responsibility] 负责数据架构工作" in profile
+    assert "- [work_context|slot=responsibility] 负责 AI 架构工作" in profile
+    assert "2026-07-12 去北京出差" not in profile
+    assert "2026-07-13 去深圳出差" in profile
+
+
+def test_compact_memory_refuses_without_explicit_request(tmp_path: Any) -> None:
+    store, runtime, tools = _memory_harness(tmp_path)
+    original = "# Employee Memory\n- [preference] 偏好简洁回复\n"
+    _put_profile(store, runtime, original)
+    _set_latest_user_message(runtime, "我的长期记忆有哪些？")
+
+    result = tools["compact_employee_memory"].func(runtime=runtime)
+
+    assert result.startswith("Refused:")
+    assert _profile_content(store, runtime) == original
+
+
+def test_compact_memory_optionally_removes_expired_absolute_dates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.setattr(long_term_memory, "_today_utc", lambda: date(2026, 7, 10))
+    store, runtime, tools = _memory_harness(tmp_path)
+    _put_profile(
+        store,
+        runtime,
+        "# Employee Memory\n"
+        "- [work_context|slot=meeting_plan] 2026年7月9日参加数据治理会议\n"
+        "- [work_context|slot=travel_plan] 2026-07-12 去深圳出差\n"
+        "- [work_context|slot=responsibility.data_arch] 负责数据架构工作\n",
+    )
+    _set_latest_user_message(runtime, "请清理过期记忆和历史行程")
+
+    result = tools["compact_employee_memory"].func(
+        remove_expired_temporal=True,
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert "removed 1" in result
+    assert "2026年7月9日" not in profile
+    assert "2026-07-12 去深圳出差" in profile
+    assert "负责数据架构工作" in profile
+
+
+def test_compact_memory_refuses_expired_deletion_without_explicit_expired_request(tmp_path: Any) -> None:
+    store, runtime, tools = _memory_harness(tmp_path)
+    original = "# Employee Memory\n- [work_context|slot=travel_plan] 2026-07-01 去深圳出差\n"
+    _put_profile(store, runtime, original)
+    _set_latest_user_message(runtime, "请清理重复记忆")
+
+    result = tools["compact_employee_memory"].func(
+        remove_expired_temporal=True,
+        runtime=runtime,
+    )
+
+    assert result.startswith("Refused:")
+    assert _profile_content(store, runtime) == original
 
 
 def test_concurrent_forget_calls_serialize_profile_writes(

@@ -107,6 +107,26 @@ def test_ai_bot_download_replaces_hex_encoded_header_filename(monkeypatch) -> No
     assert "E6_B5" not in download.filename
 
 
+def test_ai_bot_download_replaces_hex_encoded_fallback_without_content_disposition(monkeypatch) -> None:
+    key = decode_encoding_aes_key(AES_KEY)
+    response = _FakeResponse(
+        _encrypt_for_test("测试内容".encode(), key),
+        content_type="text/plain",
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    download = WeComMediaClient("", "").download_media(
+        "https://ww-aibot-img.example.com/opaque?sign=secret",
+        aes_key=key,
+        fallback_filename="E6_B5_8B_E8_AF_95.txt",
+        fallback_mime_type="text/plain",
+    )
+
+    assert download.filename.startswith("document_")
+    assert download.filename.endswith(".txt")
+    assert "E6_B5" not in download.filename
+
+
 @pytest.mark.parametrize(
     ("data", "expected"),
     [

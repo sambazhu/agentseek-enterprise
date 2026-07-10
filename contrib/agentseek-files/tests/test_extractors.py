@@ -329,8 +329,8 @@ def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_oc
             assert first_pass.pending is False
             assert first_pass.extract_text == first_text
             assert first_pass.record.extract_status == "done"
-            assert first_pass.record.metadata["mixed_pdf_bg_ocr"] is True
-            assert first_pass.record.metadata["bg_ocr_status"] == "pending"
+            assert first_pass.record.mixed_pdf_bg_ocr is True
+            assert first_pass.record.bg_ocr_status == "pending"
             await asyncio.gather(*tuple(service._background_tasks))
             return first_pass.record
 
@@ -343,8 +343,13 @@ def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_oc
     assert submitted[1]["model_version"] == "pipeline"
     assert final_record.extract_status == "done"
     assert final_record.extract_task_id == "batch-2"
-    assert final_record.metadata["mixed_pdf_bg_ocr"] is True
-    assert final_record.metadata["bg_ocr_status"] == "done"
+    assert final_record.mixed_pdf_bg_ocr is True
+    assert final_record.bg_ocr_status == "done"
+    assert final_record.bg_ocr_task_id == "batch-2"
+    stored_metadata = json.loads((tmp_path / final_record.relative_dir / "metadata.json").read_text())
+    assert stored_metadata["mixed_pdf_bg_ocr"] is True
+    assert stored_metadata["bg_ocr_status"] == "done"
+    assert stored_metadata["bg_ocr_task_id"] == "batch-2"
     assert service.store.load_extract_text(final_record) == complete_text
 
 
@@ -392,8 +397,8 @@ def test_mineru_mixed_pdf_background_failure_preserves_first_pass(tmp_path, monk
 
     assert final_record.extract_status == "done"
     assert final_record.extract_task_id == "batch-1"
-    assert final_record.metadata["mixed_pdf_bg_ocr"] is True
-    assert final_record.metadata["bg_ocr_status"] == "failed"
+    assert final_record.mixed_pdf_bg_ocr is True
+    assert final_record.bg_ocr_status == "failed"
     assert service.store.load_extract_text(final_record) == first_text
 
 
@@ -447,8 +452,8 @@ def test_mineru_digital_pdf_skips_mixed_background_ocr(tmp_path, monkeypatch):
 
     assert result.pending is False
     assert result.extract_text == digital_text
-    assert result.record.metadata["mixed_pdf_bg_ocr"] is False
-    assert result.record.metadata["bg_ocr_status"] == "skipped"
+    assert result.record.mixed_pdf_bg_ocr is False
+    assert result.record.bg_ocr_status == "skipped"
     assert not service._background_tasks
 
 

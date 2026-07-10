@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from agentseek_files.models import FileScope
+from agentseek_files.models import FileRecord, FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import FileStoreError, LocalFileStore, sanitize_filename
 
@@ -70,6 +70,37 @@ def test_store_does_not_duplicate_existing_pdf_extension(tmp_path):
 
     assert record.filename == "report.pdf"
     assert record.sanitized_filename == "report.pdf"
+
+
+def test_file_record_migrates_legacy_nested_background_ocr_metadata() -> None:
+    payload = {
+        "file_id": "file_1",
+        "direction": "inbound",
+        "tenant_key": "tenant",
+        "employee_key": "employee",
+        "session_key": "session",
+        "date": "2026-07-10",
+        "filename": "mixed.pdf",
+        "sanitized_filename": "mixed.pdf",
+        "mime_type": "application/pdf",
+        "size_bytes": 1,
+        "sha256": "abc",
+        "relative_dir": "tenant/employee/file_1",
+        "created_at": "2026-07-10T00:00:00+00:00",
+        "metadata": {
+            "mixed_pdf_bg_ocr": True,
+            "bg_ocr_status": "done",
+            "bg_ocr_task_id": "batch-2",
+            "extract": {"mode": "extract_batch"},
+        },
+    }
+
+    record = FileRecord.from_dict(payload)
+
+    assert record.mixed_pdf_bg_ocr is True
+    assert record.bg_ocr_status == "done"
+    assert record.bg_ocr_task_id == "batch-2"
+    assert record.metadata == {"extract": {"mode": "extract_batch"}}
 
 
 def test_store_rejects_oversize_file(tmp_path):

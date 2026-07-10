@@ -7,7 +7,7 @@ import re
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
@@ -68,6 +68,23 @@ _NEGATED_FORGET_INTENT_RE = re.compile(
     r"\b(?:do\s+not|don't|never)\s+(?:forget|delete|remove|clear)\b",
     re.IGNORECASE,
 )
+_COMPACT_INTENT_RE = re.compile(
+    r"(?:(?:清理|整理|压缩|去重|合并).{0,12}(?:记忆|画像)|"
+    r"(?:记忆|画像).{0,12}(?:清理|整理|压缩|去重|合并)|"
+    r"\b(?:compact|deduplicate|clean\s+up|reconcile)\b.{0,24}\b(?:memory|profile)\b)",
+    re.IGNORECASE,
+)
+_EXPIRED_MEMORY_INTENT_RE = re.compile(r"(?:过期|已过期|历史).{0,8}(?:记忆|行程|出差|会议)?|\bexpired\b", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
+_CN_DATE_RE = re.compile(r"(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日")
+_SLOT_ALIASES = {
+    "responsibility_ai": "responsibility.ai_arch",
+    "responsibility_ai_arch": "responsibility.ai_arch",
+    "responsibility_data": "responsibility.data_arch",
+    "responsibility_data_arch": "responsibility.data_arch",
+}
+_TEMPORAL_SLOTS = frozenset({"travel_plan", "meeting_plan"})
+_TEMPORAL_MARKERS = ("出差", "行程", "会议", "日程", "安排")
 _PROFILE_LOCKS: dict[tuple[str, ...], threading.RLock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
@@ -130,7 +147,29 @@ def employee_memory_tools() -> list[BaseTool]:
         """
         return _forget_employee_memory(memory, runtime)
 
-    return [recall_employee_memory, remember_employee_memory, forget_employee_memory]
+    @tool("compact_employee_memory")
+    def compact_employee_memory(
+        remove_expired_temporal: bool = False,
+        *,
+        runtime: ToolRuntime,
+    ) -> str:
+        """Compact duplicate durable memories after the employee explicitly requests cleanup.
+
+        This keeps the latest value for singleton slots, preserves distinct
+        multi-valued responsibilities, prefers scoped slots over legacy
+        slotless duplicates, and canonicalizes legacy slot names. Set
+        remove_expired_temporal=true only when the latest employee message also
+        explicitly asks to remove expired memories; only absolute dates in
+        travel/meeting entries are eligible.
+        """
+        return _compact_employee_memory(runtime, remove_expired_temporal=remove_expired_temporal)
+
+    return [
+        recall_employee_memory,
+        remember_employee_memory,
+        forget_employee_memory,
+        compact_employee_memory,
+    ]
 
 
 def _store(runtime: ToolRuntime) -> BaseStore:
@@ -350,6 +389,64 @@ def _forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
         return "The matching durable employee memory has been removed."
 
 
+def _compact_employee_memory(runtime: ToolRuntime, *, remove_expired_temporal: bool = False) -> str:
+    namespace = enterprise_filesystem_namespace(runtime)
+    started_at = event_timer()
+    latest_user_text = _latest_user_message_text(runtime)
+    if not _COMPACT_INTENT_RE.search(latest_user_text):
+        _emit_memory_event(
+            "durable_memory_compact",
+            namespace,
+            status="refused_no_explicit_request",
+            duration_ms=elapsed_ms(started_at),
+        )
+        return "Refused: compacting durable memory requires an explicit request in the employee's latest message."
+    if remove_expired_temporal and not _EXPIRED_MEMORY_INTENT_RE.search(latest_user_text):
+        _emit_memory_event(
+            "durable_memory_compact",
+            namespace,
+            status="refused_no_expired_request",
+            duration_ms=elapsed_ms(started_at),
+        )
+        return "Refused: removing expired memories requires an explicit request in the employee's latest message."
+
+    store = _store(runtime)
+    with _profile_lock(namespace):
+        existing = store.get(namespace, _PROFILE_PATH)
+        if existing is None:
+            _emit_memory_event(
+                "durable_memory_compact",
+                namespace,
+                status="empty",
+                duration_ms=elapsed_ms(started_at),
+            )
+            return "No durable employee memory is currently stored."
+        content = str(existing.value.get("content", ""))
+        entries = _parse_profile(content)
+        compacted, expired_count = _compact_entries(
+            entries,
+            remove_expired_temporal=remove_expired_temporal,
+            today=_today_utc(),
+        )
+        updated = _profile_from_entries(compacted)
+        removed_count = len(entries) - len(compacted)
+        if updated != content:
+            _put_profile(store, namespace, updated)
+        _emit_memory_event(
+            "durable_memory_compact",
+            namespace,
+            status="succeeded" if updated != content else "unchanged",
+            entry_count=len(compacted),
+            removed_count=removed_count,
+            expired_count=expired_count,
+            duration_ms=elapsed_ms(started_at),
+        )
+        return (
+            "Compacted durable employee memory: "
+            f"removed {removed_count} redundant or expired entries; {len(compacted)} entries remain."
+        )
+
+
 def _profile_lock(namespace: tuple[str, ...]) -> threading.RLock:
     # Tools are synchronous and may run concurrently in worker threads within one
     # model turn, so protect the profile blob with a thread lock per employee
@@ -387,7 +484,7 @@ def _normalize_slot(value: str | None) -> str | None:
     normalized = normalized.replace("]", "_").replace("|", "_")
     if len(normalized) > _MAX_SLOT_CHARS:
         raise ValueError(f"Employee memory slot must be at most {_MAX_SLOT_CHARS} characters.")
-    return normalized
+    return _SLOT_ALIASES.get(normalized, normalized)
 
 
 def _format_memory_line(category: str, text: str, *, slot: str | None = None) -> str:
@@ -439,6 +536,95 @@ def _dedupe_entries(entries: Iterable[_MemoryEntry], *, threshold: float) -> lis
     return deduped
 
 
+def _compact_entries(
+    entries: Iterable[_MemoryEntry],
+    *,
+    remove_expired_temporal: bool,
+    today: date,
+) -> tuple[list[_MemoryEntry], int]:
+    compacted: list[_MemoryEntry] = []
+    expired_count = 0
+    threshold = _dedup_threshold()
+    for entry in entries:
+        if remove_expired_temporal and _is_expired_temporal_entry(entry, today=today):
+            expired_count += 1
+            continue
+
+        if entry.slot is not None and not _is_multi_value_slot(entry.slot):
+            same_slot_index = _same_bucket_index(compacted, entry)
+            if same_slot_index is not None:
+                compacted[same_slot_index] = entry
+                continue
+
+        duplicate_index = _compaction_duplicate_index(compacted, entry, threshold=threshold)
+        if duplicate_index is None:
+            compacted.append(entry)
+            continue
+        existing = compacted[duplicate_index]
+        if existing.slot is not None and entry.slot is None:
+            continue
+        compacted[duplicate_index] = entry
+    return compacted, expired_count
+
+
+def _compaction_duplicate_index(
+    entries: list[_MemoryEntry],
+    candidate: _MemoryEntry,
+    *,
+    threshold: float,
+) -> int | None:
+    for index, existing in enumerate(entries):
+        if existing.category != candidate.category:
+            continue
+        if existing.slot is not None and candidate.slot is not None and existing.slot != candidate.slot:
+            continue
+        if _same_or_near_duplicate(existing.text, candidate.text, threshold=threshold):
+            return index
+    return None
+
+
+def _same_or_near_duplicate(first: str, second: str, *, threshold: float) -> bool:
+    if _normalize_for_compare(first) == _normalize_for_compare(second):
+        return True
+    return threshold > 0 and _similar(first, second, threshold=threshold)
+
+
+def _same_bucket_index(entries: list[_MemoryEntry], candidate: _MemoryEntry) -> int | None:
+    for index, entry in enumerate(entries):
+        if _same_memory_bucket(entry, candidate):
+            return index
+    return None
+
+
+def _is_expired_temporal_entry(entry: _MemoryEntry, *, today: date) -> bool:
+    if entry.category != "work_context":
+        return False
+    if entry.slot not in _TEMPORAL_SLOTS and not any(marker in entry.text for marker in _TEMPORAL_MARKERS):
+        return False
+    dates = _absolute_dates(entry.text)
+    return bool(dates) and max(dates) < today
+
+
+def _absolute_dates(text: str) -> list[date]:
+    dates: list[date] = []
+    for pattern in (_ISO_DATE_RE, _CN_DATE_RE):
+        for match in pattern.finditer(text):
+            try:
+                dates.append(date(*(int(part) for part in match.groups())))
+            except ValueError:
+                continue
+    return dates
+
+
+def _profile_from_entries(entries: Iterable[_MemoryEntry]) -> str:
+    lines = ["# Employee Memory", *[_format_memory_line(entry.category, entry.text, slot=entry.slot) for entry in entries]]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _today_utc() -> date:
+    return datetime.now(UTC).date()
+
+
 def _parse_profile(content: str) -> list[_MemoryEntry]:
     entries: list[_MemoryEntry] = []
     for line_index, line in enumerate(content.splitlines()):
@@ -488,12 +674,17 @@ def _is_multi_value_slot(slot: str) -> bool:
 
 
 def _latest_user_requested_forget(runtime: ToolRuntime) -> bool:
+    text = _latest_user_message_text(runtime)
+    return bool(_FORGET_INTENT_RE.search(text)) and not _NEGATED_FORGET_INTENT_RE.search(text)
+
+
+def _latest_user_message_text(runtime: ToolRuntime) -> str:
     state = runtime.state
     if not isinstance(state, Mapping):
-        return False
+        return ""
     messages = state.get("messages")
     if not isinstance(messages, (list, tuple)):
-        return False
+        return ""
     for message in reversed(messages):
         role = ""
         content: object = ""
@@ -505,9 +696,8 @@ def _latest_user_requested_forget(runtime: ToolRuntime) -> bool:
             content = getattr(message, "content", "")
         if role not in {"human", "user"}:
             continue
-        text = _message_content_text(content)
-        return bool(_FORGET_INTENT_RE.search(text)) and not _NEGATED_FORGET_INTENT_RE.search(text)
-    return False
+        return _message_content_text(content)
+    return ""
 
 
 def _message_content_text(content: object) -> str:

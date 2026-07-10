@@ -157,6 +157,11 @@ Distinct work duties coexist under scoped responsibility slots (for example,
 uses the forget tool for deduplication: deletion requires explicit wording in
 the employee's latest message and an exact stored-memory match.
 
+To compact legacy duplicates and slot aliases in the authenticated employee's
+profile, ask `请清理重复记忆`. Ask `请清理过期记忆和历史行程` to additionally
+remove travel/meeting entries with past absolute dates. Both operations require
+explicit wording in the latest employee message.
+
 ### D. Semantic Long-Term Memory (ContextSeek + pgvector)
 
 ```text
@@ -219,6 +224,12 @@ failure preserves the first-pass text.
 Without a token, the lightweight Agent API remains available as a compatibility
 fallback. Pending file records are refreshed from disk or MinerU on the
 employee's next turn, so completed text replaces the earlier pending snapshot.
+Background OCR lifecycle fields (`mixed_pdf_bg_ocr`, `bg_ocr_status`, and
+`bg_ocr_task_id`) are persisted at the top level of each file's `metadata.json`.
+
+v0.1.0 follow-up: MinerU may leave signatures, seals, logos, flowcharts, and
+architecture diagrams as image references. An optional VLM description stage
+can replace those references with visual summaries; it is not part of v0.0.9.
 
 ### MCP Policy And Audit
 
