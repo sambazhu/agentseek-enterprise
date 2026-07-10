@@ -3952,3 +3952,95 @@ xlsx 的提取在真表头之前先发了一堆 `colspan=6` 合并行:
 - `contrib/agentseek-files/tests/test_analysis_tools.py`: 加 `# ty: ignore[unresolved-attribute]`
   修复 `make check-files` 的 ty 假阳性(仅测试代码, 语义不变)。
 - `DEPLOYMENT_NOTES.md`: 本节复测报告 + Codex 修复 spec。
+
+---
+
+## 复测 v0.0.9 表头识别 + analyze_file 工具状态修复 (5fc85c0, 2026-07-10 23:00) — 全 PASS (活体+离线)
+
+Codex 修复 (commit `5fc85c0` "fix: detect spreadsheet headers for file analysis"):
+- `content_analysis.py` (+59): 新增 `_detect_header_index` — 扫前 20 行, 按表头标记词
+  (序号/姓名/班级/年级/部门/日期/金额/数量/明细/name/class/date/amount/…) 打分(score≥2
+  且最高者胜), 退化为"众数列宽首行"。`_normalize_table` 改用真表头行。
+- `agent.py` (example + cookiecutter 各 +10): 新增 `EnterpriseAgentState(DeepAgentState)`
+  声明 `current_files: NotRequired[list[dict]]`, 传 `state_schema=` — 使 LangGraph 跨轮
+  把 `current_files` 注入 `runtime.state`, analyze_file 能读到(治"无可分析文件")。
+- `test_content_analysis.py` (+37, 新文件): 表头检测单测。
+
+### 1. 自动化 — 全 PASS ✅
+
+| 套件 | 结果 |
+|---|---|
+| `make check-files` (typecheck+pytest) | **40 passed** ✅ (新 +2 content_analysis) |
+| `make test-wecom` | **38 passed** ✅ |
+| `make test-enterprise` | **79 passed** ✅ |
+| template render | **25 passed** ✅ |
+| MCP 零 diff vs 68d7b25 | **空** ✅ |
+
+### 2. 网关重启 — 干净 ✅
+
+旧网关 (PID 36588/36597, 跑 0e01f10) SIGTERM 优雅关停无僵尸; 新网关 PID 48222/48231
+经 `run_gateway.sh` 启动: `Application startup complete` / `Uvicorn :12000` /
+`channel.manager started listening` / DM sidecar 懒启动。重启清空了 FilesPlugin 进程内
+session records → 按要求**重启后重新上传**了 xlsx (不要用重启前的文件)。
+
+### 3. 活体重传 + 四问 — 全部命中 oracle ✅
+
+文件 22:52:51 收到(msgtype=file)→ AES 解密 → 存 `file_11452a4d798f02c7`(sha256 去重,
+同文件同 id; original 95278 字节) → MinerU `is_ocr=false, vlm` 22:52:53 提交 →
+22:53:03 `wecom_file_extract_finished`(9 秒, 360762 字, 无图片→Scheme C skipped)。
+四问(bot 经 `analyze_file` 返回, 1777/各班数只能来自该工具):
+
+| 问题 | bot 活体回复 (时间) | oracle | |
+|---|---|---|---|
+| Q1 总共有多少个人退餐 | "共 **1,790 人**…按姓名去重后唯一姓名 **1,777**…**13 组同名**"(22:56) | 1790行/1777去重/13同名 | ✅ |
+| Q2 每个班分别多少人 | "**67个班级**…合计 67/1,790…1,777"(22:54, 22:58 重发同样) | 67班 | ✅ |
+| Q3 有哪些字段 | 6 字段: 序号(1~1790)/姓名/班级/退费餐数(6~91)/**退费金额(108~1638)**/明细; 并正确指出"表格上方还有3行标题/说明信息"(22:59) | 6字段+3标题行排除 | ✅ |
+| Q4 退费金额范围 | "退费金额…范围 **108~1638 元**"(Q3 已涵盖) | 108..1638 | ✅ |
+
+**Q3 直接证明表头修复在活体生效**: bot 明确把标题/副标题/备注识别为"表格上方3行标题/说明",
+不再当字段或数据。
+
+### 4. 离线 oracle 复核(真实 extracted.md, 360762 字)— 全命中 ✅
+
+`analyze_content` / `unique_people` / `group_counts` 对 `file_11452a4d798f02c7`:
+- `extract_total_chars` 360762 ✅; `data_rows` **1790**(旧 1793)✅
+- `headers` = `('序号','姓名','班级','退费餐数','退费金额','明细')`(旧=标题)✅
+- `last_record` = `1790 | 高若骒 | 六十班 | 12 | 216 | …` ✅
+- `unique_people` = **1777**(旧 None)✅; `group_counts` 列=班级, **67** 班 ✅
+- 一一班 23 / 一二班 29 / 一三班 32 / 六十班 23 ✅; 各班合计 **1790** ✅
+- `numeric_ranges` = `序号=1..1790; 退费餐数=6..91; 退费金额=108..1638`(旧=标题)✅
+
+### 5. 工具状态(agent.py state_schema 修复)— 活体 PASS ✅
+
+- analyze_file 确被调用(1777 去重数 + 各班数只来自 `unique_people`/`group_counts`,
+  CurrentFiles 摘要里没有这些)。
+- `runtime.state["current_files"]` 跨轮携带了 `file_11452a4d798f02c7`(Q1/Q2/Q3 三轮都拿到统计)。
+- **不再** "无可分析文件"、**不再** 回退前 60 条 excerpt。
+- 对比旧网关 21:24 `"全量分析工具当前返回异常(无可分析文件)…只能看到前60条"` →
+  新网关 `"全量分析已完成…67个班级…1,790…1,777…6个字段…108~1638"`。
+
+### 6. 安全边界 — PASS ✅
+
+- analyze_file 只读 CurrentFiles 内 file_id(单测 `rejects_file_outside_current_state` 过);
+  活体三轮用本会话 file_id 正常。
+- 只读 extracted.md/extracted.txt, **不读 original 二进制**(outbound 中 0 处 `original`/`binary`)。
+- **不泄露宿主路径**: outbound 回复中 0 处 `/Users`/`sambazhu`/`runtime/files`
+  (日志里 6 处 `/Users` 全是 pydantic 序列化警告的 traceback, 属内部 stderr, 非用户可见)。
+
+### 7. 回归 — PASS ✅
+
+- 自动化 files 40 / wecom 38 / enterprise 79 / template 25; MCP 零 diff。
+- 自重启起 **0 SIGBUS / 0 HTTP 非200 / 0 Traceback**; 网关 uptime 持续。
+- Scheme C/auto-detect OCR/CurrentFiles 刷新: xlsx 无图片(bg_ocr skipped), MinerU 首遍
+  `is_ocr=false` 9 秒完成(auto-detect 正常); CurrentFiles 跨轮刷新正常(Q1/Q2/Q3 均读到最新)。
+
+### 8. 非阻塞观察(记给 Codex, 不影响本次验收)
+
+- 每轮出现 `UserWarning: Pydantic serializer warnings: PydanticSerializationUnexpectedValue
+  ... field_name='context', input_type=EnterpriseRuntimeContext`(`context` 字段, **非**
+  `current_files`, 序列化仍成功, 回复正常)。系 `EnterpriseRuntimeContext` 序列化类型与声明
+  不完全一致导致; 建议后续校准该字段类型声明以消音。
+
+### 9. 本次提交
+
+- `DEPLOYMENT_NOTES.md`: 本节 5fc85c0 复测报告(全 PASS, 活体+离线双验证)。
