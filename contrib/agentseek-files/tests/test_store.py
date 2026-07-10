@@ -44,6 +44,58 @@ def test_store_rejects_disallowed_extension(tmp_path):
         store.store_bytes(scope=scope, filename="report.exe", data=b"x")
 
 
+@pytest.mark.parametrize(
+    ("legacy_extension", "replacement"),
+    [(".doc", ".docx"), (".xls", ".xlsx"), (".ppt", ".pptx")],
+)
+def test_store_recommends_modern_office_format(
+    tmp_path,
+    legacy_extension: str,
+    replacement: str,
+) -> None:
+    store = LocalFileStore(FilesSettings(root_dir=tmp_path))
+
+    with pytest.raises(FileStoreError) as error:
+        store.store_bytes(
+            scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+            filename=f"legacy{legacy_extension}",
+            data=b"legacy office",
+        )
+
+    assert error.value.user_notice == (
+        f"暂不支持旧版 Office 格式 {legacy_extension}，请转换为 {replacement} 后重新上传。"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mime_type", "legacy_extension", "replacement"),
+    [
+        ("application/msword", ".doc", ".docx"),
+        ("application/vnd.ms-excel", ".xls", ".xlsx"),
+        ("application/vnd.ms-powerpoint", ".ppt", ".pptx"),
+    ],
+)
+def test_store_recommends_modern_office_format_from_mime_without_filename(
+    tmp_path,
+    mime_type: str,
+    legacy_extension: str,
+    replacement: str,
+) -> None:
+    store = LocalFileStore(FilesSettings(root_dir=tmp_path))
+
+    with pytest.raises(FileStoreError) as error:
+        store.store_bytes(
+            scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+            filename="document",
+            data=b"legacy office",
+            mime_type=mime_type,
+        )
+
+    assert error.value.user_notice == (
+        f"暂不支持旧版 Office 格式 {legacy_extension}，请转换为 {replacement} 后重新上传。"
+    )
+
+
 def test_store_adds_pdf_extension_from_mime_type_when_filename_has_none(tmp_path):
     store = LocalFileStore(FilesSettings(root_dir=tmp_path, allowed_extensions=(".pdf",)))
     scope = FileScope("hmac-tenant", "hmac-employee", "hmac-session")

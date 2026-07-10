@@ -7,6 +7,7 @@ from typing import Any
 
 from agentseek_files.inbound import InboundFileResult
 from agentseek_files.models import FileRecord
+from agentseek_files.store import FileStoreError
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComJsonCrypto
@@ -14,6 +15,8 @@ from agentseek_wecom.media import MediaDownload
 from bub.channels.message import ChannelMessage
 from fastapi.testclient import TestClient
 from republic import StreamEvent
+
+LEGACY_DOC_NOTICE = "暂不支持旧版 Office 格式 .doc，请转换为 .docx 后重新上传。"
 
 
 class FakeUseridResolver:
@@ -131,6 +134,15 @@ class PendingThenDoneFileService(FakeFileService):
         )
 
 
+class LegacyOfficeRejectingFileService(FakeFileService):
+    async def handle_bytes(self, **kwargs: Any) -> InboundFileResult:
+        del kwargs
+        raise FileStoreError(
+            ".doc",
+            user_notice=LEGACY_DOC_NOTICE,
+        )
+
+
 def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     return WeComChannel(
         on_receive=None,
@@ -223,6 +235,54 @@ def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
 
     assert result == "image-routed"
     assert routed_msgtypes == ["image"]
+
+
+def test_legacy_office_file_returns_conversion_notice() -> None:
+    received: list[ChannelMessage] = []
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            callback_path="/callback/{botid}",
+            initial_wait_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+        media_client=FakeMediaClient(),
+        file_service=LegacyOfficeRejectingFileService(),
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content=message.content,
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+    plain = asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgid": "legacy-doc-1",
+                "msgtype": "file",
+                "from": {"userid": "chenkang2"},
+                "file": {
+                    "url": "https://ww-aibot-img.example.com/legacy.doc?sign=secret",
+                    "filename": "legacy.doc",
+                    "mime_type": "application/msword",
+                },
+            }
+        )
+    )
+    payload = json.loads(plain or "{}")
+
+    assert received[0].content == LEGACY_DOC_NOTICE
+    assert payload["stream"]["content"] == LEGACY_DOC_NOTICE
 
 
 def test_pending_file_waits_for_extract_before_dispatching_model() -> None:

@@ -143,6 +143,18 @@ def test_ai_bot_media_extension_falls_back_to_decrypted_magic_bytes(data: bytes,
 
 
 @pytest.mark.parametrize(
+    ("mime_type", "expected"),
+    [
+        ("application/msword", ".doc"),
+        ("application/vnd.ms-excel", ".xls"),
+        ("application/vnd.ms-powerpoint", ".ppt"),
+    ],
+)
+def test_ai_bot_media_identifies_legacy_office_content_types(mime_type: str, expected: str) -> None:
+    assert infer_media_extension(mime_type, b"legacy office") == expected
+
+
+@pytest.mark.parametrize(
     ("member_name", "expected"),
     [("word/document.xml", ".docx"), ("ppt/presentation.xml", ".pptx"), ("xl/workbook.xml", ".xlsx")],
 )

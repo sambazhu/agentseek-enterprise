@@ -10,11 +10,21 @@ from agentseek_files.models import ExtractResult, FileDirection, FileRecord, Fil
 from agentseek_files.settings import FilesSettings
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_MIME_TYPE_EXTENSIONS = {"application/pdf": ".pdf"}
+_MIME_TYPE_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
+}
+_LEGACY_OFFICE_UPGRADES = {".doc": ".docx", ".xls": ".xlsx", ".ppt": ".pptx"}
 
 
 class FileStoreError(ValueError):
     """Raised when a file cannot be accepted into the scoped store."""
+
+    def __init__(self, message: str, *, user_notice: str | None = None) -> None:
+        super().__init__(message)
+        self.user_notice = user_notice
 
 
 class LocalFileStore:
@@ -51,6 +61,12 @@ class LocalFileStore:
                 if not str(filename or "").lower().endswith(extension):
                     filename = f"{filename or Path(safe_name).stem}{extension}"
                 safe_name = f"{safe_name}{extension}"
+        if extension in _LEGACY_OFFICE_UPGRADES:
+            replacement = _LEGACY_OFFICE_UPGRADES[extension]
+            raise FileStoreError(
+                f"Legacy Office extension is not supported: {extension}",
+                user_notice=f"暂不支持旧版 Office 格式 {extension}，请转换为 {replacement} 后重新上传。",
+            )
         if extension not in self.settings.allowed_extensions:
             raise FileStoreError(f"File extension is not allowed: {extension or '<none>'}")
 

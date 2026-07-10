@@ -341,7 +341,11 @@ class WeComChannel(Channel):
                 media_kind=media_items[0].get("kind"),
                 error_type=type(exc).__name__,
             )
-            content = content or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
+            user_notice = _file_error_user_notice(exc)
+            if user_notice:
+                content = "\n".join(part for part in (content, user_notice) if part).strip()
+            else:
+                content = content or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
         else:
             files_context = result.to_context()
             content_parts = [content] if content else []
@@ -846,6 +850,14 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _file_error_user_notice(exc: Exception) -> str | None:
+    notice = getattr(exc, "user_notice", None)
+    if not isinstance(notice, str):
+        return None
+    notice = notice.strip()
+    return notice if notice and len(notice) <= 200 else None
 
 
 def _extract_msgid(data: dict[str, Any]) -> str | None:
