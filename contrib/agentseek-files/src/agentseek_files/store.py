@@ -48,7 +48,8 @@ class LocalFileStore:
         if not extension:
             extension = _MIME_TYPE_EXTENSIONS.get(mime_type.partition(";")[0].strip().lower(), "")
             if extension:
-                filename = f"{filename or Path(safe_name).stem}{extension}"
+                if not str(filename or "").lower().endswith(extension):
+                    filename = f"{filename or Path(safe_name).stem}{extension}"
                 safe_name = f"{safe_name}{extension}"
         if extension not in self.settings.allowed_extensions:
             raise FileStoreError(f"File extension is not allowed: {extension or '<none>'}")
@@ -116,8 +117,18 @@ class LocalFileStore:
         record.extract_provider = result.provider
         record.extract_task_id = result.provider_task_id
         record.extract_chars = result.chars
+        if result.metadata:
+            record.metadata["extract"] = dict(result.metadata)
         self.save_record(record)
         return record
+
+    def load_extract_text(self, record: FileRecord) -> str:
+        target_dir = self._resolve_record_dir(record)
+        for name in ("extracted.md", "extracted.txt"):
+            path = target_dir / name
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        return ""
 
     def _resolve_record_dir(self, record: FileRecord) -> Path:
         return self._resolve_under_root(Path(record.relative_dir))

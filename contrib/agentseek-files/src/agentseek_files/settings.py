@@ -42,8 +42,8 @@ class FilesSettings:
     mineru_language: str = "ch"
     mineru_enable_table: bool = True
     mineru_enable_formula: bool = True
-    mineru_is_ocr: bool = False
-    mineru_poll_timeout_s: float = 15.0
+    mineru_is_ocr: bool = True
+    mineru_poll_timeout_s: float = 300.0
     mineru_poll_interval_s: float = 2.0
 
     @classmethod
@@ -63,8 +63,8 @@ class FilesSettings:
             mineru_language=os.getenv("AGENTSEEK_MINERU_LANGUAGE", "ch"),
             mineru_enable_table=_env_bool("AGENTSEEK_MINERU_ENABLE_TABLE", True),
             mineru_enable_formula=_env_bool("AGENTSEEK_MINERU_ENABLE_FORMULA", True),
-            mineru_is_ocr=_env_bool("AGENTSEEK_MINERU_IS_OCR", False),
-            mineru_poll_timeout_s=_env_float("AGENTSEEK_MINERU_POLL_TIMEOUT_S", 15.0),
+            mineru_is_ocr=_env_bool("AGENTSEEK_MINERU_IS_OCR", True),
+            mineru_poll_timeout_s=_env_float("AGENTSEEK_MINERU_POLL_TIMEOUT_S", 300.0),
             mineru_poll_interval_s=_env_float("AGENTSEEK_MINERU_POLL_INTERVAL_S", 2.0),
         )
 

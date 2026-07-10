@@ -42,8 +42,8 @@ Fill `.env` with:
 - MinerU settings when `AGENTSEEK_FILES_EXTRACTOR=mineru`. Text-like files
   (`.txt`, `.md`, `.csv`, `.json`) are extracted locally. PDF, Office, and image
   files are submitted to MinerU when configured. If extraction is still pending,
-  the WeCom stream says the file is being parsed and the runtime records the
-  pending task for follow-up processing;
+  the WeCom stream says the file is being parsed; the runtime polls for up to
+  300 seconds and refreshes completed file context on the employee's next turn;
 - MCP servers in `.agents/mcp.json`;
 - MCP policy and audit settings for allowlists, write-tool confirmation, and
   JSONL audit logs.
@@ -195,13 +195,17 @@ For PDF, Office, or image files, set:
 AGENTSEEK_FILES_ENABLED=true
 AGENTSEEK_FILES_EXTRACTOR=mineru
 AGENTSEEK_MINERU_BASE_URL=https://mineru.net
-AGENTSEEK_MINERU_TOKEN=<your-token-if-using-token-api>
+AGENTSEEK_MINERU_TOKEN=<your-token-for-the-v4-extract-api>
+AGENTSEEK_MINERU_IS_OCR=true
+AGENTSEEK_MINERU_POLL_TIMEOUT_S=300
 ```
 
 Expected: the file is accepted and submitted to MinerU when the extension is in
-`AGENTSEEK_FILES_ALLOWED_EXTENSIONS`. If MinerU has not finished within the
-short polling window, the first WeCom reply says the file is parsing instead of
-blocking the whole turn.
+`AGENTSEEK_FILES_ALLOWED_EXTENSIONS`. With a token, local files use MinerU's v4
+upload API and scanned PDFs enable OCR. Without a token, the lightweight Agent
+API remains available as a compatibility fallback. Pending file records are
+refreshed from disk or MinerU on the employee's next turn, so completed text
+replaces the earlier pending snapshot.
 
 ### MCP Policy And Audit
 

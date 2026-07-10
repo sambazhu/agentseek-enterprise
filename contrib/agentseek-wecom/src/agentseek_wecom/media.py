@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -47,6 +48,7 @@ _EXTENSION_CONTENT_TYPES = {
 _EXTENSION_CONTENT_TYPES[".jpg"] = "image/jpeg"
 _EXTENSION_CONTENT_TYPES[".mp3"] = "audio/mpeg"
 _EXTENSION_CONTENT_TYPES[".wav"] = "audio/wav"
+_HEX_FILENAME_RE = re.compile(r"(?:[0-9A-Fa-f]{2}_){2,}[0-9A-Fa-f]{2}")
 
 
 @dataclass
@@ -240,6 +242,8 @@ def _resolve_ai_bot_media_metadata(
             extension = fallback_extension
 
     preferred_filename = _filename_from_headers(headers) or str(fallback_filename or "").strip()
+    if _looks_like_hex_filename(preferred_filename):
+        preferred_filename = ""
     preferred_extension = Path(preferred_filename).suffix.lower()
     if extension == ".bin" and preferred_extension in _EXTENSION_CONTENT_TYPES:
         extension = preferred_extension
@@ -309,6 +313,10 @@ def _filename_with_extension(filename: str, extension: str, mime_type: str) -> s
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
     prefix = _friendly_media_prefix(extension, mime_type)
     return f"{prefix}_{timestamp}{extension}"
+
+
+def _looks_like_hex_filename(filename: str) -> bool:
+    return bool(_HEX_FILENAME_RE.fullmatch(Path(filename).stem))
 
 
 def _friendly_media_prefix(extension: str, mime_type: str) -> str:

@@ -80,7 +80,7 @@ class InboundFileService:
                 error_message="Pending file record has no extractor task id.",
             )
         else:
-            result = await self._mineru_extractor.poll_agent_result(record, record.extract_task_id)
+            result = await self._mineru_extractor.poll_result(record, record.extract_task_id)
         record = self.store.save_extract(record, result)
         text = result.markdown or result.text
         context_block = build_current_files_context(
@@ -119,7 +119,7 @@ def _notice(record: FileRecord, result: ExtractResult) -> str:
     if result.status == "done":
         return f"已收到并解析文件：{filename}。"
     if result.status in {"pending", "running"}:
-        return f"已收到文件：{filename}。文件正在解析，完成后我会继续处理。"
+        return f"已收到文件：{filename}。文件正在解析，请稍后再问我文件内容。"
     if result.status == "failed":
         return f"已收到文件：{filename}，但解析失败：{result.error_message or result.error_code or 'unknown'}。"
     return f"已收到文件：{filename}，但当前类型暂不支持自动解析。"

@@ -59,6 +59,19 @@ def test_store_adds_pdf_extension_from_mime_type_when_filename_has_none(tmp_path
     assert record.sanitized_filename == "document_20260710_120000.pdf"
 
 
+def test_store_does_not_duplicate_existing_pdf_extension(tmp_path):
+    store = LocalFileStore(FilesSettings(root_dir=tmp_path, allowed_extensions=(".pdf",)))
+    record = store.store_bytes(
+        scope=FileScope("hmac-tenant", "hmac-employee", "hmac-session"),
+        filename="report.pdf",
+        data=b"%PDF-1.7\nmock",
+        mime_type="application/pdf",
+    )
+
+    assert record.filename == "report.pdf"
+    assert record.sanitized_filename == "report.pdf"
+
+
 def test_store_rejects_oversize_file(tmp_path):
     store = LocalFileStore(FilesSettings(root_dir=tmp_path, max_bytes=3, allowed_extensions=(".txt",)))
     scope = FileScope("hmac-t", "hmac-e", "hmac-s")

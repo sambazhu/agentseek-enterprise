@@ -86,6 +86,27 @@ def test_ai_bot_download_uses_response_content_type_and_accepts_missing_filename
     assert record.sanitized_filename == download.filename
 
 
+def test_ai_bot_download_replaces_hex_encoded_header_filename(monkeypatch) -> None:
+    key = decode_encoding_aes_key(AES_KEY)
+    response = _FakeResponse(
+        _encrypt_for_test("测试内容".encode(), key),
+        content_type="text/plain",
+        content_disposition='attachment; filename="E6_B5_8B_E8_AF_95.txt"',
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+    download = WeComMediaClient("", "").download_media(
+        "https://ww-aibot-img.example.com/opaque?sign=secret",
+        aes_key=key,
+        fallback_filename="",
+        fallback_mime_type="application/octet-stream",
+    )
+
+    assert download.filename.startswith("document_")
+    assert download.filename.endswith(".txt")
+    assert "E6_B5" not in download.filename
+
+
 @pytest.mark.parametrize(
     ("data", "expected"),
     [
@@ -153,10 +174,12 @@ def _encrypt_for_test(value: bytes, key: bytes) -> bytes:
 
 
 class _FakeResponse:
-    def __init__(self, data: bytes, *, content_type: str) -> None:
+    def __init__(self, data: bytes, *, content_type: str, content_disposition: str = "") -> None:
         self._data = data
         self.headers = Message()
         self.headers["Content-Type"] = content_type
+        if content_disposition:
+            self.headers["Content-Disposition"] = content_disposition
 
     def __enter__(self) -> _FakeResponse:
         return self

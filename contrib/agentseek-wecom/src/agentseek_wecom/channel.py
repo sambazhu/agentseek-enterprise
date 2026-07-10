@@ -732,7 +732,7 @@ class WeComChannel(Channel):
         if file_service is None:
             return
         settings = getattr(file_service, "settings", None)
-        timeout_s = float(getattr(settings, "mineru_poll_timeout_s", 15.0) or 15.0)
+        timeout_s = float(getattr(settings, "mineru_poll_timeout_s", 300.0) or 300.0)
         interval_s = max(0.5, float(getattr(settings, "mineru_poll_interval_s", 2.0) or 2.0))
         deadline = time.monotonic() + max(timeout_s, interval_s)
         current_record = record
