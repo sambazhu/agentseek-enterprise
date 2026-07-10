@@ -3152,3 +3152,87 @@ latest 7/9 17:32 (txt file test). Quiet overnight (no new user messages).**
    log shows `msgtype=file`. Confirm whether the AI Bot sends single-chat
    images as `msgtype=file` or `msgtype=image`, and ensure the code handles
    both correctly (the AI Bot docs say `msgtype=image` with `image.url`).
+
+### v0.0.9 AI Bot file fix round 2 (e965532, 2026-07-10) — txt+image+voice PASS, PDF 1 bug left
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `e965532` (Codex fixed:
+extension detection via Content-Type/magic bytes; MinerU AsyncClient bytes
+upload; friendly filenames `document_/image_` + timestamp; `msgtype=image`
+routing). Static: uv sync OK; wecom 31 passed, files 8 passed, enterprise 70
+passed; ruff + ty All checks passed; MCP zero-diff intact. Gateway restarted
+(pid 69253, :12000).
+
+**F txt regression — PASS ✅.** Same file as round 1: downloaded, AES-decrypted,
+text extracted, bot replied with structured content overview. No regression.
+
+**H image (JPG, ~5MB) — PIPELINE PASS ✅.** Full chain works:
+- AI Bot callback `msgtype=file` (not image — AI Bot sends single-chat images
+  as `msgtype=file` with `file.url`; confirmed by the log).
+- Download from signed URL → AES-256-CBC decrypt → `original` (5.2MB plaintext)
+  landed at `runtime/files/hmac-…/inbound/file_b67ca1ec…/original`.
+- Extension correctly detected: filename from Content-Disposition header
+  (`微信图片_20200323132047.jpg`), `mime_type: image/jpeg`.
+- **sync/async fix confirmed**: no `AsyncClient sync` error. MinerU called
+  successfully → `status=done`, `wecom_file_extract_finished` event fired.
+- Extraction result: `extracted.md` = `<!-- image-->` (13 chars). This is
+  **expected MinerU behavior** — MinerU is a document parser, not an image
+  captioner; for a non-document photo it returns a placeholder. Not a bug.
+- Bot replied: "已收到文件 微信图片_20200323132047.jpg（约5MB，JPEG图片）。"
+  When asked about content: "解析结果实际上没有成功传到我这里" — correct (no
+  text to read from a photo).
+- `metadata.json`: `filename=微信图片…jpg`, `mime_type=image/jpeg`,
+  `extract_status=done`, `size_bytes=5229093`. All correct.
+
+**I voice — PASS ✅.** `msgtype=voice`, bot replied normally. No file download.
+(Already verified in round 1; unchanged.)
+
+**G PDF — STILL BLOCKED ❌.** Same error: `File extension is not allowed:
+<none>`.
+
+**Root cause (precisely identified this round):** The extension check is in
+`contrib/agentseek-files/src/agentseek_files/store.py:46-48`:
+```python
+extension = Path(safe_name).suffix.lower()
+if extension not in self.settings.allowed_extensions:
+    raise FileStoreError(f"File extension is not allowed: {extension or '<none>'}")
+```
+`safe_name` comes from `MediaDownload.filename`. For the image, the AI Bot
+download URL response included `Content-Disposition: filename=微信图片…jpg` →
+`_filename_from_headers` extracted a filename WITH `.jpg` → `Path(...).suffix`
+= `.jpg` → passed. For the PDF, the download URL response does NOT include
+Content-Disposition (or has no filename) → `filename` has no extension →
+suffix = `""` → `<none>` → rejected.
+
+**The fix**: `media.py _resolve_ai_bot_media_metadata` already detects
+`mime_type` correctly (e.g. `application/pdf`). But `store.py` extracts the
+extension from the FILENAME, not from `mime_type`. Two fix options:
+1. **In `store.py`**: when `Path(safe_name).suffix` is empty, fall back to
+   `mime_type` → extension (using `_CONTENT_TYPE_EXTENSIONS` mapping from
+   `media.py`, or a local mapping).
+2. **In `media.py _resolve_ai_bot_media_metadata`**: ensure the returned
+   `filename` ALWAYS includes the detected extension (append `.pdf` if
+   Content-Type is `application/pdf` and filename has no suffix).
+Either fix unblocks PDF. Option 2 is cleaner (filename always correct
+downstream).
+
+**Cosmetic: filename hex encoding (still present for txt).** The image
+filename came from Content-Disposition (human-readable Chinese). But the txt
+filename is still hex (`E6_B5_8B_E8_AF_95.txt`) because the AI Bot txt
+callback also has no Content-Disposition filename, and the fallback name
+generator uses hex. Non-blocking.
+
+**Summary of fixes verified + remaining:**
+
+| Item | Status |
+|------|--------|
+| sync/async (AsyncClient) | ✅ FIXED (image extraction completes) |
+| msgtype=image routing | ✅ OK (AI Bot sends as msgtype=file; code handles both) |
+| Extension from Content-Disposition | ✅ WORKS (image) |
+| Friendly filename (image) | ✅ WORKS (from Content-Disposition) |
+| Extension from Content-Type/magic bytes | ❌ NOT REACHING store.py (store uses filename suffix only) |
+| PDF (no Content-Disposition) | ❌ BLOCKED — store.py needs mime_type fallback |
+| txt hex filename | ⚠️ Cosmetic (non-blocking) |
+
+**One Codex fix unblocks PDF**: `store.py:46` — when filename suffix is empty,
+derive extension from `mime_type` (or `media.py` should always append detected
+extension to filename). ~5 lines of code.
