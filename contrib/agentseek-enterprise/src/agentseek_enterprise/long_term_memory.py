@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -53,8 +53,21 @@ _SLOT_LABELS = {
     "travel_plan": "出差计划",
     "manager": "汇报对象",
     "responsibility": "工作职责",
+    "responsibility.data_arch": "数据架构职责",
+    "responsibility.ai_arch": "AI 架构职责",
     "meeting_plan": "会议安排",
 }
+_MULTI_VALUE_SLOTS = frozenset({"responsibility"})
+_FORGET_INTENT_RE = re.compile(
+    r"(?:忘记|忘掉|删除|删掉|移除|清除|清理|不再记住|取消记忆)|"
+    r"\b(?:forget|delete|remove|clear)\b",
+    re.IGNORECASE,
+)
+_NEGATED_FORGET_INTENT_RE = re.compile(
+    r"(?:不要|别|无需|不必|不能|不可)(?:再)?(?:忘记|忘掉|删除|删掉|移除|清除|清理)|"
+    r"\b(?:do\s+not|don't|never)\s+(?:forget|delete|remove|clear)\b",
+    re.IGNORECASE,
+)
 _PROFILE_LOCKS: dict[tuple[str, ...], threading.RLock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
@@ -98,14 +111,23 @@ def employee_memory_tools() -> list[BaseTool]:
         - "我的回复偏好是简洁分点" -> slot="reply_style", category="preference"
         - "明天去深圳出差" -> slot="travel_plan", category="work_context"
         - "我的汇报对象是 CTO" -> slot="manager", category="work_context"
-        - "负责数据架构工作" -> slot="responsibility", category="work_context"
+        Responsibilities are multi-valued. Use a scoped slot instead of the
+        bare "responsibility" whenever possible, so distinct duties coexist:
+        - "负责数据架构工作" -> slot="responsibility.data_arch", category="work_context"
+        - "负责 AI 架构工作" -> slot="responsibility.ai_arch", category="work_context"
         - "明天参加数据治理评审会" -> slot="meeting_plan", category="work_context"
         """
         return _remember_employee_memory(memory, category, runtime, slot=slot)
 
     @tool("forget_employee_memory")
     def forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
-        """Remove one exact durable memory after the employee explicitly asks to forget it."""
+        """Remove one exact durable memory only when the latest employee message explicitly asks to forget it.
+
+        Never call this tool for deduplication, reconciliation, slot cleanup,
+        or because two memories appear related. The server rejects calls that
+        are not authorized by explicit forget/delete wording in the latest
+        employee message.
+        """
         return _forget_employee_memory(memory, runtime)
 
     return [recall_employee_memory, remember_employee_memory, forget_employee_memory]
@@ -184,18 +206,24 @@ def _remember_employee_memory(
             return "That durable employee memory is already recorded."
 
         if normalized_slot is not None:
-            if match := _find_slot_line(content, category, normalized_slot):
-                if _similar(match.text, normalized):
-                    result = _replace_durable_memory(store, namespace, content, match.line_index, line)
-                    _emit_memory_event(
-                        "durable_memory_write",
-                        namespace,
-                        status=_memory_result_status(result, default="updated_near_duplicate"),
-                        category=category,
-                        slot=normalized_slot,
-                        duration_ms=elapsed_ms(started_at),
-                    )
-                    return result
+            slot_matches = _find_slot_lines(content, category, normalized_slot)
+            match = next(
+                (entry for entry in reversed(slot_matches) if _similar(entry.text, normalized)),
+                None,
+            )
+            if match is not None:
+                result = _replace_durable_memory(store, namespace, content, match.line_index, line)
+                _emit_memory_event(
+                    "durable_memory_write",
+                    namespace,
+                    status=_memory_result_status(result, default="updated_near_duplicate"),
+                    category=category,
+                    slot=normalized_slot,
+                    duration_ms=elapsed_ms(started_at),
+                )
+                return result
+            if slot_matches and not _is_multi_value_slot(normalized_slot):
+                match = slot_matches[-1]
                 result = _replace_conflicting_slot_memory(store, namespace, content, match, line, normalized)
                 _emit_memory_event(
                     "durable_memory_write",
@@ -278,9 +306,17 @@ def _replace_conflicting_slot_memory(
 
 def _forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
     normalized = _normalize_memory(memory)
-    store = _store(runtime)
     namespace = enterprise_filesystem_namespace(runtime)
     started_at = event_timer()
+    if not _latest_user_requested_forget(runtime):
+        _emit_memory_event(
+            "durable_memory_forget",
+            namespace,
+            status="refused_no_explicit_request",
+            duration_ms=elapsed_ms(started_at),
+        )
+        return "Refused: forgetting durable memory requires an explicit request in the employee's latest message."
+    store = _store(runtime)
     with _profile_lock(namespace):
         existing = store.get(namespace, _PROFILE_PATH)
         if existing is None:
@@ -293,7 +329,7 @@ def _forget_employee_memory(memory: str, runtime: ToolRuntime) -> str:
             return "No durable employee memory is currently stored."
 
         content = str(existing.value.get("content", ""))
-        retained_lines = [line for line in content.splitlines() if normalized not in line]
+        retained_lines = [line for line in content.splitlines() if not _memory_line_has_exact_text(line, normalized)]
         if len(retained_lines) == len(content.splitlines()):
             _emit_memory_event(
                 "durable_memory_forget",
@@ -371,11 +407,13 @@ def _find_near_duplicate_line(content: str, category: str, memory: str) -> _Memo
     return None
 
 
-def _find_slot_line(content: str, category: str, slot: str) -> _MemoryEntry | None:
-    for entry in reversed(_parse_profile(content)):
-        if entry.category == category and entry.slot == slot:
-            return entry
-    return None
+def _find_slot_lines(content: str, category: str, slot: str) -> list[_MemoryEntry]:
+    return [entry for entry in _parse_profile(content) if entry.category == category and entry.slot == slot]
+
+
+def _memory_line_has_exact_text(line: str, memory: str) -> bool:
+    match = _MEMORY_LINE_RE.match(line)
+    return match is not None and match.group(2).strip() == memory
 
 
 def _deduped_profile_view(content: str) -> str:
@@ -440,7 +478,52 @@ def _same_memory_bucket(first: _MemoryEntry, second: _MemoryEntry) -> bool:
 def _slot_label(slot: str | None) -> str:
     if not slot:
         return "该记忆"
+    if slot.startswith("responsibility."):
+        return _SLOT_LABELS.get(slot, "工作职责")
     return _SLOT_LABELS.get(slot, slot)
+
+
+def _is_multi_value_slot(slot: str) -> bool:
+    return slot in _MULTI_VALUE_SLOTS
+
+
+def _latest_user_requested_forget(runtime: ToolRuntime) -> bool:
+    state = runtime.state
+    if not isinstance(state, Mapping):
+        return False
+    messages = state.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return False
+    for message in reversed(messages):
+        role = ""
+        content: object = ""
+        if isinstance(message, Mapping):
+            role = str(message.get("role") or message.get("type") or "").lower()
+            content = message.get("content", "")
+        else:
+            role = str(getattr(message, "type", "") or getattr(message, "role", "")).lower()
+            content = getattr(message, "content", "")
+        if role not in {"human", "user"}:
+            continue
+        text = _message_content_text(content)
+        return bool(_FORGET_INTENT_RE.search(text)) and not _NEGATED_FORGET_INTENT_RE.search(text)
+    return False
+
+
+def _message_content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, Mapping):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return " ".join(parts)
+    return str(content or "")
 
 
 def _replace_profile_line(content: str, line_index: int, replacement: str) -> str:

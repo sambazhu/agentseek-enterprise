@@ -14,7 +14,10 @@ from agentseek_enterprise.runtime import (
     enterprise_filesystem_namespace,
     enterprise_runtime_context,
 )
+from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import ToolRuntime
+
+TestToolRuntime = ToolRuntime[Mapping[str, object], dict[str, Any]]
 
 DIRTY_ZHUCHUNLIN_PROFILE = """# Employee Memory
 - [work_context] 朱春霖明天（2026-07-01）下午去北京出差
@@ -164,6 +167,58 @@ def test_different_slots_keep_separate_memories(monkeypatch: pytest.MonkeyPatch,
     assert _memory_lines(_profile_content(store, runtime), "work_context") == [
         "- [work_context|slot=travel_plan] 明天去深圳出差",
         "- [work_context|slot=meeting_plan] 明天参加数据治理评审会",
+    ]
+
+
+def test_bare_responsibility_slot_keeps_distinct_duties(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    first = tools["remember_employee_memory"].func(
+        memory="负责数据架构工作",
+        category="work_context",
+        slot="responsibility",
+        runtime=runtime,
+    )
+    second = tools["remember_employee_memory"].func(
+        memory="负责 AI 架构工作",
+        category="work_context",
+        slot="responsibility",
+        runtime=runtime,
+    )
+
+    profile = _profile_content(store, runtime)
+    assert "recorded" in first
+    assert "recorded" in second
+    assert _memory_lines(profile, "work_context") == [
+        "- [work_context|slot=responsibility] 负责数据架构工作",
+        "- [work_context|slot=responsibility] 负责 AI 架构工作",
+    ]
+
+
+def test_scoped_responsibility_slots_keep_distinct_duties(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_SLOT_SUPERSESSION_ENABLED", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+
+    tools["remember_employee_memory"].func(
+        memory="负责数据架构工作",
+        category="work_context",
+        slot="responsibility.data_arch",
+        runtime=runtime,
+    )
+    tools["remember_employee_memory"].func(
+        memory="负责 AI 架构工作",
+        category="work_context",
+        slot="responsibility.ai_arch",
+        runtime=runtime,
+    )
+
+    assert _memory_lines(_profile_content(store, runtime), "work_context") == [
+        "- [work_context|slot=responsibility.data_arch] 负责数据架构工作",
+        "- [work_context|slot=responsibility.ai_arch] 负责 AI 架构工作",
     ]
 
 
@@ -363,6 +418,7 @@ def test_forget_employee_memory_still_removes_matching_line(
         category="work_context",
         runtime=runtime,
     )
+    _set_latest_user_message(runtime, "请忘记偏好简洁、分点的回复方式")
 
     result = tools["forget_employee_memory"].func(memory="偏好简洁、分点的回复方式", runtime=runtime)
 
@@ -370,6 +426,58 @@ def test_forget_employee_memory_still_removes_matching_line(
     assert "removed" in result
     assert "偏好简洁、分点的回复方式" not in profile
     assert "负责数据架构工作" in profile
+
+
+def test_forget_refuses_without_explicit_latest_user_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("AGENTSEEK_ENTERPRISE_MEMORY_DEDUP_THRESHOLD", raising=False)
+    store, runtime, tools = _memory_harness(tmp_path)
+    for memory in ("负责数据架构工作", "负责 AI 架构工作"):
+        tools["remember_employee_memory"].func(
+            memory=memory,
+            category="work_context",
+            slot="responsibility",
+            runtime=runtime,
+        )
+    _set_latest_user_message(runtime, "我有几条工作职责？")
+
+    result = tools["forget_employee_memory"].func(memory="负责数据架构工作", runtime=runtime)
+
+    profile = _profile_content(store, runtime)
+    assert result.startswith("Refused:")
+    assert "负责数据架构工作" in profile
+    assert "负责 AI 架构工作" in profile
+
+
+def test_forget_refuses_negated_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    store, runtime, tools = _memory_harness(tmp_path)
+    tools["remember_employee_memory"].func(
+        memory="负责数据架构工作",
+        category="work_context",
+        runtime=runtime,
+    )
+    _set_latest_user_message(runtime, "不要忘记我负责数据架构工作")
+
+    result = tools["forget_employee_memory"].func(memory="负责数据架构工作", runtime=runtime)
+
+    assert result.startswith("Refused:")
+    assert "负责数据架构工作" in _profile_content(store, runtime)
+
+
+def test_forget_requires_exact_memory_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    store, runtime, tools = _memory_harness(tmp_path)
+    tools["remember_employee_memory"].func(
+        memory="负责数据架构工作",
+        category="work_context",
+        runtime=runtime,
+    )
+    _set_latest_user_message(runtime, "请删除数据架构这条长期记忆")
+
+    result = tools["forget_employee_memory"].func(memory="数据架构", runtime=runtime)
+
+    assert result == "No matching durable employee memory was found."
+    assert "负责数据架构工作" in _profile_content(store, runtime)
 
 
 def test_concurrent_forget_calls_serialize_profile_writes(
@@ -385,6 +493,7 @@ def test_concurrent_forget_calls_serialize_profile_writes(
         "- [work_context] 清理旧的北京出差记录\n"
         "- [work_context] 清理旧的深圳出差记录\n",
     )
+    _set_latest_user_message(runtime, "请删除旧的北京和深圳出差记录")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
@@ -439,7 +548,9 @@ def test_concurrent_remember_calls_serialize_profile_writes(
     assert "- [work_context|slot=meeting_plan] 明天参加数据治理评审会" in profile
 
 
-def _memory_harness(tmp_path: Any) -> tuple[SQLiteStore, ToolRuntime, dict[str, Any]]:
+def _memory_harness(
+    tmp_path: Any,
+) -> tuple[SQLiteStore, TestToolRuntime, dict[str, Any]]:
     store = SQLiteStore(tmp_path / "enterprise-store.sqlite3")
     context = _runtime_context()
     runtime = ToolRuntime(
@@ -461,19 +572,23 @@ def _runtime_context() -> Mapping[str, object]:
     return context
 
 
-def _profile_content(store: SQLiteStore, runtime: ToolRuntime) -> str:
+def _profile_content(store: SQLiteStore, runtime: TestToolRuntime) -> str:
     item = store.get(enterprise_filesystem_namespace(runtime), _PROFILE_PATH)
     assert item is not None
     return str(item.value["content"])
 
 
-def _put_profile(store: SQLiteStore, runtime: ToolRuntime, content: str) -> None:
+def _put_profile(store: SQLiteStore, runtime: TestToolRuntime, content: str) -> None:
     store.put(
         enterprise_filesystem_namespace(runtime),
         _PROFILE_PATH,
         {"content": content, "encoding": "utf-8", "modified_at": "2026-07-02T00:00:00+00:00"},
         index=False,
     )
+
+
+def _set_latest_user_message(runtime: TestToolRuntime, content: str) -> None:
+    runtime.state["messages"] = [HumanMessage(content=content)]
 
 
 def _memory_line_count(content: str, category: str) -> int:

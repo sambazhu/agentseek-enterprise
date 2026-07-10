@@ -152,6 +152,10 @@ tools. Production deployments can set
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` to PostgreSQL/MySQL; local
 development falls back to `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`. This is
 explicit employee memory, not ContextSeek semantic recall.
+Distinct work duties coexist under scoped responsibility slots (for example,
+`responsibility.data_arch` and `responsibility.ai_arch`). The runtime never
+uses the forget tool for deduplication: deletion requires explicit wording in
+the employee's latest message and an exact stored-memory match.
 
 ### D. Semantic Long-Term Memory (ContextSeek + pgvector)
 
