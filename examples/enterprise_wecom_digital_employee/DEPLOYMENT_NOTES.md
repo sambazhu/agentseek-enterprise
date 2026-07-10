@@ -4044,3 +4044,104 @@ session records → 按要求**重启后重新上传**了 xlsx (不要用重启�
 ### 9. 本次提交
 
 - `DEPLOYMENT_NOTES.md`: 本节 5fc85c0 复测报告(全 PASS, 活体+离线双验证)。
+
+---
+
+## 专项验证 v0.0.9 xlsx 多页签 + 内嵌图片 (5fc85c0, 2026-07-10 23:30)
+
+代码 `5fc85c0`, 网关 PID 48222 全程在跑(未重启)。目的: 验证多 Sheet 解析、页签名称保留、
+`analyze_file` 多表行为、内嵌图片的 Scheme C 后台 OCR。
+
+### 1. 测试文件 + 人工 oracle
+
+用 openpyxl 生成受控文件 `多页签测试.xlsx`(16KB; 未提交, 仅放 `/tmp`), 用户活体上传。
+- **页签A「页签A普通」**: 序号/姓名/班级/退费金额, **8 行**, 班级 一一班:3 / 一二班:3 / 一三班:2
+- **页签B「页签B含图」**: 同样 4 列, **6 行**, 班级 二一班:3 / 二二班:3; A10 内嵌 1 张 PNG(表格:
+  月份/销售额(万元)/环比, 4 行 120/135/150/142)
+- **全文 oracle**: 14 行 / 5 个班 / 14 个唯一姓名 / 退费金额合计 2250 元
+
+### 2. file_id + 关键字段
+
+`file_id = file_924599af10141be6`(sha256 去重; size_bytes=16041 与生成文件一致)。
+
+- `metadata.json`: `extract_status=done`, `extract_chars=1868`, `extract_provider=mineru`,
+  **`mixed_pdf_bg_ocr=True`**, **`bg_ocr_status=done`**, `bg_ocr_task_id=a04e8e3f-78b5-…`
+- `extract.json`: `status=done`, `chars=1868`, `provider=mineru`, `error_code=None`。
+  MinerU 两遍: 首遍 `is_ocr=false, vlm`(23:23:57) → 发现图片引用 → Scheme C 后台
+  `is_ocr=true, pipeline`(23:24:04) → `bg_ocr done`(23:24:12, ~8s)。
+- 时间线: 23:23:57 收文件 → 23:24:04 首遍完成 → 23:24:12 后台 OCR 完成。
+
+### 3. extracted.md 结构
+
+- **`<table>` 数 = 2** ✅(每页签一张); 两表数据完整(8+6 行)。
+- **页签名称保留** ✅: MinerU 以 Markdown H1 输出 `# 页签A普通` / `# 页签B含图`。
+- **图片引用 1 处**: `![](images/5f754c44…85ea.jpg)`(页签B 表后)。
+- **❌ 图片后无任何 OCR 文本/表格**: extract.json 的 markdown(1868 字)与 extracted.md 均以
+  裸图片引用结尾, `bg_ocr_status=done` 但 OCR 结果**未并入**最终 extracted.md(对比 docx 案
+  8ee8940 的 701→9864 合并成功, 本次 xlsx 未合并)。
+
+### 4. Q1–Q6 活体回复(全 PASS, bot 从 excerpt 直读, 未调 analyze_file)
+
+| Q | bot 回复要点 | oracle | |
+|---|---|---|---|
+| Q1 几个页签/名称 | 2 个: 页签A「普通」、页签B「含图」 | 2 / 页签A普通 / 页签B含图 | ✅ |
+| Q2 分别概括(不混) | 页签A 8 条(一一班3/一二班3/一三班2, 1296元); 页签B 6 条(二一班3/二二班3, 954元)+1 图 unparsed | 各表独立、数据准确 | ✅ |
+| Q3 图片内容 | "OCR 状态 unparsed, 无可用内容, 无法读取, 不猜测" | (反映 OCR 未并入缺陷) | ✅ |
+| Q4 各表条数 | 页签A 8 / 页签B 6 / 合计 14 | 8/6/14 | ✅ |
+| Q5 总量+贡献 | 合计 14(A=8, B=6); 唯一姓名 14 无重复; 比例 57:43 | 14 / 8+6 / 14 | ✅ |
+| Q6 按页签分类+合计 | 页签A(一一班3/一二班3/一三班2=8人1296元)+页签B(二一班3/二二班3=6人954元); 合计 5班/14条/2250元 | 5班/14条/2250元, 两表都覆盖 | ✅ |
+
+### 5. 多页签解析结论 — PASS ✅
+
+- 两页签都进 extracted.md; MinerU 以 H1 保留页签名; CurrentFiles 摘要 `表格块数=2`。
+- bot 正确识别 2 个 Sheet、名称、各表行数与班级, 不混淆。
+- **总数据行数 = 两页签之和**(data_rows 跨表聚合, 正确)。
+
+### 6. analyze_file 行为 — 本次活体未触发(符合预期)
+
+文件仅 1868 字 < `_LARGE_FILE_THRESHOLD=50000`, 故 `build_current_files_context` **不**加
+`extract_truncated`/`analyze_file hint`。日志无 tool-call, Q5 的"唯一人员数=14"是 bot 从
+excerpt 直数(非 `unique_people()`)。→ Q6 也是 bot 读 excerpt 把两表班级都列对。
+**结论**: 小文件活体测不到 `analyze_file` 的多表行为; 该路径需 >50K 多页签文件才能活体触发。
+
+### 7. 图片处理 — 缺陷 ❌
+
+`bg_ocr_status=done` 但 OCR 文本**未并入 extracted.md**(extract.json markdown 也止于裸图片引用)。
+→ `build_current_files_context` 的 `_analyze_image_ocr` 判定图片后无实质内容 → 标 `status=unparsed`
+→ bot 回复"无法读取图片, 不猜测"(Q3)。内嵌表格图(月份/销售额)**内容丢失**。
+注意: docx 案(8ee8940)Scheme C 合并成功; xlsx 案未合并 —— 需排查 xlsx 的 bg OCR 合并路径
+(或 MinerU pipeline 对该 PNG 未返回文本)。
+
+### 8. group_counts 多页签 bug — 离线确定性复现 ❌(明确 bug)
+
+`content_analysis.py:164-182 group_counts`: `for table in analysis.tables: … return`
+在**第一个**含匹配分组列的表就 return。合成双表(均含"班级"列)复现:
+`group_counts` 只返回 `{'一一班':2,'一二班':1}`(仅表A), **漏掉表B**(二一班/二二班)。
+对照: `data_rows`/`unique_people`/`numeric_ranges`/`matching_rows` 均**跨表聚合**(正确);
+唯 `group_counts` 只取首表。本次活体未触发(见 §6), 但大文件多页签必现。
+另: `ParsedTable` 无 `sheet_name` 字段, analyze_file 无法建立"页签名→表格"映射。
+
+### 9. 安全与回归 — PASS ✅
+
+- `analyze_file` 仅读 CurrentFiles 内 file_id + extracted.md; 不读 original(outbound 0 处二进制)。
+- outbound 回复 0 处 `/Users`/`sambazhu`/`runtime/files`(日志中 6 处路径均为 pydantic 警告 traceback, 非用户可见)。
+- 自文件上传起 **0 SIGBUS / 0 Traceback / 0 HTTP 非200**; 全日志 0 SIGBUS。
+- MCP 零 diff vs `68d7b25`(`mcp_policy.py` / `tools.py` 空)。
+- 网关 PID 48222 持续运行(uptime 48min)。
+
+### 10. 给 Codex 的修复建议
+
+1. **`group_counts` 跨表聚合(明确 bug, content_analysis.py:164-182)**: 不要在首个匹配表
+   `return`; 遍历所有表, 把各表的分组计数(姓名去重情形下需合并 per-group name-set)累加进一个
+   `Counter`, 最后统一返回。保持与 `unique_people`/`data_rows` 一致的跨表语义。新增多表单测。
+2. **`ParsedTable` 增加 `sheet_name`(content_analysis.py:22)**: 可选字段; 在 `analyze_content`
+   解析时, 把每个 `<table>` 前最近的 Markdown 标题(`# 页签X`)填入, 使 analyze_file 能按页签
+   归属统计、回答"按页签分别统计"。
+3. **xlsx 内嵌图片的 bg OCR 合并(缺陷, inbound.py/mineru.py Scheme C)**: `bg_ocr_status=done`
+   但结果未并入 extracted.md。对照 docx 案(8ee8940 合并成功)排查 xlsx 路径 —— 确认 MinerU bg
+   pass 是否真的对该 PNG 返回了文本; 若返回, 修合并逻辑(把 bg OCR 文本替换/增补到裸图片引用后)。
+
+### 11. 本次提交
+
+- `DEPLOYMENT_NOTES.md`: 本节多页签+内嵌图片专项验证报告。
+- **不提交** runtime 文件、原始测试 xlsx、token/secret(测试文件仅存 `/tmp/xlsx_test/`)。
