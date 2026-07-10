@@ -3812,3 +3812,143 @@ context 只给截断摘录。bot 没法读全文做统计。
    12000 字只覆盖 3%); 文字文档保持 12K
 
 **pptx**: 待测。
+
+---
+
+## 复测 v0.0.9 大文件 CurrentFiles 摘要 + analyze_file 全文统计 (f726a84, 2026-07-10 22:20)
+
+**结论: 自动化全 PASS、A/C/D 通过; B(analyze_file 统计) 仍有缺陷 — 已定位根因, 记给 Codex。**
+
+### 1. 自动化验证 — 全 PASS ✅
+
+| 套件 | 命令 | 结果 |
+|---|---|---|
+| files | `make check-files` (typecheck+pytest) | **38 passed** ✅ |
+| WeCom | `make test-wecom` | **38 passed** ✅ |
+| enterprise | `make test-enterprise` | **79 passed** ✅ |
+| template | `HOME=/tmp PYTHONPATH=. .venv/bin/pytest -q tests/cli_commands/test_templates_render.py` | **25 passed** ✅ |
+| MCP 零 diff | `git diff 68d7b25 -- .../mcp_policy.py .../tools.py` | **空 diff** ✅ |
+
+注: `make check-files` 初次失败 — `ty 0.0.49` 在
+`test_analysis_tools.py` 报 `unresolved-attribute`(`tool_call_schema` 的 langchain
+联合类型含 `dict`, 静态分析无法解析 `model_json_schema`)。**纯测试代码假阳性**, 不影响
+运行时(38 用例全过)。已加 `# ty: ignore[unresolved-attribute]`(ty 用 `ty: ignore` 而非
+`type: ignore`, 与 `observability.py:257` 的忽略注释惯例一致)修复, `make check-files` 绿。
+
+### 2. 网关重启 — 干净 ✅
+
+- 旧网关 (PID 17369/17378 + DM sidecar 17839) 21:18 启动, 跑的就是 f726a84 editable 源码
+  (`agentseek_files` 是 editable 安装, 已 `diff` 确认 installed == source), 但日志仍现旧缺陷
+  (见 §4)。SIGTERM 优雅关停→无僵尸 sidecar。
+- 新网关 (PID 36588/36597) 经 `scripts/run_gateway.sh` 启动, 日志
+  `~/Library/Logs/agentseek-wecom/gateway.log`:
+  - `Application startup complete` / `Uvicorn running on http://0.0.0.0:12000` ✅
+  - `schedule.start complete` / `channel.manager started listening` ✅
+  - **SIGBUS / EXC_BAD_ACCESS / Bus error: 0** (整份日志, 含重启前后) ✅ — JVM/ONNX 隔离生效
+  - DM sidecar 为 subprocess 模式, 首次查询时懒启动。
+
+### 3. A. CurrentFiles 大文件摘要 — PASS (含小瑕疵) ✅
+
+对 `file_11452a4d798f02c7` (小学部学生午餐退费明细.xlsx, extracted.md = **360762 字**)
+直接调用 `build_current_files_context()` 验证, context 内具备:
+- `extract_truncated: true` ✅
+- `extract_total_chars: 360762` ✅
+- `large_file_summary`: 完整解析字符数 / 表格数据行数 / 字段 / 最后一条记录 / 数值范围 ✅
+- `analysis_tool_hint`: 明确 `analyze_file(file_id="file_11452a4d798f02c7", question=...)` ✅
+- `excerpt_chars: 12000` (≈ 前 60 条, 与 .env `EXTRACT_MAX_CHARS=12000` 一致)
+
+**小瑕疵(同 §4 根因)**: `表格数据行数` 报 1793(实 1790)、`字段` 报的是标题而非真表头
+(序号/姓名/班级/…)。摘要字段齐全, 但被表头识别 bug 污染。修了 §4 这两个数会自动正确。
+
+### 4. B. analyze_file 全文统计 — ❌ FAIL (核心缺陷, 已定位)
+
+**症状**: `_analyze_current_file(..., question="每班有多少个人退餐？")` 能读到**完整**
+extracted.md(返回 `完整解析字符数: 360762`、最后记录 `1790 | 高若骒 | 六十班`、
+"基于完整 extracted.md"), **但 `unique_people` 与 `group_counts` 都返回 None** → 工具
+不输出"唯一人员数"和"按班级统计" → bot 答不出"总多少人"/"每班多少人", 只能回退到 excerpt
+(前 60 条)。
+
+**根因(确凿, 已用真实 extracted.md 复现)**:
+`content_analysis.py::_normalize_table()` 把每个 `<table>` 的**第一行**当列头。MinerU 对
+xlsx 的提取在真表头之前先发了一堆 `colspan=6` 合并行:
+- row0 = 标题 `2026年春季…退费明细公示表` (1 cell)
+- row1 = 学校/期间/退费标准副标题 (1 cell)
+- row2 = 备注说明 (1 cell)
+- row3 = **真表头** `['序号','姓名','班级','退费餐数','退费金额','明细']` ← 被当成数据行
+- row4+ = 真数据
+
+于是 headers 只剩标题那 1 格, `_find_header(("姓名","班级"))` 找不到 → `unique_people()`
+/`group_counts()` 返回 None。`format_large_file_summary` 同样受影响(字段=标题、data_rows=1793)。
+
+**精确统计结果(ground truth, 直接解析 extracted.md, 真表头在 row3, 供 Codex 验证修复)**:
+- 表格数据行数(记录条数): **1790** (当前误报 1793)
+- 唯一人员数(按姓名全局去重): **1777** (1790 行 − 13 个跨班同名重复, 每名出现 2 次)
+- 班级数: **67** (一年级~六年级, 一一班~六十一班; 班内无同名, 班内 rows==unique)
+- 13 个重复姓名(跨班, 每名 2 次): 李睿航/葛畅/陈心怡/吴思琪/黄清妍/陈诗雨/张欣怡/陈芷瑶/李雨桐/李思乐/…
+
+**各班精确人数(去重后, oracle)**:
+```
+一一班:23  一二班:29  一三班:32  一四班:24  一五班:27  一六班:26  一七班:23  一八班:24  一九班:31  一十班:32
+二一班:27  二二班:29  二三班:28  二四班:17  二五班:19  二六班:24  二七班:22  二八班:27  二九班:25  二十班:25  二十一班:20
+三一班:32  三二班:30  三三班:34  三四班:21  三五班:37  三六班:31  三七班:29  三八班:28  三九班:29  三十班:28  三十一班:39  三十二班:34  三十三班:34
+四一班:32  四二班:24  四三班:30  四四班:21  四五班:27  四六班:15  四七班:26  四八班:29  四九班:27  四十班:28  四十一班:30  四十二班:29
+五一班:25  五二班:24  五三班:22  五四班:27  五五班:22  五六班:28  五七班:32  五八班:26  五九班:31  五十班:24  五十一班:37
+六一班:21  六二班:20  六三班:16  六四班:21  六五班:30  六六班:27  六七班:25  六八班:24  六九班:27  六十班:23
+合计: 1790 行 / 1777 人(去重)
+```
+
+**日志侧证(旧网关 21:24, 已知缺陷)**: bot 回复
+`"全量分析工具当前返回异常（"无可分析文件"）…我只能看到前 60 条…文件共 1790 人"`
+— 工具确被调用但当时未返回可用统计(可能是该轮 current_files 未携带该 file_id, 或 bot
+传错 id; 需活体重测确认, 见 §6)。
+
+### 5. C. 安全边界 — PASS ✅
+
+- `analyze_file` 只读 CurrentFiles 内 file_id: 单测
+  `test_analyze_file_rejects_file_outside_current_state` 通过(拒绝 `file_other` → "不在当前会话")。
+- `_load_current_extract` 仅 `store.load_extract_text()`(读 extracted.md/extracted.txt),
+  **从不读 original 二进制**(结果中无 `original` 内容; 单测断言
+  `original-binary-must-not-be-read not in result` 通过)。
+- **不泄露宿主路径**: CurrentFiles context 与 analyze_file 输出均无 `/Users`/`sambazhu`;
+  存储路径用 hmac 不透明目录。`_same_scope` 校验 tenant/employee/session/file_id/relative_dir。
+
+### 6. D. 回归 — 自动化 PASS; 活体小文件回归待用户驱动
+
+- 自动化: files 38 / wecom 38 / enterprise 79 全过(含 extractors/context/store/inbound/
+  analysis_tools 各类小文件用例); MCP 零 diff; 0 SIGBUS; Scheme C / auto-detect OCR /
+  ImageOCR 标注逻辑由 context 单测覆盖。
+- 活体 WeCom 小文件回归(xlsx/docx/图文 docx/pdf/txt/图片/语音)与"重发 360K xlsx"需用户从
+  企业微信客户端发送(本会话无法以用户身份发消息)。bot 行为已用**真实 store + 真实 extract +
+  真实代码路径**离线等价复现, 精度与活体一致。
+
+### 7. 给 Codex 的修复任务 (CODEX FIX SPEC)
+
+**缺陷**: `contrib/agentseek-files/src/agentseek_files/content_analysis.py::_normalize_table`
+无条件取每个 `<table>` 首行为列头, 对 MinerU xlsx 提取(首行是 `colspan=N` 标题/副标题/备注
+合并行)失效 → 真表头被当数据 → `unique_people`/`group_counts`/`numeric_ranges` 全部拿不到
+列 → analyze_file 答不出统计。
+
+**修复要求**:
+1. 让表头识别能跳过开头的合并/标题行。推荐: 统计各行非空 cell 数的**众数 W**(数据列宽),
+   表头 = 第一个 cell 数 == W 的行; 若全程无行达到 W, 退回首行(现状)。或: 在前 K 行里找含
+   结构标记(序号/姓名/班级/编号/名称/name/class/日期/金额/数量)的行作表头。两者择一或兼用。
+2. `data_rows` 必须排除**真表头行 + 开头合并行**; `headers` 必须是真列名。
+3. **不得回归**: 简单表(首行即表头, 无合并行)必须维持原行为 — 现有 38 用例须全过。
+4. **新增单测**: 构造"合并标题行 + 副标题 + 真表头 + 数据"的 table, 断言 headers/data_rows/
+   group_counts/unique_people 全部正确。
+
+**验收 oracle** (修复后对 `file_11452a4d798f02c7` 必须命中):
+- `表格数据行数` = 1790(现 1793); `字段` = `序号 | 姓名 | 班级 | 退费餐数 | 退费金额 | 明细`
+- `unique_people` = 1777(现 None)
+- `group_counts("每班…")` = 67 班, 见 §4 各班精确人数; 合计 1790 行 / 1777 人(去重)
+- "总共有多少个人退餐" → 1777 人(去重)
+
+**次要(建议同查)**: 旧网关日志 21:24 的 `"无可分析文件"` — 排查 wecom/bub 集成里 analyze_file
+所在轮次的 `runtime.state["current_files"]` 是否始终携带该 file_id(跨轮是否丢失), 以及 bot
+是否传了正确 file_id; 必要时活体重测。
+
+### 8. 本次提交内容
+
+- `contrib/agentseek-files/tests/test_analysis_tools.py`: 加 `# ty: ignore[unresolved-attribute]`
+  修复 `make check-files` 的 ty 假阳性(仅测试代码, 语义不变)。
+- `DEPLOYMENT_NOTES.md`: 本节复测报告 + Codex 修复 spec。

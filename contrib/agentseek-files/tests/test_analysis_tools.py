@@ -66,5 +66,7 @@ def test_file_analysis_tools_exposes_analyze_file(tmp_path) -> None:
     tools = file_analysis_tools(store)
 
     assert [tool.name for tool in tools] == ["analyze_file"]
-    schema = tools[0].tool_call_schema.model_json_schema()
+    # tool_call_schema is a pydantic model class at runtime; ty can't narrow the
+    # langchain-typed union (which also admits dict) to resolve model_json_schema.
+    schema = tools[0].tool_call_schema.model_json_schema()  # ty: ignore[unresolved-attribute]
     assert set(schema["properties"]) == {"file_id", "question"}
