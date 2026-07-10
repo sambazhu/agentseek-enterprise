@@ -14,6 +14,7 @@ def test_mineru_defaults_use_auto_ocr_and_five_minute_polling() -> None:
     assert settings.mineru_is_ocr is False
     assert settings.mineru_ocr_model_version == "pipeline"
     assert settings.mineru_poll_timeout_s == 300.0
+    assert settings.mixed_pdf_bg_ocr is True
 
 
 def test_inbound_file_service_saves_extracts_and_builds_context(tmp_path):

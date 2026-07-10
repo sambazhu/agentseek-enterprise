@@ -9,9 +9,9 @@ import agentseek_files.extractors.mineru as mineru_module
 import httpx
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
-from agentseek_files.extractors.mineru import MinerUExtractor, has_substantive_text
+from agentseek_files.extractors.mineru import MinerUExtractor, has_image_references, has_substantive_text
 from agentseek_files.inbound import InboundFileService
-from agentseek_files.models import FileScope
+from agentseek_files.models import ExtractResult, FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import LocalFileStore
 
@@ -265,9 +265,198 @@ def test_mineru_auto_detect_retries_image_only_pdf_with_pipeline_ocr(tmp_path, m
     assert done.extract_text == ocr_text
 
 
+def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_ocr(
+    tmp_path,
+    monkeypatch,
+):
+    submitted: list[dict] = []
+    first_text = ("这是数字文字页的快速提取结果。" * 12) + "\n![](images/scanned-page.jpg)"
+    complete_text = ("这是数字文字页的完整结果。" * 12) + "\n这是扫描页 OCR 补充的中文内容。"
+    first_zip = _markdown_zip(first_text)
+    complete_zip = _markdown_zip(complete_text)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            submitted.append(json.loads(request.content))
+            attempt = len(submitted)
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "batch_id": f"batch-{attempt}",
+                        "file_urls": [f"https://upload.example.com/file-{attempt}"],
+                    },
+                },
+            )
+        if request.url.host == "upload.example.com":
+            return httpx.Response(200)
+        if request.url.path == "/api/v4/extract-results/batch/batch-1":
+            return _done_batch_response("batch-1", "https://result.example.com/first.zip")
+        if request.url.path == "/api/v4/extract-results/batch/batch-2":
+            return _done_batch_response("batch-2", "https://result.example.com/complete.zip")
+        if request.url.path == "/first.zip":
+            return httpx.Response(200, content=first_zip)
+        if request.url.path == "/complete.zip":
+            return httpx.Response(200, content=complete_zip)
+        raise AssertionError
+
+    settings = FilesSettings(
+        root_dir=tmp_path,
+        allowed_extensions=(".pdf",),
+        extractor="mineru",
+        mixed_pdf_bg_ocr=True,
+        mineru_base_url="https://mineru.example.com",
+        mineru_token="mineru-test-token",
+        mineru_model_version="vlm",
+        mineru_ocr_model_version="pipeline",
+        mineru_is_ocr=False,
+        mineru_poll_interval_s=0,
+    )
+    service = InboundFileService(settings)
+
+    async def run_flow():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            monkeypatch.setattr(service, "_mineru_extractor", MinerUExtractor(settings, client=client))
+            pending = await service.handle_bytes(
+                scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+                filename="mixed.pdf",
+                data=b"%PDF-1.4\nmixed",
+                mime_type="application/pdf",
+            )
+            first_pass = await service.poll_pending(pending.record)
+            assert first_pass.pending is False
+            assert first_pass.extract_text == first_text
+            assert first_pass.record.extract_status == "done"
+            assert first_pass.record.metadata["mixed_pdf_bg_ocr"] is True
+            assert first_pass.record.metadata["bg_ocr_status"] == "pending"
+            await asyncio.gather(*tuple(service._background_tasks))
+            return first_pass.record
+
+    first_record = asyncio.run(run_flow())
+    final_record = service.store.load_record(first_record.relative_dir)
+
+    assert submitted[0]["files"][0]["is_ocr"] is False
+    assert submitted[0]["model_version"] == "vlm"
+    assert submitted[1]["files"][0]["is_ocr"] is True
+    assert submitted[1]["model_version"] == "pipeline"
+    assert final_record.extract_status == "done"
+    assert final_record.extract_task_id == "batch-2"
+    assert final_record.metadata["mixed_pdf_bg_ocr"] is True
+    assert final_record.metadata["bg_ocr_status"] == "done"
+    assert service.store.load_extract_text(final_record) == complete_text
+
+
+def test_mineru_mixed_pdf_background_failure_preserves_first_pass(tmp_path, monkeypatch):
+    settings = FilesSettings(
+        root_dir=tmp_path,
+        allowed_extensions=(".pdf",),
+        extractor="mineru",
+        mixed_pdf_bg_ocr=True,
+    )
+    service = InboundFileService(settings)
+    record = service.store.store_bytes(
+        scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+        filename="mixed.pdf",
+        data=b"%PDF-1.4\nmixed",
+        mime_type="application/pdf",
+    )
+    first_text = ("第一遍可用的数字文字。" * 12) + "\n![](images/scanned-page.jpg)"
+    record = service.store.save_extract(
+        record,
+        ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="done",
+            markdown=first_text,
+            text=first_text,
+            chars=len(first_text),
+            provider_task_id="batch-1",
+            metadata={"mode": "extract_batch", "ocr_mode": "auto", "is_ocr": False},
+        ),
+    )
+
+    async def fail_retry(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError
+
+    monkeypatch.setattr(service._mineru_extractor, "retry_with_ocr", fail_retry)
+
+    async def run_background():
+        service._schedule_mixed_pdf_background_ocr(record)
+        await asyncio.gather(*tuple(service._background_tasks))
+
+    asyncio.run(run_background())
+    final_record = service.store.load_record(record.relative_dir)
+
+    assert final_record.extract_status == "done"
+    assert final_record.extract_task_id == "batch-1"
+    assert final_record.metadata["mixed_pdf_bg_ocr"] is True
+    assert final_record.metadata["bg_ocr_status"] == "failed"
+    assert service.store.load_extract_text(final_record) == first_text
+
+
+def test_mineru_digital_pdf_skips_mixed_background_ocr(tmp_path, monkeypatch):
+    settings = FilesSettings(
+        root_dir=tmp_path,
+        allowed_extensions=(".pdf",),
+        extractor="mineru",
+        mixed_pdf_bg_ocr=True,
+    )
+    service = InboundFileService(settings)
+    record = service.store.store_bytes(
+        scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+        filename="digital.pdf",
+        data=b"%PDF-1.4\ndigital",
+        mime_type="application/pdf",
+    )
+    record = service.store.save_extract(
+        record,
+        ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="pending",
+            provider_task_id="batch-1",
+            metadata={"mode": "extract_batch", "ocr_mode": "auto", "is_ocr": False},
+        ),
+    )
+    digital_text = "纯数字 PDF 的有效正文。" * 12
+
+    async def finish_first_pass(*args, **kwargs):
+        del args, kwargs
+        return ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="done",
+            markdown=digital_text,
+            text=digital_text,
+            chars=len(digital_text),
+            provider_task_id="batch-1",
+            metadata={
+                "mode": "extract_batch",
+                "ocr_mode": "auto",
+                "is_ocr": False,
+                "state": "done",
+            },
+        )
+
+    monkeypatch.setattr(service._mineru_extractor, "poll_result", finish_first_pass)
+
+    result = asyncio.run(service.poll_pending(record))
+
+    assert result.pending is False
+    assert result.extract_text == digital_text
+    assert result.record.metadata["mixed_pdf_bg_ocr"] is False
+    assert result.record.metadata["bg_ocr_status"] == "skipped"
+    assert not service._background_tasks
+
+
 def test_mineru_substantive_text_ignores_image_only_placeholders() -> None:
     assert has_substantive_text("![](images/one.jpg)\n<!-- image -->\n<img src='two.jpg'>") is False
     assert has_substantive_text("有效的数字 PDF 正文内容。" * 12) is True
+    assert has_image_references("正文\n![](images/one.jpg)") is True
+    assert has_image_references("只有正文") is False
 
 
 def _markdown_zip(markdown: str) -> bytes:

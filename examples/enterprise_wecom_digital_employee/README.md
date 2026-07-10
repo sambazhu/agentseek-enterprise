@@ -235,6 +235,7 @@ For PDF, Office, or image files, set:
 ```env
 AGENTSEEK_FILES_ENABLED=true
 AGENTSEEK_FILES_EXTRACTOR=mineru
+AGENTSEEK_FILES_MIXED_PDF_BG_OCR=true
 AGENTSEEK_MINERU_BASE_URL=https://mineru.net
 AGENTSEEK_MINERU_TOKEN=<your-token-for-the-v4-extract-api>
 AGENTSEEK_MINERU_MODEL_VERSION=vlm
@@ -248,6 +249,11 @@ Expected: the file is accepted and submitted to MinerU when the extension is in
 upload API. The default `AGENTSEEK_MINERU_IS_OCR=false` means auto-detect: first
 run the configured `vlm` model without OCR, then retry an image-only scanned PDF
 once with `pipeline` plus OCR. Set it to `true` only to force OCR immediately.
+When `AGENTSEEK_FILES_MIXED_PDF_BG_OCR=true`, a PDF whose first result contains
+both substantive text and image placeholders is returned immediately, while a
+second full OCR pass runs in the background. A completed background result
+replaces the first extraction for the employee's next turn; failure preserves
+the usable first-pass text.
 Without a token, the lightweight Agent API remains available as a compatibility
 fallback. Pending file records are refreshed from disk or MinerU on the
 employee's next turn, so completed text replaces the earlier pending snapshot.

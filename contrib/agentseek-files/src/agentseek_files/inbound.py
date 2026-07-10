@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,8 @@ class InboundFileService:
         self.store = store or LocalFileStore(self.settings)
         self._local_extractor = LocalTextExtractor(max_chars=self.settings.extract_max_chars)
         self._mineru_extractor = MinerUExtractor(self.settings)
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._background_file_ids: set[str] = set()
 
     async def handle_bytes(
         self,
@@ -73,6 +76,8 @@ class InboundFileService:
         )
 
     async def poll_pending(self, record: FileRecord) -> InboundFileResult:
+        auto_non_ocr_pdf = False
+        mixed_pdf = False
         if not record.extract_task_id:
             result = ExtractResult(
                 file_id=record.file_id,
@@ -83,7 +88,10 @@ class InboundFileService:
             )
         else:
             result = await self._mineru_extractor.poll_result(record, record.extract_task_id)
-            if self._mineru_extractor.should_retry_with_ocr(record, result):
+            auto_non_ocr_pdf = self._mineru_extractor.is_auto_non_ocr_pdf_result(record, result)
+            mixed_pdf = self._mineru_extractor.should_run_mixed_pdf_background_ocr(record, result)
+            retry_with_ocr = self._mineru_extractor.should_retry_with_ocr(record, result)
+            if retry_with_ocr:
                 try:
                     result = await self._mineru_extractor.retry_with_ocr(
                         record,
@@ -104,6 +112,13 @@ class InboundFileService:
                         error_message="MinerU OCR retry failed.",
                     )
         record = self.store.save_extract(record, result)
+        if record.extract_provider == "mineru" and auto_non_ocr_pdf:
+            if mixed_pdf and self.settings.mixed_pdf_bg_ocr:
+                self._schedule_mixed_pdf_background_ocr(record)
+            else:
+                record.metadata["mixed_pdf_bg_ocr"] = False
+                record.metadata["bg_ocr_status"] = "skipped"
+                self.store.save_record(record)
         text = result.markdown or result.text
         context_block = build_current_files_context(
             [record],
@@ -117,6 +132,89 @@ class InboundFileService:
             pending=result.status in {"pending", "running"},
             user_notice=_notice(record, result),
         )
+
+    def _schedule_mixed_pdf_background_ocr(self, record: FileRecord) -> None:
+        status = str(record.metadata.get("bg_ocr_status") or "")
+        if record.file_id in self._background_file_ids or status in {"pending", "running", "done"}:
+            return
+        record.metadata["mixed_pdf_bg_ocr"] = True
+        record.metadata["bg_ocr_status"] = "pending"
+        self.store.save_record(record)
+        self._background_file_ids.add(record.file_id)
+        task = asyncio.create_task(
+            self._background_ocr_retry(record.relative_dir),
+            name=f"agentseek-files-mixed-pdf-ocr-{record.file_id}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(lambda completed, file_id=record.file_id: self._background_done(file_id, completed))
+
+    def _background_done(self, file_id: str, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
+        self._background_file_ids.discard(file_id)
+        if not task.cancelled():
+            task.exception()
+
+    async def _background_ocr_retry(self, relative_dir: str) -> None:
+        try:
+            record = self.store.load_record(relative_dir)
+            record.metadata["bg_ocr_status"] = "running"
+            self.store.save_record(record)
+            pending = await self._mineru_extractor.retry_with_ocr(
+                record,
+                self.store.original_path(record),
+            )
+            if pending.status not in {"pending", "running"} or not pending.provider_task_id:
+                record = self.store.load_record(relative_dir)
+                record.metadata["bg_ocr_status"] = "failed"
+                self.store.save_record(record)
+                logger.warning(
+                    "files.mixed_pdf_bg_ocr failed file_id={} error=missing_task_id",
+                    record.file_id,
+                )
+                return
+
+            record = self.store.load_record(relative_dir)
+            record.metadata["bg_ocr_status"] = "running"
+            record.metadata["bg_ocr_task_id"] = pending.provider_task_id
+            self.store.save_record(record)
+
+            task_record = FileRecord.from_dict(record.to_dict())
+            task_record.extract_task_id = pending.provider_task_id
+            task_record.metadata["extract"] = dict(pending.metadata)
+            result = pending
+            while result.status in {"pending", "running"}:
+                result = await self._mineru_extractor.poll_result(
+                    task_record,
+                    pending.provider_task_id,
+                )
+                if result.status in {"pending", "running"}:
+                    await asyncio.sleep(self.settings.mineru_poll_interval_s)
+
+            record = self.store.load_record(relative_dir)
+            if result.status == "done":
+                record.metadata["mixed_pdf_bg_ocr"] = True
+                record.metadata["bg_ocr_status"] = "done"
+                self.store.save_extract(record, result)
+                logger.info("files.mixed_pdf_bg_ocr done file_id={}", record.file_id)
+                return
+            record.metadata["bg_ocr_status"] = "failed"
+            self.store.save_record(record)
+            logger.warning("files.mixed_pdf_bg_ocr failed file_id={}", record.file_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                record = self.store.load_record(relative_dir)
+                record.metadata["bg_ocr_status"] = "failed"
+                self.store.save_record(record)
+                file_id = record.file_id
+            except Exception:
+                file_id = "unknown"
+            logger.warning(
+                "files.mixed_pdf_bg_ocr failed file_id={} error={}",
+                file_id,
+                type(exc).__name__,
+            )
 
     async def _extract_initial(self, record: FileRecord) -> ExtractResult:
         original_path = self.store.original_path(record)

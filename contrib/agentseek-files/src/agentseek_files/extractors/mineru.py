@@ -193,13 +193,29 @@ class MinerUExtractor:
         return await self.poll_agent_result(record, task_id)
 
     def should_retry_with_ocr(self, record: FileRecord, result: ExtractResult) -> bool:
+        return self.is_auto_non_ocr_pdf_result(record, result) and not has_substantive_text(
+            result.markdown or result.text
+        )
+
+    def should_run_mixed_pdf_background_ocr(
+        self,
+        record: FileRecord,
+        result: ExtractResult,
+    ) -> bool:
+        content = result.markdown or result.text
+        return (
+            self.is_auto_non_ocr_pdf_result(record, result)
+            and has_substantive_text(content)
+            and has_image_references(content)
+        )
+
+    def is_auto_non_ocr_pdf_result(self, record: FileRecord, result: ExtractResult) -> bool:
         metadata = _extract_metadata(record)
         return (
             Path(record.sanitized_filename).suffix.lower() == ".pdf"
             and result.status == "done"
             and metadata.get("ocr_mode") == "auto"
             and metadata.get("is_ocr") is False
-            and not has_substantive_text(result.markdown or result.text)
         )
 
     async def retry_with_ocr(
@@ -369,6 +385,12 @@ def has_substantive_text(content: str) -> bool:
     text = _HTML_IMAGE_RE.sub("", text)
     meaningful = "".join(character for character in text if character.isalnum())
     return len(meaningful) > _MIN_SUBSTANTIVE_CHARS
+
+
+def has_image_references(content: str) -> bool:
+    """Return whether MinerU markdown still contains an unparsed image page."""
+    text = str(content or "")
+    return bool(_HTML_IMAGE_COMMENT_RE.search(text) or _MARKDOWN_IMAGE_RE.search(text) or _HTML_IMAGE_RE.search(text))
 
 
 def _extract_metadata(record: FileRecord) -> dict[str, Any]:

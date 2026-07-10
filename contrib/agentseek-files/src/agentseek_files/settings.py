@@ -46,6 +46,7 @@ class FilesSettings:
     mineru_is_ocr: bool = False
     mineru_poll_timeout_s: float = 300.0
     mineru_poll_interval_s: float = 2.0
+    mixed_pdf_bg_ocr: bool = True
 
     @classmethod
     def from_env(cls) -> FilesSettings:
@@ -58,6 +59,7 @@ class FilesSettings:
             retention_days=_env_int("AGENTSEEK_FILES_RETENTION_DAYS", 7),
             extractor=os.getenv("AGENTSEEK_FILES_EXTRACTOR", "local").strip() or "local",
             notify_on_done=_env_bool("AGENTSEEK_FILES_NOTIFY_ON_DONE", True),
+            mixed_pdf_bg_ocr=_env_bool("AGENTSEEK_FILES_MIXED_PDF_BG_OCR", True),
             mineru_base_url=os.getenv("AGENTSEEK_MINERU_BASE_URL", "https://mineru.net").rstrip("/"),
             mineru_token=os.getenv("AGENTSEEK_MINERU_TOKEN", ""),
             mineru_model_version=os.getenv("AGENTSEEK_MINERU_MODEL_VERSION", "vlm"),
