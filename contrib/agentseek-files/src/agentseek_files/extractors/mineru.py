@@ -212,7 +212,7 @@ class MinerUExtractor:
     def is_auto_non_ocr_pdf_result(self, record: FileRecord, result: ExtractResult) -> bool:
         metadata = _extract_metadata(record)
         return (
-            Path(record.sanitized_filename).suffix.lower() == ".pdf"
+            Path(record.sanitized_filename).suffix.lower() in {".pdf", ".docx", ".pptx", ".xlsx"}
             and result.status == "done"
             and metadata.get("ocr_mode") == "auto"
             and metadata.get("is_ocr") is False

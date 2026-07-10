@@ -7,6 +7,7 @@ import zipfile
 
 import agentseek_files.extractors.mineru as mineru_module
 import httpx
+import pytest
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
 from agentseek_files.extractors.mineru import MinerUExtractor, has_image_references, has_substantive_text
@@ -462,6 +463,35 @@ def test_mineru_substantive_text_ignores_image_only_placeholders() -> None:
     assert has_substantive_text("有效的数字 PDF 正文内容。" * 12) is True
     assert has_image_references("正文\n![](images/one.jpg)") is True
     assert has_image_references("只有正文") is False
+
+
+@pytest.mark.parametrize("extension", [".pdf", ".docx", ".pptx", ".xlsx"])
+def test_mineru_mixed_background_ocr_supports_pdf_and_office_formats(tmp_path, extension: str) -> None:
+    settings = FilesSettings(root_dir=tmp_path, allowed_extensions=(extension,), extractor="mineru")
+    store = LocalFileStore(settings)
+    record = store.store_bytes(
+        scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+        filename=f"mixed{extension}",
+        data=b"mixed office fixture",
+        mime_type="application/octet-stream",
+    )
+    record.metadata["extract"] = {
+        "ocr_mode": "auto",
+        "is_ocr": False,
+    }
+    content = ("这是第一遍提取出的实质文字。" * 12) + "\n![](images/table.png)"
+    result = ExtractResult(
+        file_id=record.file_id,
+        provider="mineru",
+        status="done",
+        markdown=content,
+        text=content,
+        chars=len(content),
+    )
+    extractor = MinerUExtractor(settings)
+
+    assert extractor.is_auto_non_ocr_pdf_result(record, result) is True
+    assert extractor.should_run_mixed_pdf_background_ocr(record, result) is True
 
 
 def _markdown_zip(markdown: str) -> bytes:
