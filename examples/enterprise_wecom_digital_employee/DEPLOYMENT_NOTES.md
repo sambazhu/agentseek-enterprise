@@ -3067,3 +3067,88 @@ API mismatch above).
 **Health.** 0 SIGBUS / 0 traceback (current session). The file handling failure
 is graceful (the bot replies "未能接收" rather than crashing). A-E message
 handling unaffected.
+
+### v0.0.9 AI Bot file fix re-verify (8c68e1f, 2026-07-09/10) — txt+voice PASS, PDF+image BLOCKED
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `8c68e1f` (Codex rewrote
+`media.py` for AI Bot url download + AES-256-CBC decryption; `channel.py` for
+AI Bot JSON format `file.url`/`image.url`/`voice.content`; new
+`test_ai_bot_media.py`). Static: uv sync --frozen --all-packages --all-extras
+--group plugins OK; pytest wecom+files 27 passed, enterprise 70 passed; ruff
+clean; MCP zero-diff vs 68d7b25 intact. prod_check PASS (files/MinerU/AES all
+configured). Gateway restarted on 8c68e1f (pid 62908, :12000).
+
+**A-E regression — PASS.** Identity/short-term/explicit-long/pgvector/MCP all
+correct (8 turns, 68 events, 0 SIGBUS). Files plugin changes did not break
+existing message handling.
+
+**F txt file — PASS ✅.** User sent a .txt file via WeCom AI Bot.
+- AI Bot callback `msgtype=file` with `file.url` → gateway downloaded from
+  signed URL → AES-256-CBC decrypted → text extracted → bot replied with full
+  structured content overview ("已收到并解析文件…内容概览：当前阶段：AI中台架构…").
+- `wecom_media_intake status=succeeded`. Files landed at
+  `runtime/files/hmac-…/inbound/file_…/original` (plaintext, confirmed by
+  user) + `extracted.md` + `metadata.json` + `extract.json`.
+- Path redaction: all dirs hmac-hashed, no plaintext OA/name/session.
+- **Minor (non-blocking): filename hex-encoded** — original "测试.txt" stored
+  as `E6_B5_8B_E8_AF_95.txt` (UTF-8 bytes as hex). Cosmetic; bot display shows
+  the hex name. Suggest Codex transliterate or preserve original.
+
+**G PDF — BLOCKED ❌.** `wecom_media_intake status=error`:
+`File extension is not allowed: <none>`.
+- **Root cause**: AI Bot file callback has `{"file": {"url": "…"}}` — NO
+  filename/extension field. The code checks the file extension BEFORE
+  downloading (extracts from filename), gets `<none>`, rejects. The extension
+  check must happen AFTER download (from Content-Type header or magic bytes:
+  PDF = `%PDF`, JPEG = `\xff\xd8`).
+- Bot replied gracefully ("解析失败"). 0 traceback.
+
+**H image (JPG) — BLOCKED ❌.** `wecom_media_intake status=error`:
+`Attempted to send an sync request with an AsyncClient instance`.
+- The file DID download + land in `runtime/files/…/original` + `metadata.json`
+  (download + AES decrypt succeeded). But the SUBSEQUENT step (MinerU
+  extraction or text extraction) failed with a sync/async mismatch — an
+  `httpx.AsyncClient` was called synchronously (`.get()` instead of
+  `await .get()`), or a sync function was called from an async context
+  incorrectly.
+- Also: the image was logged as `msgtype=file` not `msgtype=image` — either
+  the AI Bot sent it as file, or the code routes both through the same handler
+  (needs Codex confirmation).
+- Bot replied gracefully. 0 traceback.
+
+**I voice — PASS ✅.** `msgtype=voice` received. Bot replied normally
+("朱春霖，你好！👋"). **No file download** (correct — `voice.content`
+pre-transcribed text is used directly as model input, no download/ASR/MinerU).
+0 error. No files in `runtime/files` for voice.
+
+**J mixed (图文混排) — not tested yet.**
+
+**Overnight health (7/9→7/10, ~17h): gateway pid 62908 alive, 0 SIGBUS, 0
+traceback, 0 non-200 HTTP, 5082 log lines, WeCom polling normal (401 stream +
+27 text + 2 file + 2 event). Enterprise events: 85 entries, all types firing,
+latest 7/9 17:32 (txt file test). Quiet overnight (no new user messages).**
+
+**Summary of Codex fixes needed (v0.0.9 file plugin, AI Bot format):**
+
+1. **PDF / extension check (BLOCKING)**: Move extension check to AFTER
+   download. Determine extension from: (a) HTTP Content-Type header
+   (`application/pdf` → `.pdf`, `image/jpeg` → `.jpg`), or (b) magic bytes
+   (PDF `%PDF`, JPEG `\xff\xd8\xff`, PNG `\x89PNG`). The AI Bot callback
+   `{"file": {"url": "…"}}` has NO filename — the current pre-download
+   extension check always fails.
+
+2. **Image / sync-async mismatch (BLOCKING)**: In the extraction pipeline
+   (after download + AES decrypt), an `httpx.AsyncClient` is being called
+   synchronously. Fix: ensure all HTTP calls (MinerU API, or any downstream
+   fetch) use `await client.get()` in async context, or use a sync client
+   (`httpx.Client`) for sync calls.
+
+3. **Filename hex encoding (non-blocking, cosmetic)**: Original Chinese
+   filename "测试.txt" is stored/displayed as hex `E6_B5_8B_E8_AF_95.txt`.
+   Consider transliterating or preserving UTF-8 name (most filesystems support
+   it). At minimum, display a human-readable name in the bot reply.
+
+4. **`msgtype=image` routing (investigate)**: User sent a JPG image but the
+   log shows `msgtype=file`. Confirm whether the AI Bot sends single-chat
+   images as `msgtype=file` or `msgtype=image`, and ensure the code handles
+   both correctly (the AI Bot docs say `msgtype=image` with `image.url`).
