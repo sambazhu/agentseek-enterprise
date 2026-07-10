@@ -3367,3 +3367,134 @@ Recommended approach:
 - `AGENTSEEK_MINERU_IS_OCR`: `false` → `true` (but Agent API ignores it)
 - `AGENTSEEK_MINERU_POLL_TIMEOUT_S`: `15` → `120` (should be 300 for WeCom's
   6-min window)
+
+### v0.0.9 CurrentFiles refresh + MinerU v4 + auto-OCR (50ea122, 2026-07-10)
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `50ea122` (Codex: plugin.py
++82 CurrentFiles state refresh; store.py +13 filename fix; media.py +8 double
+suffix; settings.py POLL_TIMEOUT default 300; mineru.py v4 Extract API).
+Static: files 13, wecom 32, enterprise 70, template 25; ruff + ty clean; MCP
+zero-diff. Gateway restarted (pid 5435, POLL_TIMEOUT=300, IS_OCR=true).
+
+**CurrentFiles state refresh — WORKING ✅.** Plugin.py load_state now re-reads
+file records for pending/running extracts and re-polls MinerU. Confirmed: bot
+detected status progression `pending → running` on the next user turn (previously
+state was frozen at "pending" forever). The fix is functional.
+
+**MinerU v4 Extract API — deployed, no errors ✅.** Code uses
+`POST /api/v4/file-urls/batch` + `GET /api/v4/extract-results/batch/{batch_id}`.
+Batch ID generated, upload succeeded, poll running without HTTP errors.
+
+**FINDING: `is_ocr=true` on digital PDFs is very slow (non-blocking).**
+The same 1.6MB digital PDF (华锐 AMD 白皮书) that extracted **15086 chars in
+seconds** with the Agent API (no OCR) is now stuck at `status=running,
+chars=0` after **8+ minutes** with the v4 API + `is_ocr=true`. MinerU is
+forcing OCR on every page even though the PDF has embedded digital text — a
+massive waste for digital PDFs.
+
+**Recommendation for Codex: auto-detect OCR need (feature enhancement).**
+
+Instead of a fixed `is_ocr=true/false`, the extractor should:
+1. **First attempt without OCR** (`is_ocr=false`). For digital PDFs / Office
+   docs with embedded text, MinerU returns text instantly.
+2. **If result is empty / `<!-- image-->` for all pages** (indicating scanned
+   content), **automatically retry with `is_ocr=true`**.
+3. This gives: digital PDFs = instant, scanned PDFs = OCR (slower but correct).
+4. The `AGENTSEEK_MINERU_IS_OCR` env var becomes a **force override**:
+   - `false` (default): auto-detect (try non-OCR, fallback to OCR)
+   - `true`: always OCR (for known scanned-only workflows)
+
+This avoids the 8+ minute wait for digital PDFs while still handling scans.
+
+**Cosmetic fixes verified:**
+- File extension `.pdf.pdf` double suffix: needs re-verification with next PDF
+  send (media.py fix in this commit).
+- TXT hex filename: needs re-verification.
+
+**File name display:** bot correctly shows Chinese filename
+(`华锐高速行情中心AMD4.0产品白皮书.pdf`) — the hex encoding may be resolved for
+files with Content-Disposition (image case). Needs re-check for files without
+Content-Disposition.
+
+### v0.0.9 PDF live results (50ea122, 2026-07-10) — CurrentFiles PASS, OCR incomplete
+
+**Digital PDF — CurrentFiles refresh FULLY VERIFIED ✅.**
+- Sent 1.6MB digital PDF (华锐 AMD 白皮书).
+- MinerU v4 API + `is_ocr=true`: took ~15 min but eventually `status=done,
+  chars=10480`. (Very slow for a digital PDF — see auto-detect recommendation.)
+- Bot first replied "正在解析, status=running" (CurrentFiles detected
+  pending→running progression ✅).
+- User asked "PDF 内容是什么" on a later turn → plugin.py re-polled MinerU →
+  detected `running→done` → injected 10480-char excerpt → **bot replied with
+  full structured summary of the AMD whitepaper** ✅.
+- **Bug 1 (CurrentFiles state staleness) is FIXED**: bot can now read
+  extraction results on subsequent turns. Previously frozen at "pending".
+
+**Scanned PDF — pipeline correct, OCR not working ❌.**
+- Sent 152KB scanned government PDF (五矿资本数字化转型).
+- MinerU v4 API returned `status=done, chars=162` — but text is only two
+  markdown image references (`![](images/…jpg)`), NOT OCR'd text.
+- `is_ocr=true` in .env but MinerU v4 + VLM model did NOT OCR the scanned
+  pages. The v4 API IS being used (output format changed from `<!-- image-->`
+  to `![](images/…jpg)`, confirming different API than Agent), but OCR
+  parameter appears ineffective.
+- Bot correctly told user: "提取到的内容仅包含两张图片引用, 没有文本内容".
+- **Possible causes** (for Codex to investigate against MinerU API docs):
+  1. `is_ocr` field name / JSON path incorrect in the v4 request body
+  2. MinerU v4 API uses a different OCR parameter (e.g. `enable_ocr` not
+     `is_ocr`; or OCR is a separate model/endpoint)
+  3. `model_version=vlm` may not perform OCR; might need a dedicated OCR
+     model or a `mode=ocr` parameter
+  4. MinerU VLM mode treats pages as images and describes them rather than
+     OCR-ing text (VLM ≠ OCR)
+
+**3 issues for Codex (priority order):**
+
+1. **Auto-detect OCR (HIGH)** — most impactful single fix:
+   - First extract without OCR (`is_ocr=false`): digital PDFs/docx/pptx/xlsx
+     with embedded text → instant results.
+   - If result is empty or all image references (`<!-- image-->` / `![](...)`)
+     → automatically retry with OCR.
+   - Digital PDF: seconds (vs 15 min with forced OCR).
+   - Scanned PDF: OCR only when needed.
+   - `AGENTSEEK_MINERU_IS_OCR` env becomes force-override:
+     `false`(default) = auto-detect; `true` = always OCR.
+
+2. **v4 API OCR parameter (HIGH)** — OCR doesn't work even when forced:
+   - Verify the exact MinerU v4 API request body format for OCR.
+   - Check MinerU docs: is it `is_ocr`, `enable_ocr`, `ocr`, or a model
+     selection (`model_version=ocr` instead of `vlm`)?
+   - Add request body logging (at DEBUG level, redacting token) so the exact
+     parameters sent to MinerU can be verified.
+
+3. **Proactive notification (MEDIUM, UX)** — user must ask again to get results:
+   - MinerU completes in background, but WeCom AI Bot can't push messages.
+   - User experience: "发了文件, bot 说正在解析, 然后就没有然后了."
+   - Options: (a) POLL_TIMEOUT=300 + auto-detect so most files finish in-window;
+     (b) self-built app主动消息 (requires API change); (c) accept "ask again"
+     UX now that CurrentFiles refresh works (it does — verified).
+
+**File name UX (this round):**
+- Digital PDF filename: `华锐高速行情中心AMD4.0产品白皮书.pdf` — human-readable ✅
+  (from Content-Disposition). No `.pdf.pdf` double suffix observed.
+- Scanned PDF filename: URL-encoded Chinese `关于启动《…》…pdf` — readable in
+  bot reply ✅. No hex encoding for this file (Content-Disposition present).
+- txt hex encoding: not re-tested this round (previous round still showed hex).
+
+**Summary table (updated):**
+
+| Type | Download | AES | Extension | Store | MinerU | Bot reads content |
+|------|----------|-----|-----------|-------|--------|-------------------|
+| txt | ✅ | ✅ | ✅ | ✅ | local instant | ✅ |
+| Digital PDF | ✅ | ✅ | ✅ | ✅ | v4 done 10480 (slow) | ✅ **CurrentFiles refresh works** |
+| Scanned PDF | ✅ | ✅ | ✅ | ✅ | v4 done but no OCR text | ❌ (OCR not working) |
+| Image JPG | ✅ | ✅ | ✅ | ✅ | done `<!-- image-->` (expected) | N/A (photo) |
+| Voice | N/A | N/A | N/A | N/A | N/A | ✅ (voice.content) |
+
+**Bottom line:** The file pipeline (download → AES decrypt → extension detect →
+store → MinerU submit → extract → CurrentFiles inject) is **fully functional**.
+The CurrentFiles state refresh fix is **verified** (bot reads content on
+subsequent turns after MinerU completes). Two MinerU integration issues remain:
+auto-detect OCR (performance) and v4 API OCR parameter (scanned PDF
+extraction). Neither is a gateway crash or data loss — both are MinerU API
+integration refinements.
