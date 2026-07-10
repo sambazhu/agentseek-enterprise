@@ -3236,3 +3236,134 @@ generator uses hex. Non-blocking.
 **One Codex fix unblocks PDF**: `store.py:46` — when filename suffix is empty,
 derive extension from `mime_type` (or `media.py` should always append detected
 extension to filename). ~5 lines of code.
+
+### v0.0.9 PDF extension fix + OCR (cc666f7, 2026-07-10) — PDF PIPELINE PASS
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `cc666f7` (Codex added
+mime_type fallback in `store.py` when filename has no extension: +6 lines +
+1 test). Static: files 9 passed, wecom 31 passed, enterprise 70 passed; ruff +
+ty clean; MCP zero-diff.
+
+**PDF — PIPELINE PASS ✅.** User sent a scanned government PDF (152KB).
+- No "extension not allowed" error ✅ (the fix worked).
+- `mime_type: application/pdf` detected via Content-Type/magic bytes ✅.
+- `original` (155KB, `%PDF-1.4` magic confirmed) landed in `runtime/files` ✅.
+- `extract_status: done`, `wecom_media_intake` + `wecom_file_extract_finished`
+  events fired ✅.
+- Bot replied with full Chinese filename: "已收到文件 **关于启动《五矿资本…》…
+  pdf**（约152KB），正在解析中" ✅.
+- Minor cosmetic: filename has `.pdf.pdf` double suffix (Content-Disposition
+  already had `.pdf`, mime_type fallback appended another). Non-blocking —
+  `Path.suffix` takes the last `.pdf`, store check passes.
+
+**MinerU OCR finding**: initial extraction returned `<!-- image-->` for all
+pages because the PDF is **image-based (scanned)** and `AGENTSEEK_MINERU_IS_OCR`
+was `false`. MinerU `model_version=vlm` + `is_ocr=false` only extracts embedded
+digital text, not scanned images. Changed `IS_OCR=true` + `POLL_TIMEOUT_S=120`
+(was 15s, OCR on scans is slower). Gateway restarted; user re-testing PDF with
+OCR enabled.
+
+**Config change (Mac mini .env, not committed):**
+- `AGENTSEEK_MINERU_IS_OCR`: `false` → `true`
+- `AGENTSEEK_MINERU_POLL_TIMEOUT_S`: `15` → `120`
+
+**Remaining cosmetic for Codex (non-blocking):**
+1. Filename double suffix `.pdf.pdf` when Content-Disposition already has `.pdf`
+   and mime_type fallback appends again. Fix: check if filename already ends
+   with detected extension before appending.
+2. txt filename hex encoding (`E6_B5_8B_E8_AF_95.txt`) — when no
+   Content-Disposition, the fallback name generator hex-encodes UTF-8.
+
+### v0.0.9 CurrentFiles state staleness + MinerU API + UX (2026-07-10) — 2 blocking + 1 UX
+
+**File pipeline verification status (all types):**
+
+| Type | Download | Decrypt | Extension | Store | MinerU | Bot sees content |
+|------|----------|---------|-----------|-------|--------|-----------------|
+| txt | ✅ | ✅ | `.txt` | ✅ | local (instant) | ✅ |
+| Digital PDF | ✅ | ✅ | `.pdf` | ✅ | done 15086 chars | ❌ (state stale) |
+| Scanned PDF | ✅ | ✅ | `.pdf` | ✅ | done but `<!-- image-->` | ❌ (state stale + no OCR) |
+| Image JPG | ✅ | ✅ | `.jpg` | ✅ | done `<!-- image-->` | ❌ (state stale) |
+| Voice | N/A | N/A | N/A | N/A | N/A | ✅ (voice.content) |
+
+**BLOCKING bug 1: CurrentFiles state not updated after extraction completes.**
+
+Root cause precisely identified (traced through `plugin.py` → `inbound.py` →
+`context.py` → `agent.py`):
+
+1. During the file-intake turn, `inbound.handle_bytes` calls MinerU and polls
+   for `POLL_TIMEOUT_S` (120s). If MinerU doesn't finish in time →
+   `result.status = "pending"` → `context_block` = `"[CurrentFiles]\n…
+   extract_status: pending"` (no excerpt).
+2. `channel.py` puts this `context_block` into the turn's state as
+   `current_files_context`.
+3. `plugin.py load_state` reads `current_files_context` from the turn context
+   → sets `state["current_files_context"]`. **This is the ONLY time the state
+   is set** — it copies the intake-turn's context verbatim.
+4. MinerU completes LATER (e.g. 30s after the poll timeout) → `extract.json`
+   on disk is updated to `status=done, chars=15086, text="…full document…"`.
+5. On subsequent turns, `plugin.py load_state` re-reads the SAME stale
+   `current_files_context` from the persisted state (which still says
+   "pending"). **It does NOT re-read `extract.json` from disk.**
+6. `agent.py _current_files_message` injects the stale "pending" block → model
+   sees "pending" → replies "解析结果未回传到我这里".
+
+Evidence: digital PDF `extract.json` = `status=done, chars=15086` (on disk),
+but bot replied "解析结果仍未回传到我这里" (state stale). The extracted text
+(15086 chars of AMD product whitepaper) is ON DISK but NOT IN the model's
+context.
+
+`inbound.py` has a `poll_pending` method (line 74) that re-polls MinerU +
+rebuilds `context_block` with the latest text. **But it is never called on
+subsequent turns.**
+
+Fix for Codex: `plugin.py load_state` (or a new hook) should check
+`current_files` records for `extract_status in {"pending", "running"}`. If
+any found, call `inbound.poll_pending` to re-poll MinerU + update
+`current_files_context` with the new text. This way, when MinerU finishes in
+the background, the NEXT user message automatically gets the updated content.
+
+**BLOCKING bug 2: MinerU uses Agent API, not Extract API — OCR doesn't work.**
+
+Current code calls `/api/v1/agent/upload` + `/api/v1/agent/parse/{task_id}`
+(MinerU Agent API). The `is_ocr` parameter may not be supported or effective
+on this API. Scanned PDFs return `<!-- image-->` even with `is_ocr=true`.
+
+MinerU's Extract API (`/api/v4/extract/task` or `/api/v4/file-urls/batch`)
+supports `is_ocr`, `model_version`, `language`, `enable_table`,
+`enable_formula` parameters explicitly. The user confirmed MinerU defaults:
+`ocr=true`, `model_version=vlm` (recommended).
+
+Fix for Codex: switch MinerU extractor from Agent API to Extract API
+(`/api/v4/file-urls/batch` for upload + `/api/v4/extract/task` for poll).
+Ensure `is_ocr`, `model_version`, `language`, `enable_table`,
+`enable_formula` are passed correctly.
+
+**UX concern (non-blocking but important): async extraction + notification.**
+
+Current behavior: bot immediately replies "已收到文件, 正在解析" during the
+intake turn, but when MinerU finishes later, there's no mechanism to push
+the result to the user. The user must ask again — and due to bug 1 (state
+staleness), even asking again doesn't work.
+
+WeCom AI Bot API limitation: no proactive push mechanism (unlike self-built
+app's主动消息). The `response_url` is only valid for the current callback.
+
+Recommended approach:
+1. **Increase `POLL_TIMEOUT_S`** so MinerU finishes within the initial turn
+   (the bot can then reply with actual content, not "pending"). WeCom AI Bot
+   allows up to 6 minutes for stream responses. Set `POLL_TIMEOUT_S=300`.
+2. **Fix bug 1** so subsequent turns work as fallback.
+3. **Future**: async extraction + WeCom主动消息 (requires self-built app API
+   for push; AI Bot can't push). Or accept the "ask again" UX once bug 1 is
+   fixed.
+
+**Minor cosmetics (non-blocking):**
+1. `.pdf.pdf` double suffix when Content-Disposition already has `.pdf` and
+   mime_type fallback appends again.
+2. txt filename hex encoding when no Content-Disposition.
+
+**Config changes (Mac mini .env, not committed):**
+- `AGENTSEEK_MINERU_IS_OCR`: `false` → `true` (but Agent API ignores it)
+- `AGENTSEEK_MINERU_POLL_TIMEOUT_S`: `15` → `120` (should be 300 for WeCom's
+  6-min window)
