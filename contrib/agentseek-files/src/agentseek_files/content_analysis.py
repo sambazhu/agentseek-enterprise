@@ -11,6 +11,26 @@ _NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
 _CURRENCY_CHARS = "¥￥$€£"
 _MAX_HEADERS = 30
 _MAX_LAST_RECORD_CHARS = 500
+_HEADER_SCAN_ROWS = 20
+_HEADER_MARKERS = (
+    "序号",
+    "编号",
+    "姓名",
+    "名称",
+    "班级",
+    "年级",
+    "部门",
+    "日期",
+    "时间",
+    "金额",
+    "数量",
+    "明细",
+    "name",
+    "class",
+    "date",
+    "amount",
+    "quantity",
+)
 
 
 @dataclass(frozen=True)
@@ -192,12 +212,41 @@ def matching_rows(analysis: ContentAnalysis, question: str, *, limit: int = 8) -
 
 
 def _normalize_table(raw_rows: list[list[tuple[str, bool]]]) -> ParsedTable:
-    first = raw_rows[0]
-    headers = tuple(cell or f"列{index + 1}" for index, (cell, _) in enumerate(first))
-    # MinerU spreadsheets commonly emit td rather than th for the first row; in
-    # both cases the first non-empty row is the tabular header.
-    rows = tuple(tuple(cell for cell, _ in row) for row in raw_rows[1:])
+    header_index = _detect_header_index(raw_rows)
+    header_row = raw_rows[header_index]
+    headers = tuple(cell or f"列{index + 1}" for index, (cell, _) in enumerate(header_row))
+    rows = tuple(tuple(cell for cell, _ in row) for row in raw_rows[header_index + 1 :])
     return ParsedTable(headers=headers, rows=rows)
+
+
+def _detect_header_index(raw_rows: list[list[tuple[str, bool]]]) -> int:
+    """Find the real header after optional MinerU merged title rows."""
+    scan_rows = raw_rows[:_HEADER_SCAN_ROWS]
+    marker_candidates: list[tuple[int, int]] = []
+    for index, row in enumerate(scan_rows):
+        score = _header_marker_score(row)
+        if score >= 2:
+            marker_candidates.append((index, score))
+    if marker_candidates:
+        return max(marker_candidates, key=lambda candidate: (candidate[1], -candidate[0]))[0]
+
+    widths = Counter(len(row) for row in raw_rows if row)
+    if not widths:
+        return 0
+    modal_width = max(widths, key=lambda width: (widths[width], width))
+
+    for index, row in enumerate(scan_rows):
+        if len(row) == modal_width and any(is_header for _, is_header in row):
+            return index
+    for index, row in enumerate(raw_rows):
+        if len(row) == modal_width:
+            return index
+    return 0
+
+
+def _header_marker_score(row: list[tuple[str, bool]]) -> int:
+    cells = {cell.strip().lower() for cell, _ in row if cell.strip()}
+    return sum(any(marker in cell for marker in _HEADER_MARKERS) for cell in cells)
 
 
 def _group_column_index(headers: tuple[str, ...], question: str) -> int | None:

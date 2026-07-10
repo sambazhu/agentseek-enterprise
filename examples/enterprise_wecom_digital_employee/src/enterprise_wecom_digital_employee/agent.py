@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NotRequired
 
 from agentseek_enterprise.langgraph_store import build_langgraph_store
 from agentseek_enterprise.long_term_memory import employee_memory_tools
@@ -15,6 +15,7 @@ from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.graph import DeepAgentState
 from langchain_core.messages import SystemMessage
 
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
@@ -54,6 +55,12 @@ _READ_ONLY_ENTERPRISE_FILESYSTEM = [
 ]
 
 
+class EnterpriseAgentState(DeepAgentState):
+    """DeepAgent state fields supplied by AgentSeek runtime plugins."""
+
+    current_files: NotRequired[list[dict[str, Any]]]
+
+
 def build_agent() -> Any:
     """Build the local DeepAgents runnable."""
 
@@ -84,6 +91,7 @@ def build_agent() -> Any:
         skills=["/skills"],
         backend=backend,
         context_schema=EnterpriseRuntimeContext,
+        state_schema=EnterpriseAgentState,
         store=store,
         permissions=_READ_ONLY_ENTERPRISE_FILESYSTEM,
     )
