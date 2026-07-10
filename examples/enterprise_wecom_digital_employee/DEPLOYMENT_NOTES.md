@@ -3367,3 +3367,51 @@ Recommended approach:
 - `AGENTSEEK_MINERU_IS_OCR`: `false` → `true` (but Agent API ignores it)
 - `AGENTSEEK_MINERU_POLL_TIMEOUT_S`: `15` → `120` (should be 300 for WeCom's
   6-min window)
+
+### v0.0.9 CurrentFiles refresh + MinerU v4 + auto-OCR (50ea122, 2026-07-10)
+
+Mac mini pulled `enterprise/v0.0.9-files-plugin` @ `50ea122` (Codex: plugin.py
++82 CurrentFiles state refresh; store.py +13 filename fix; media.py +8 double
+suffix; settings.py POLL_TIMEOUT default 300; mineru.py v4 Extract API).
+Static: files 13, wecom 32, enterprise 70, template 25; ruff + ty clean; MCP
+zero-diff. Gateway restarted (pid 5435, POLL_TIMEOUT=300, IS_OCR=true).
+
+**CurrentFiles state refresh — WORKING ✅.** Plugin.py load_state now re-reads
+file records for pending/running extracts and re-polls MinerU. Confirmed: bot
+detected status progression `pending → running` on the next user turn (previously
+state was frozen at "pending" forever). The fix is functional.
+
+**MinerU v4 Extract API — deployed, no errors ✅.** Code uses
+`POST /api/v4/file-urls/batch` + `GET /api/v4/extract-results/batch/{batch_id}`.
+Batch ID generated, upload succeeded, poll running without HTTP errors.
+
+**FINDING: `is_ocr=true` on digital PDFs is very slow (non-blocking).**
+The same 1.6MB digital PDF (华锐 AMD 白皮书) that extracted **15086 chars in
+seconds** with the Agent API (no OCR) is now stuck at `status=running,
+chars=0` after **8+ minutes** with the v4 API + `is_ocr=true`. MinerU is
+forcing OCR on every page even though the PDF has embedded digital text — a
+massive waste for digital PDFs.
+
+**Recommendation for Codex: auto-detect OCR need (feature enhancement).**
+
+Instead of a fixed `is_ocr=true/false`, the extractor should:
+1. **First attempt without OCR** (`is_ocr=false`). For digital PDFs / Office
+   docs with embedded text, MinerU returns text instantly.
+2. **If result is empty / `<!-- image-->` for all pages** (indicating scanned
+   content), **automatically retry with `is_ocr=true`**.
+3. This gives: digital PDFs = instant, scanned PDFs = OCR (slower but correct).
+4. The `AGENTSEEK_MINERU_IS_OCR` env var becomes a **force override**:
+   - `false` (default): auto-detect (try non-OCR, fallback to OCR)
+   - `true`: always OCR (for known scanned-only workflows)
+
+This avoids the 8+ minute wait for digital PDFs while still handling scans.
+
+**Cosmetic fixes verified:**
+- File extension `.pdf.pdf` double suffix: needs re-verification with next PDF
+  send (media.py fix in this commit).
+- TXT hex filename: needs re-verification.
+
+**File name display:** bot correctly shows Chinese filename
+(`华锐高速行情中心AMD4.0产品白皮书.pdf`) — the hex encoding may be resolved for
+files with Content-Disposition (image case). Needs re-check for files without
+Content-Disposition.
