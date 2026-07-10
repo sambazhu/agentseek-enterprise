@@ -62,6 +62,40 @@ def test_current_files_leaves_text_only_extract_without_image_analysis() -> None
     assert "ImageOCR" not in context
 
 
+def test_current_files_summarizes_complete_large_spreadsheet_without_expanding_excerpt() -> None:
+    record = _record()
+    record.filename = "退餐统计.xlsx"
+    record.sanitized_filename = "report.xlsx"
+    record.mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    rows = "".join(
+        f"<tr><td>{index}</td><td>{'一一班' if index % 2 else '一二班'}</td>"
+        f"<td>学生{index}</td><td>{index * 10}</td></tr>"
+        for index in range(1, 1_501)
+    )
+    text = f"<table><tr><th>序号</th><th>班级</th><th>姓名</th><th>金额</th></tr>{rows}</table>"
+    assert len(text) > 50_000
+
+    context = build_current_files_context([record], {record.file_id: text}, max_chars_per_file=12_000)
+
+    assert f"extract_total_chars: {len(text)}" in context
+    assert "extract_truncated: true" in context
+    assert "表格数据行数（不含表头）: 1500" in context
+    assert "字段: 序号 | 班级 | 姓名 | 金额" in context
+    assert "最后一条记录: 1500 | 一二班 | 学生1500 | 15000" in context
+    assert "金额=10..15000" in context
+    assert 'analyze_file(file_id="file_context"' in context
+    assert "学生1500" not in context.split("  excerpt: |", maxsplit=1)[1]
+
+
+def test_current_files_does_not_add_large_file_guidance_to_small_extract() -> None:
+    record = _record()
+
+    context = build_current_files_context([record], {record.file_id: "短文件"})
+
+    assert "extract_truncated" not in context
+    assert "analysis_tool_hint" not in context
+
+
 def _record() -> FileRecord:
     return FileRecord(
         file_id="file_context",

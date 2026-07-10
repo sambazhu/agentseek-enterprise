@@ -8,6 +8,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "bub==0.3.9",
     "httpx>=0.28",
+    "langgraph>=1.0",
 ]
 
 [project.entry-points."bub"]

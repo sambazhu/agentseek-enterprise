@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from agentseek_files.content_analysis import analyze_content, format_large_file_summary
 from agentseek_files.models import FileRecord
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
@@ -11,6 +12,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _TABLE_RE = re.compile(r"<table\b", re.IGNORECASE)
 _MIN_OCR_TEXT_CHARS = 100
 _PREVIEW_CHARS = 180
+_LARGE_FILE_THRESHOLD = 50_000
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,18 @@ def build_current_files_context(
         lines.append(f"  extract_status: {record.extract_status}")
         text = extract_map.get(record.file_id, "")
         if text:
+            if len(text) > _LARGE_FILE_THRESHOLD:
+                content_analysis = analyze_content(text)
+                lines.append(f"  extract_total_chars: {content_analysis.total_chars}")
+                lines.append(f"  extract_total_lines: {content_analysis.total_lines}")
+                lines.append("  extract_truncated: true")
+                lines.append("  large_file_summary: |")
+                for summary_line in format_large_file_summary(content_analysis):
+                    lines.append(f"    {summary_line}")
+                lines.append(
+                    "  analysis_tool_hint: 全文未放入上下文；统计、分组、范围或全文检索问题，"
+                    f'必须调用 analyze_file(file_id="{record.file_id}", question=<用户问题>)，不得按 excerpt 估算。'
+                )
             image_analysis = _analyze_image_ocr(text)
             if image_analysis.total:
                 lines.append(f"  image_refs: {image_analysis.total}")

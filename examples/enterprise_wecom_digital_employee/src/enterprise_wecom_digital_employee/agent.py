@@ -10,6 +10,7 @@ from agentseek_enterprise.long_term_memory import employee_memory_tools
 from agentseek_enterprise.memory import format_short_term_memory_for_prompt
 from agentseek_enterprise.runtime import EnterpriseRuntimeContext, enterprise_filesystem_namespace
 from agentseek_enterprise.static_assets import StaticAgentAssets, load_static_agent_assets
+from agentseek_files.analysis_tools import file_analysis_tools
 from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
 from deepagents import FilesystemPermission, create_deep_agent
@@ -77,6 +78,7 @@ def build_agent() -> Any:
             list_mcp_tools,
             call_mcp_tool,
             *employee_memory_tools(),
+            *file_analysis_tools(),
         ],
         system_prompt=_system_prompt(_STATIC_ASSETS),
         skills=["/skills"],
@@ -189,6 +191,8 @@ def _current_files_message(state: Mapping[str, object]) -> SystemMessage | None:
         "CurrentFiles 中 ImageOCR status=parsed 表示图片已经转换为可读 OCR 文本/表格，"
         "必须使用其后内容回答，不得声称无法读取图片。只有 status=unparsed 才表示没有可用图片内容，"
         "此时不得猜测图片可能是 logo、公章、签名或其他类型。\n"
+        "若 CurrentFiles 标记 extract_truncated=true，统计、分组、范围、全文搜索等问题必须调用 "
+        "analyze_file，并传入 CurrentFiles 中的 file_id 和用户原问题；不得根据 excerpt 估算完整文件。\n"
         "[/CurrentFilesUsage]"
     )
     return SystemMessage(content=f"{guidance}\n{content}")
