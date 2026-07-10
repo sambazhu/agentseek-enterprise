@@ -44,6 +44,21 @@ def test_store_rejects_disallowed_extension(tmp_path):
         store.store_bytes(scope=scope, filename="report.exe", data=b"x")
 
 
+def test_store_adds_pdf_extension_from_mime_type_when_filename_has_none(tmp_path):
+    store = LocalFileStore(FilesSettings(root_dir=tmp_path, allowed_extensions=(".pdf",)))
+    scope = FileScope("hmac-tenant", "hmac-employee", "hmac-session")
+
+    record = store.store_bytes(
+        scope=scope,
+        filename="document_20260710_120000",
+        data=b"%PDF-1.7\nmock",
+        mime_type="application/pdf; charset=binary",
+    )
+
+    assert record.filename == "document_20260710_120000.pdf"
+    assert record.sanitized_filename == "document_20260710_120000.pdf"
+
+
 def test_store_rejects_oversize_file(tmp_path):
     store = LocalFileStore(FilesSettings(root_dir=tmp_path, max_bytes=3, allowed_extensions=(".txt",)))
     scope = FileScope("hmac-t", "hmac-e", "hmac-s")

@@ -10,6 +10,7 @@ from agentseek_files.models import ExtractResult, FileDirection, FileRecord, Fil
 from agentseek_files.settings import FilesSettings
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_MIME_TYPE_EXTENSIONS = {"application/pdf": ".pdf"}
 
 
 class FileStoreError(ValueError):
@@ -44,6 +45,11 @@ class LocalFileStore:
 
         safe_name = sanitize_filename(filename)
         extension = Path(safe_name).suffix.lower()
+        if not extension:
+            extension = _MIME_TYPE_EXTENSIONS.get(mime_type.partition(";")[0].strip().lower(), "")
+            if extension:
+                filename = f"{filename or Path(safe_name).stem}{extension}"
+                safe_name = f"{safe_name}{extension}"
         if extension not in self.settings.allowed_extensions:
             raise FileStoreError(f"File extension is not allowed: {extension or '<none>'}")
 
