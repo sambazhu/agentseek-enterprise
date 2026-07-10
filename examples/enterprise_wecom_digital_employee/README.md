@@ -237,16 +237,20 @@ AGENTSEEK_FILES_ENABLED=true
 AGENTSEEK_FILES_EXTRACTOR=mineru
 AGENTSEEK_MINERU_BASE_URL=https://mineru.net
 AGENTSEEK_MINERU_TOKEN=<your-token-for-the-v4-extract-api>
-AGENTSEEK_MINERU_IS_OCR=true
+AGENTSEEK_MINERU_MODEL_VERSION=vlm
+AGENTSEEK_MINERU_OCR_MODEL_VERSION=pipeline
+AGENTSEEK_MINERU_IS_OCR=false
 AGENTSEEK_MINERU_POLL_TIMEOUT_S=300
 ```
 
 Expected: the file is accepted and submitted to MinerU when the extension is in
 `AGENTSEEK_FILES_ALLOWED_EXTENSIONS`. With a token, local files use MinerU's v4
-upload API and scanned PDFs enable OCR. Without a token, the lightweight Agent
-API remains available as a compatibility fallback. Pending file records are
-refreshed from disk or MinerU on the employee's next turn, so completed text
-replaces the earlier pending snapshot.
+upload API. The default `AGENTSEEK_MINERU_IS_OCR=false` means auto-detect: first
+run the configured `vlm` model without OCR, then retry an image-only scanned PDF
+once with `pipeline` plus OCR. Set it to `true` only to force OCR immediately.
+Without a token, the lightweight Agent API remains available as a compatibility
+fallback. Pending file records are refreshed from disk or MinerU on the
+employee's next turn, so completed text replaces the earlier pending snapshot.
 
 ### MCP Policy And Audit
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from agentseek_files.inbound import InboundFileResult
@@ -101,6 +102,35 @@ class UnexpectedPollError(AssertionError):
     pass
 
 
+class PendingThenDoneFileService(FakeFileService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.settings = SimpleNamespace(mineru_poll_timeout_s=300.0, mineru_poll_interval_s=2.0)
+        self.poll_calls = 0
+
+    async def handle_bytes(self, **kwargs: Any) -> InboundFileResult:
+        result = await super().handle_bytes(**kwargs)
+        result.record.extract_status = "pending"
+        result.record.extract_chars = 0
+        result.context_block = "[CurrentFiles]\n  extract_status: pending\n[/CurrentFiles]"
+        result.user_notice = "文件正在解析"
+        result.extract_text = ""
+        result.pending = True
+        return result
+
+    async def poll_pending(self, record: FileRecord) -> InboundFileResult:
+        self.poll_calls += 1
+        record.extract_status = "done"
+        record.extract_chars = 120
+        return InboundFileResult(
+            record=record,
+            context_block="[CurrentFiles]\n  extract_status: done\n  excerpt: OCR正文\n[/CurrentFiles]",
+            user_notice="已收到并解析文件：report.pdf。",
+            extract_text="OCR正文",
+            pending=False,
+        )
+
+
 def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     return WeComChannel(
         on_receive=None,
@@ -193,6 +223,59 @@ def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
 
     assert result == "image-routed"
     assert routed_msgtypes == ["image"]
+
+
+def test_pending_file_waits_for_extract_before_dispatching_model() -> None:
+    received: list[ChannelMessage] = []
+    file_service = PendingThenDoneFileService()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            callback_path="/callback/{botid}",
+            initial_wait_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+        media_client=FakeMediaClient(),
+        file_service=file_service,
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="PDF核心内容",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+    plain = asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgid": "pending-pdf-1",
+                "msgtype": "file",
+                "from": {"userid": "chenkang2"},
+                "file": {
+                    "url": "https://ww-aibot-img.example.com/report.pdf?sign=secret",
+                    "filename": "report.pdf",
+                    "mime_type": "application/pdf",
+                },
+            }
+        )
+    )
+    payload = json.loads(plain or "{}")
+
+    assert payload["stream"]["finish"] is True
+    assert payload["stream"]["content"] == "PDF核心内容"
+    assert file_service.poll_calls == 1
+    assert len(received) == 1
+    assert "已收到并解析文件" in received[0].content
+    assert "extract_status: done" in received[0].context["files"]["current_files_context"]
 
 
 def test_text_message_creates_stream_and_emits_channel_message() -> None:

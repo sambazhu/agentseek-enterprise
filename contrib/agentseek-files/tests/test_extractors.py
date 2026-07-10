@@ -5,10 +5,12 @@ import io
 import json
 import zipfile
 
+import agentseek_files.extractors.mineru as mineru_module
 import httpx
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
-from agentseek_files.extractors.mineru import MinerUExtractor
+from agentseek_files.extractors.mineru import MinerUExtractor, has_substantive_text
+from agentseek_files.inbound import InboundFileService
 from agentseek_files.models import FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import LocalFileStore
@@ -76,9 +78,16 @@ def test_mineru_async_client_uploads_bytes_without_sync_stream_error(tmp_path):
     assert uploaded == [pdf_bytes]
 
 
-def test_mineru_v4_upload_ocr_poll_and_markdown_zip(tmp_path):
+def test_mineru_v4_upload_ocr_poll_and_markdown_zip(tmp_path, monkeypatch):
     uploaded: list[bytes] = []
     submitted: list[dict] = []
+    debug_messages: list[str] = []
+
+    class FakeLogger:
+        def debug(self, message: str, *args: object) -> None:
+            debug_messages.append(message.format(*args))
+
+    monkeypatch.setattr(mineru_module, "logger", FakeLogger())
     result_zip = io.BytesIO()
     with zipfile.ZipFile(result_zip, "w") as archive:
         archive.writestr("result/full.md", "扫描件 OCR 结果")
@@ -159,10 +168,11 @@ def test_mineru_v4_upload_ocr_poll_and_markdown_zip(tmp_path):
 
     assert pending.provider_task_id == "batch-1"
     assert pending.metadata["mode"] == "extract_batch"
+    assert pending.metadata["ocr_mode"] == "forced"
     assert submitted == [
         {
             "files": [{"name": "scan.pdf", "data_id": record.file_id, "is_ocr": True}],
-            "model_version": "vlm",
+            "model_version": "pipeline",
             "language": "ch",
             "enable_table": True,
             "enable_formula": True,
@@ -172,3 +182,109 @@ def test_mineru_v4_upload_ocr_poll_and_markdown_zip(tmp_path):
     assert done.status == "done"
     assert done.markdown == "扫描件 OCR 结果"
     assert done.chars == 10
+    debug_output = "\n".join(debug_messages)
+    assert '"is_ocr": true' in debug_output
+    assert '"model_version": "pipeline"' in debug_output
+    assert "mineru-test-token" not in debug_output
+    assert "scan.pdf" not in debug_output
+
+
+def test_mineru_auto_detect_retries_image_only_pdf_with_pipeline_ocr(tmp_path, monkeypatch):
+    submitted: list[dict] = []
+    uploaded: list[bytes] = []
+    first_zip = _markdown_zip("![](images/page-1.jpg)\n<!-- image -->")
+    ocr_text = "这是扫描 PDF 的 OCR 中文正文。" * 12
+    second_zip = _markdown_zip(ocr_text)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            submitted.append(json.loads(request.content))
+            attempt = len(submitted)
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "batch_id": f"batch-{attempt}",
+                        "file_urls": [f"https://upload.example.com/file-{attempt}"],
+                    },
+                },
+            )
+        if request.url.host == "upload.example.com":
+            uploaded.append(request.content)
+            return httpx.Response(200)
+        if request.url.path == "/api/v4/extract-results/batch/batch-1":
+            return _done_batch_response("batch-1", "https://result.example.com/first.zip")
+        if request.url.path == "/api/v4/extract-results/batch/batch-2":
+            return _done_batch_response("batch-2", "https://result.example.com/second.zip")
+        if request.url.path == "/first.zip":
+            return httpx.Response(200, content=first_zip)
+        if request.url.path == "/second.zip":
+            return httpx.Response(200, content=second_zip)
+        raise AssertionError
+
+    settings = FilesSettings(
+        root_dir=tmp_path,
+        allowed_extensions=(".pdf",),
+        extractor="mineru",
+        mineru_base_url="https://mineru.example.com",
+        mineru_token="mineru-test-token",
+        mineru_model_version="vlm",
+        mineru_ocr_model_version="pipeline",
+        mineru_is_ocr=False,
+    )
+    service = InboundFileService(settings)
+    pdf_bytes = b"%PDF-1.4\nscanned"
+
+    async def run_flow():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            monkeypatch.setattr(service, "_mineru_extractor", MinerUExtractor(settings, client=client))
+            pending = await service.handle_bytes(
+                scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+                filename="scan.pdf",
+                data=pdf_bytes,
+                mime_type="application/pdf",
+            )
+            first_task_id = pending.record.extract_task_id
+            retried = await service.poll_pending(pending.record)
+            done = await service.poll_pending(retried.record)
+            return first_task_id, retried, done
+
+    first_task_id, retried, done = asyncio.run(run_flow())
+
+    assert first_task_id == "batch-1"
+    assert retried.record.extract_task_id == "batch-2"
+    assert retried.record.metadata["extract"]["ocr_attempt"] == 2
+    assert submitted[0]["files"][0]["is_ocr"] is False
+    assert submitted[0]["model_version"] == "vlm"
+    assert submitted[1]["files"][0]["is_ocr"] is True
+    assert submitted[1]["model_version"] == "pipeline"
+    assert uploaded == [pdf_bytes, pdf_bytes]
+    assert done.record.extract_status == "done"
+    assert done.extract_text == ocr_text
+
+
+def test_mineru_substantive_text_ignores_image_only_placeholders() -> None:
+    assert has_substantive_text("![](images/one.jpg)\n<!-- image -->\n<img src='two.jpg'>") is False
+    assert has_substantive_text("有效的数字 PDF 正文内容。" * 12) is True
+
+
+def _markdown_zip(markdown: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("result/full.md", markdown)
+    return buffer.getvalue()
+
+
+def _done_batch_response(batch_id: str, full_zip_url: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "data": {
+                "batch_id": batch_id,
+                "extract_result": [{"state": "done", "full_zip_url": full_zip_url}],
+            },
+        },
+    )

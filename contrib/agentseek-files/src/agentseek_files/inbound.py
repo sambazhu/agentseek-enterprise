@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
 from agentseek_files.extractors.mineru import MinerUExtractor
@@ -81,6 +83,26 @@ class InboundFileService:
             )
         else:
             result = await self._mineru_extractor.poll_result(record, record.extract_task_id)
+            if self._mineru_extractor.should_retry_with_ocr(record, result):
+                try:
+                    result = await self._mineru_extractor.retry_with_ocr(
+                        record,
+                        self.store.original_path(record),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "files.ocr_retry failed file_id={} error={}",
+                        record.file_id,
+                        type(exc).__name__,
+                    )
+                    result = ExtractResult(
+                        file_id=record.file_id,
+                        provider="mineru",
+                        status="failed",
+                        provider_task_id=record.extract_task_id,
+                        error_code="ocr_retry_failed",
+                        error_message="MinerU OCR retry failed.",
+                    )
         record = self.store.save_extract(record, result)
         text = result.markdown or result.text
         context_block = build_current_files_context(

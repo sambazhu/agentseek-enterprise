@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
+import re
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from agentseek_files.models import ExtractResult, FileRecord
 from agentseek_files.settings import FilesSettings
 
 _MAX_MARKDOWN_BYTES = 50 * 1024 * 1024
+_MIN_SUBSTANTIVE_CHARS = 100
+_HTML_IMAGE_COMMENT_RE = re.compile(r"<!--\s*image\s*-->", re.IGNORECASE)
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_HTML_IMAGE_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 
 
 class MinerUExtractor:
@@ -56,28 +63,51 @@ class MinerUExtractor:
                 error_message="MinerU extractor does not support this file extension.",
             )
         if self.settings.mineru_token.strip():
-            return await self.submit_extract_file(record, source_path)
-        return await self.submit_agent_file(record, source_path)
+            return await self.submit_extract_file(
+                record,
+                source_path,
+                is_ocr=self.settings.mineru_is_ocr,
+                ocr_mode="forced" if self.settings.mineru_is_ocr else "auto",
+            )
+        return await self.submit_agent_file(
+            record,
+            source_path,
+            is_ocr=self.settings.mineru_is_ocr,
+            ocr_mode="forced" if self.settings.mineru_is_ocr else "auto",
+        )
 
-    async def submit_extract_file(self, record: FileRecord, source_path: Path) -> ExtractResult:
+    async def submit_extract_file(
+        self,
+        record: FileRecord,
+        source_path: Path,
+        *,
+        is_ocr: bool,
+        ocr_mode: str,
+        ocr_attempt: int = 1,
+    ) -> ExtractResult:
         """Upload a local file through MinerU's token-authenticated v4 Extract API."""
+        model_version = (
+            self.settings.mineru_ocr_model_version if is_ocr else self.settings.mineru_model_version
+        )
+        body = {
+            "files": [
+                {
+                    "name": record.sanitized_filename,
+                    "data_id": record.file_id,
+                    "is_ocr": is_ocr,
+                }
+            ],
+            "model_version": model_version,
+            "language": self.settings.mineru_language,
+            "enable_table": self.settings.mineru_enable_table,
+            "enable_formula": self.settings.mineru_enable_formula,
+        }
+        logger.debug("mineru.v4 submit body={}", json.dumps(_redacted_v4_body(body), sort_keys=True))
         async with self._managed_client() as client:
             response = await client.post(
                 f"{self.settings.mineru_base_url}/api/v4/file-urls/batch",
                 headers=self._auth_headers(),
-                json={
-                    "files": [
-                        {
-                            "name": record.sanitized_filename,
-                            "data_id": record.file_id,
-                            "is_ocr": self.settings.mineru_is_ocr,
-                        }
-                    ],
-                    "model_version": self.settings.mineru_model_version,
-                    "language": self.settings.mineru_language,
-                    "enable_table": self.settings.mineru_enable_table,
-                    "enable_formula": self.settings.mineru_enable_formula,
-                },
+                json=body,
             )
             response.raise_for_status()
             payload = response.json()
@@ -98,10 +128,24 @@ class MinerUExtractor:
                 status="pending",
                 provider_task_id=batch_id,
                 provider_trace_id=str(payload.get("trace_id") or ""),
-                metadata={"mode": "extract_batch"},
+                metadata={
+                    "mode": "extract_batch",
+                    "ocr_mode": ocr_mode,
+                    "is_ocr": is_ocr,
+                    "ocr_attempt": ocr_attempt,
+                    "model_version": model_version,
+                },
             )
 
-    async def submit_agent_file(self, record: FileRecord, source_path: Path) -> ExtractResult:
+    async def submit_agent_file(
+        self,
+        record: FileRecord,
+        source_path: Path,
+        *,
+        is_ocr: bool,
+        ocr_mode: str,
+        ocr_attempt: int = 1,
+    ) -> ExtractResult:
         async with self._managed_client() as client:
             response = await client.post(
                 f"{self.settings.mineru_base_url}/api/v1/agent/parse/file",
@@ -109,7 +153,7 @@ class MinerUExtractor:
                     "file_name": record.sanitized_filename,
                     "language": self.settings.mineru_language,
                     "enable_table": self.settings.mineru_enable_table,
-                    "is_ocr": self.settings.mineru_is_ocr,
+                    "is_ocr": is_ocr,
                     "enable_formula": self.settings.mineru_enable_formula,
                 },
             )
@@ -133,17 +177,56 @@ class MinerUExtractor:
                 status="pending",
                 provider_task_id=task_id,
                 provider_trace_id=str(payload.get("trace_id") or ""),
-                metadata={"mode": "agent"},
+                metadata={
+                    "mode": "agent",
+                    "ocr_mode": ocr_mode,
+                    "is_ocr": is_ocr,
+                    "ocr_attempt": ocr_attempt,
+                },
             )
 
     async def poll_result(self, record: FileRecord, task_id: str) -> ExtractResult:
-        extract_metadata = record.metadata.get("extract")
-        mode = str(extract_metadata.get("mode") or "") if isinstance(extract_metadata, dict) else ""
+        extract_metadata = _extract_metadata(record)
+        mode = str(extract_metadata.get("mode") or "")
         if mode == "extract_batch":
             return await self.poll_extract_result(record, task_id)
         return await self.poll_agent_result(record, task_id)
 
+    def should_retry_with_ocr(self, record: FileRecord, result: ExtractResult) -> bool:
+        metadata = _extract_metadata(record)
+        return (
+            Path(record.sanitized_filename).suffix.lower() == ".pdf"
+            and result.status == "done"
+            and metadata.get("ocr_mode") == "auto"
+            and metadata.get("is_ocr") is False
+            and not has_substantive_text(result.markdown or result.text)
+        )
+
+    async def retry_with_ocr(
+        self,
+        record: FileRecord,
+        source_path: Path,
+    ) -> ExtractResult:
+        metadata = _extract_metadata(record)
+        mode = str(metadata.get("mode") or "")
+        if mode == "extract_batch":
+            return await self.submit_extract_file(
+                record,
+                source_path,
+                is_ocr=True,
+                ocr_mode="auto",
+                ocr_attempt=2,
+            )
+        return await self.submit_agent_file(
+            record,
+            source_path,
+            is_ocr=True,
+            ocr_mode="auto",
+            ocr_attempt=2,
+        )
+
     async def poll_extract_result(self, record: FileRecord, batch_id: str) -> ExtractResult:
+        task_metadata = _extract_metadata(record)
         async with self._managed_client() as client:
             response = await client.get(
                 f"{self.settings.mineru_base_url}/api/v4/extract-results/batch/{batch_id}",
@@ -181,7 +264,7 @@ class MinerUExtractor:
                     provider_task_id=batch_id,
                     provider_trace_id=str(payload.get("trace_id") or ""),
                     error_message=str(item.get("err_msg") or "") or None,
-                    metadata={"mode": "extract_batch", "state": state},
+                    metadata={**task_metadata, "mode": "extract_batch", "state": state},
                 )
             full_zip_url = str(item.get("full_zip_url") or "")
             if not full_zip_url:
@@ -202,10 +285,16 @@ class MinerUExtractor:
                 chars=len(markdown),
                 provider_task_id=batch_id,
                 provider_trace_id=str(payload.get("trace_id") or ""),
-                metadata={"mode": "extract_batch", "state": state, "full_zip_url_present": True},
+                metadata={
+                    **task_metadata,
+                    "mode": "extract_batch",
+                    "state": state,
+                    "full_zip_url_present": True,
+                },
             )
 
     async def poll_agent_result(self, record: FileRecord, task_id: str) -> ExtractResult:
+        task_metadata = _extract_metadata(record)
         async with self._managed_client() as client:
             response = await client.get(f"{self.settings.mineru_base_url}/api/v1/agent/parse/{task_id}")
             response.raise_for_status()
@@ -222,7 +311,7 @@ class MinerUExtractor:
                     provider_task_id=task_id,
                     provider_trace_id=str(payload.get("trace_id") or ""),
                     error_message=str(data.get("err_msg") or "") or None,
-                    metadata={"mode": "agent", "state": state},
+                    metadata={**task_metadata, "mode": "agent", "state": state},
                 )
             markdown_url = str(data.get("md_url") or data.get("markdown_url") or data.get("full_md_url") or "")
             markdown = ""
@@ -239,7 +328,12 @@ class MinerUExtractor:
                 chars=len(markdown),
                 provider_task_id=task_id,
                 provider_trace_id=str(payload.get("trace_id") or ""),
-                metadata={"mode": "agent", "state": state, "markdown_url_present": bool(markdown_url)},
+                metadata={
+                    **task_metadata,
+                    "mode": "agent",
+                    "state": state,
+                    "markdown_url_present": bool(markdown_url),
+                },
             )
 
     def _auth_headers(self) -> dict[str, str]:
@@ -266,6 +360,39 @@ class _ClientContext:
         del exc_type, exc, tb
         if self.close:
             await self.client.aclose()
+
+
+def has_substantive_text(content: str) -> bool:
+    """Return whether MinerU output contains useful text beyond image placeholders."""
+    text = _HTML_IMAGE_COMMENT_RE.sub("", str(content or ""))
+    text = _MARKDOWN_IMAGE_RE.sub("", text)
+    text = _HTML_IMAGE_RE.sub("", text)
+    meaningful = "".join(character for character in text if character.isalnum())
+    return len(meaningful) > _MIN_SUBSTANTIVE_CHARS
+
+
+def _extract_metadata(record: FileRecord) -> dict[str, Any]:
+    metadata = record.metadata.get("extract")
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _redacted_v4_body(body: dict[str, Any]) -> dict[str, Any]:
+    redacted = {key: value for key, value in body.items() if key != "files"}
+    files = body.get("files")
+    redacted_files: list[dict[str, Any]] = []
+    if isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            redacted_files.append(
+                {
+                    "name": "<redacted>",
+                    "data_id": "<redacted>",
+                    "is_ocr": bool(item.get("is_ocr")),
+                }
+            )
+    redacted["files"] = redacted_files
+    return redacted
 
 
 def _markdown_from_zip(content: bytes) -> str:

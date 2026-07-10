@@ -8,10 +8,11 @@ from agentseek_files.plugin import CURRENT_FILES_CONTEXT_STATE_KEY, CURRENT_FILE
 from agentseek_files.settings import FilesSettings
 
 
-def test_mineru_defaults_enable_ocr_and_five_minute_polling() -> None:
+def test_mineru_defaults_use_auto_ocr_and_five_minute_polling() -> None:
     settings = FilesSettings()
 
-    assert settings.mineru_is_ocr is True
+    assert settings.mineru_is_ocr is False
+    assert settings.mineru_ocr_model_version == "pipeline"
     assert settings.mineru_poll_timeout_s == 300.0
 
 

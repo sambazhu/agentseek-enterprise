@@ -318,6 +318,8 @@ class WeComChannel(Channel):
             return await self._stream_response(stream.stream_id)
 
         files_context: dict[str, Any] = {}
+        pending_record: Any | None = None
+        leading_content = content
         try:
             result = await self._download_and_store_media(
                 data=data,
@@ -348,7 +350,7 @@ class WeComChannel(Channel):
                 content_parts.append("请结合当前文件上下文回答用户。")
             content = "\n".join(part for part in content_parts if part).strip()
             if result.pending:
-                self._schedule_pending_file_poll(stream.stream_id, result.record)
+                pending_record = result.record
             _emit_enterprise_event(
                 "wecom_media_intake",
                 status="succeeded",
@@ -374,6 +376,19 @@ class WeComChannel(Channel):
             msgtype=data.get("msgtype"),
             content_chars=len(content),
         )
+        if pending_record is not None:
+            self._schedule_pending_file_dispatch(
+                stream_id=stream.stream_id,
+                record=pending_record,
+                data=data,
+                session_id=session_id,
+                chat_id=chat_id,
+                from_userid=from_userid,
+                resolved_userid=resolved_userid,
+                userid=userid,
+                leading_content=leading_content,
+            )
+            return await self._stream_response(stream.stream_id)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -719,15 +734,49 @@ class WeComChannel(Channel):
         self._file_service = InboundFileService(settings)
         return self._file_service
 
-    def _schedule_pending_file_poll(self, stream_id: str, record: Any) -> None:
+    def _schedule_pending_file_dispatch(
+        self,
+        *,
+        stream_id: str,
+        record: Any,
+        data: dict[str, Any],
+        session_id: str,
+        chat_id: str,
+        from_userid: str | None,
+        resolved_userid: str | None,
+        userid: str | None,
+        leading_content: str,
+    ) -> None:
         task = asyncio.create_task(
-            self._poll_pending_file(stream_id, record),
+            self._poll_pending_file_and_dispatch(
+                stream_id=stream_id,
+                record=record,
+                data=data,
+                session_id=session_id,
+                chat_id=chat_id,
+                from_userid=from_userid,
+                resolved_userid=resolved_userid,
+                userid=userid,
+                leading_content=leading_content,
+            ),
             name=f"agentseek-wecom.file-poll.{stream_id}",
         )
         self._dispatch_tasks.add(task)
         task.add_done_callback(self._on_dispatch_done)
 
-    async def _poll_pending_file(self, stream_id: str, record: Any) -> None:
+    async def _poll_pending_file_and_dispatch(
+        self,
+        *,
+        stream_id: str,
+        record: Any,
+        data: dict[str, Any],
+        session_id: str,
+        chat_id: str,
+        from_userid: str | None,
+        resolved_userid: str | None,
+        userid: str | None,
+        leading_content: str,
+    ) -> None:
         file_service = self._get_file_service()
         if file_service is None:
             return
@@ -748,15 +797,15 @@ class WeComChannel(Channel):
                     file_id=getattr(record, "file_id", ""),
                     error_type=type(exc).__name__,
                 )
+                stream = await self._get_stream(stream_id)
+                if stream is not None:
+                    stream.update(content="文件解析失败，请稍后重试。", finish=True)
                 return
             current_record = result.record
             if result.record.extract_status not in {"pending", "running"} or time.monotonic() >= deadline:
                 break
             await asyncio.sleep(interval_s)
 
-        stream = await self._get_stream(stream_id)
-        if stream is not None and result.record.extract_status == "done":
-            stream.update(content=f"{result.user_notice}\n你可以继续问我这个文件里的内容。", finish=True)
         _emit_enterprise_event(
             "wecom_file_extract_finished",
             status=result.record.extract_status,
@@ -764,6 +813,26 @@ class WeComChannel(Channel):
             file_id=result.record.file_id,
             extract_chars=result.record.extract_chars,
         )
+        content_parts = [leading_content] if leading_content else []
+        content_parts.append(result.user_notice)
+        if result.context_block:
+            content_parts.append("请结合当前文件上下文回答用户。")
+        message = ChannelMessage(
+            session_id=session_id,
+            channel=self.name,
+            chat_id=chat_id,
+            content="\n".join(part for part in content_parts if part).strip(),
+            is_active=True,
+            context=self._message_context(
+                data=data,
+                from_userid=from_userid,
+                resolved_userid=resolved_userid,
+                userid=userid,
+                files_context=result.to_context(),
+            ),
+        )
+        setattr(message, _STREAM_ID_ATTR, stream_id)
+        await self._run_receive(message)
 
 
 def _extract_from_userid(data: dict[str, Any]) -> str | None:
