@@ -3650,3 +3650,59 @@ non-blocking for files, to be fixed by Codex.
 
 Pipeline fully functional. Auto-detect OCR is a major improvement. Mixed PDF
 background merge is the next enhancement for Codex.
+
+### Durable memory slot fix verification (8025831, 2026-07-10) — PASS
+
+Codex fixed P1 slot supersession: `responsibility` → multi-value slots
+(`responsibility.data_arch`, `responsibility.ai_arch`); `forget` only on
+explicit user request; no model-initiated dedup/forget. Static: enterprise 75,
+files 18, wecom 33, template 25; ruff + ty clean; MCP zero-diff.
+
+**Test:** stored two distinct work duties, then recalled.
+- `请长期记住：我负责数据架构工作` → `durable_memory_write status=recorded` ✅
+- `请长期记住：我负责 AI 架构工作` → `durable_memory_write status=recorded` ✅
+- `我的工作职责是什么？` → bot replied "工作职责为 **2项**：1. 数据架构工作
+  (slot: responsibility.data_arch) 2. AI架构工作 (slot: responsibility.ai_arch)" ✅
+- `durable_memory_forget: 0` ✅ (was 1 before fix — the bug that deleted
+  "数据架构工作" is gone)
+
+**Before/after comparison:**
+
+| | Before (23e1342) | After (8025831) |
+|---|---|---|
+| Two distinct duties stored | ✅ both recorded | ✅ both recorded |
+| Recall shows both | ❌ only 1 (other deleted) | ✅ **2 items** |
+| `durable_memory_forget` | ❌ 1 (auto-dedup deleted old) | ✅ **0** (no auto-forget) |
+
+**Historical test data cleanup:** previous testing rounds left an old entry
+`[work_context|slot=responsibility_ai]` (underscore naming, pre-fix convention)
+alongside the new `[work_context|slot=responsibility.ai_arch]` (dot naming).
+Bot correctly detected the duplicate and warned the user. Old entry manually
+deleted from postgres; profile now clean with only the two correct entries.
+
+**Bot UX note:** bot proactively warned "AI架构工作在记忆中存有2条…如需我清理旧条目，
+告诉我即可" — good UX (detects duplicates, offers cleanup, doesn't auto-delete).
+
+### v0.0.9 files plugin + durable memory — FINAL STATUS
+
+| Component | Status | Commit |
+|-----------|--------|--------|
+| AI Bot file download (url + AES decrypt) | ✅ | 8c68e1f |
+| Extension detection (Content-Type/magic bytes) | ✅ | cc666f7 |
+| sync/async MinerU fix | ✅ | e965532 |
+| auto-detect OCR (is_ocr=false first, retry if empty) | ✅ | 5b62c61 |
+| CurrentFiles state refresh (plugin.py re-poll) | ✅ | 50ea122 |
+| Scheme C mixed PDF background OCR | ✅ | 23e1342 |
+| Durable memory slot preservation (no auto-forget) | ✅ | 8025831 |
+| MCP policy/tools zero-diff vs 68d7b25 | ✅ | all |
+| Static: 75+18+33+25 tests, ruff+ty | ✅ | all |
+
+**Remaining items for Codex (non-blocking):**
+1. `metadata.json`: persist `mixed_pdf_bg_ocr` + `bg_ocr_status` fields after
+   background OCR completes (currently runs but doesn't write status to metadata).
+2. txt filename: still hex-encoded when no Content-Disposition (cosmetic).
+3. Historical test data accumulation in `/employee-profile.md` (multiple rounds
+   left duplicates — manually cleaned this time; consider a `compact_profile`
+   admin tool or P4 compaction for production).
+4. VLM image description for non-text images (signatures, seals, logos, diagrams)
+   — future enhancement beyond OCR.
