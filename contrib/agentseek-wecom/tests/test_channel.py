@@ -51,8 +51,8 @@ class FakeMediaClient:
         return MediaDownload(
             media_id="redacted-url",
             data=b"hello file",
-            filename=fallback_filename,
-            mime_type=fallback_mime_type,
+            filename=fallback_filename or "document_20260710_000000_000000.txt",
+            mime_type="text/plain" if not fallback_filename else fallback_mime_type,
         )
 
 
@@ -164,11 +164,35 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
 
     assert payload["stream"]["content"] == "文件处理完成"
     assert media_client.calls == ["https://ww-aibot-img.example.com/report.txt?sign=secret"]
-    assert file_service.calls[0]["filename"] == "report.txt"
+    assert file_service.calls[0]["filename"] == "document_20260710_000000_000000.txt"
     assert received[0].context["files"]["current_files_context"].startswith("[CurrentFiles]")
     assert received[0].context["wecom"]["raw"]["file"]["has_url"] is True
     assert "url" not in received[0].context["wecom"]["raw"]["file"]
     assert "已收到并解析文件" in received[0].content
+
+
+def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
+    channel = _channel()
+    routed_msgtypes: list[str] = []
+
+    async def handle_media(data: dict[str, Any], *, fallback_content: str = "") -> str:
+        del fallback_content
+        routed_msgtypes.append(str(data.get("msgtype")))
+        return "image-routed"
+
+    monkeypatch.setattr(channel, "_handle_media_message", handle_media)
+
+    result = asyncio.run(
+        channel._handle_plain_message(
+            {
+                "msgtype": "image",
+                "image": {"url": "https://ww-aibot-img.example.com/opaque?sign=secret"},
+            }
+        )
+    )
+
+    assert result == "image-routed"
+    assert routed_msgtypes == ["image"]
 
 
 def test_text_message_creates_stream_and_emits_channel_message() -> None:

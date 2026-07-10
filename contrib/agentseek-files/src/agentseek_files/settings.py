@@ -30,6 +30,7 @@ class FilesSettings:
         ".mp3",
         ".wav",
         ".m4a",
+        ".bin",
     )
     extract_max_chars: int = 12_000
     retention_days: int = 7

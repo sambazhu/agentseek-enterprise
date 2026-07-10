@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -73,9 +74,11 @@ class MinerUExtractor:
             file_url = str(data.get("file_url") or "")
             if not task_id or not file_url:
                 return _failed(record, {"msg": "MinerU response missing task_id or file_url"})
-            with source_path.open("rb") as file_obj:
-                upload = await client.put(file_url, content=file_obj)
-                upload.raise_for_status()
+            # httpx.AsyncClient rejects a synchronous file object as request
+            # content. Read it off the event loop and send async-compatible bytes.
+            source_bytes = await asyncio.to_thread(source_path.read_bytes)
+            upload = await client.put(file_url, content=source_bytes)
+            upload.raise_for_status()
             return ExtractResult(
                 file_id=record.file_id,
                 provider=self.provider,

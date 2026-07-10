@@ -1,19 +1,52 @@
 from __future__ import annotations
 
+import io
 import json
 import mimetypes
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from email.message import Message
+from pathlib import Path
 from typing import Any
 
 from Crypto.Cipher import AES
 
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError
+
+_CONTENT_TYPE_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "audio/amr": ".amr",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a",
+    "text/plain": ".txt",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/json": ".json",
+    "text/csv": ".csv",
+    "text/markdown": ".md",
+}
+
+_EXTENSION_CONTENT_TYPES = {
+    extension: content_type for content_type, extension in reversed(_CONTENT_TYPE_EXTENSIONS.items())
+}
+_EXTENSION_CONTENT_TYPES[".jpg"] = "image/jpeg"
+_EXTENSION_CONTENT_TYPES[".mp3"] = "audio/mpeg"
+_EXTENSION_CONTENT_TYPES[".wav"] = "audio/wav"
 
 
 @dataclass
@@ -128,8 +161,12 @@ class WeComMediaClient:
                 )
 
         plaintext = decrypt_ai_bot_media(encrypted, aes_key=aes_key)
-        filename = _filename_from_headers(headers) or fallback_filename
-        mime_type = headers.get_content_type() or fallback_mime_type or _guess_mime_type(filename)
+        filename, mime_type = _resolve_ai_bot_media_metadata(
+            headers,
+            plaintext,
+            fallback_filename=fallback_filename,
+            fallback_mime_type=fallback_mime_type,
+        )
         return MediaDownload(media_id=_redacted_media_source(safe_url), data=plaintext, filename=filename, mime_type=mime_type)
 
     def _get_access_token(self) -> str:
@@ -177,6 +214,113 @@ def _filename_from_headers(headers: Message) -> str | None:
 
 def _guess_mime_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def infer_media_extension(mime_type: str, data: bytes) -> str:
+    """Infer a decrypted AI Bot media extension from HTTP metadata, then magic bytes."""
+    normalized_mime_type = _normalize_mime_type(mime_type)
+    if normalized_mime_type in _CONTENT_TYPE_EXTENSIONS:
+        return _CONTENT_TYPE_EXTENSIONS[normalized_mime_type]
+    return _extension_from_magic_bytes(data)
+
+
+def _resolve_ai_bot_media_metadata(
+    headers: Message,
+    data: bytes,
+    *,
+    fallback_filename: str,
+    fallback_mime_type: str,
+) -> tuple[str, str]:
+    header_mime_type = _header_content_type(headers)
+    extension = infer_media_extension(header_mime_type, data)
+
+    if extension == ".bin":
+        fallback_extension = _CONTENT_TYPE_EXTENSIONS.get(_normalize_mime_type(fallback_mime_type))
+        if fallback_extension:
+            extension = fallback_extension
+
+    preferred_filename = _filename_from_headers(headers) or str(fallback_filename or "").strip()
+    preferred_extension = Path(preferred_filename).suffix.lower()
+    if extension == ".bin" and preferred_extension in _EXTENSION_CONTENT_TYPES:
+        extension = preferred_extension
+
+    if header_mime_type in _CONTENT_TYPE_EXTENSIONS:
+        mime_type = header_mime_type
+    else:
+        mime_type = _EXTENSION_CONTENT_TYPES.get(extension, _normalize_mime_type(fallback_mime_type))
+    if not mime_type:
+        mime_type = "application/octet-stream"
+
+    filename = _filename_with_extension(preferred_filename, extension, mime_type)
+    return filename, mime_type
+
+
+def _header_content_type(headers: Message) -> str:
+    if not headers.get("Content-Type"):
+        return ""
+    return _normalize_mime_type(headers.get_content_type())
+
+
+def _normalize_mime_type(mime_type: str) -> str:
+    return str(mime_type or "").partition(";")[0].strip().lower()
+
+
+def _extension_from_magic_bytes(data: bytes) -> str:
+    if data.startswith(b"%PDF"):
+        return ".pdf"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG"):
+        return ".png"
+    if data.startswith(b"GIF8"):
+        return ".gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"BM"):
+        return ".bmp"
+    if data.startswith(b"PK\x03\x04"):
+        return _ooxml_extension(data)
+    return ".bin"
+
+
+def _ooxml_extension(data: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return ".bin"
+    if any(name.startswith("word/") for name in names):
+        return ".docx"
+    if any(name.startswith("ppt/") for name in names):
+        return ".pptx"
+    if any(name.startswith("xl/") for name in names):
+        return ".xlsx"
+    return ".bin"
+
+
+def _filename_with_extension(filename: str, extension: str, mime_type: str) -> str:
+    clean_name = Path(filename).name.strip() if filename else ""
+    current_extension = Path(clean_name).suffix
+    if clean_name and current_extension.lower() != ".bin":
+        if extension == ".bin" or current_extension.lower() == extension:
+            return clean_name
+        return f"{clean_name[: -len(current_extension)] if current_extension else clean_name}{extension}"
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+    prefix = _friendly_media_prefix(extension, mime_type)
+    return f"{prefix}_{timestamp}{extension}"
+
+
+def _friendly_media_prefix(extension: str, mime_type: str) -> str:
+    if extension in {".jpg", ".png", ".gif", ".webp", ".bmp"} or mime_type.startswith("image/"):
+        return "image"
+    if extension in {".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".pptx", ".xlsx"}:
+        return "document"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type.startswith("video/"):
+        return "video"
+    return "file"
 
 
 def decode_encoding_aes_key(encoding_aes_key: str) -> bytes:

@@ -7,9 +7,7 @@ import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -812,7 +810,10 @@ def _extract_ai_bot_media(data: dict[str, Any]) -> dict[str, str] | None:
     url = _first_text(payload, "url")
     if not url:
         return None
-    filename = _first_text(payload, "filename", "file_name", "name") or _filename_from_media_url(url, msgtype)
+    # AI Bot signed URLs identify opaque encrypted objects, not user-facing filenames.
+    # Leave the fallback empty so the downloader can name the file after inspecting
+    # the decrypted bytes and response Content-Type.
+    filename = _first_text(payload, "filename", "file_name", "name") or ""
     mime_type = _first_text(payload, "mime_type", "mimetype", "content_type") or _default_media_mime_type(msgtype)
     return {"url": url, "filename": filename, "mime_type": mime_type, "kind": msgtype}
 
@@ -890,13 +891,6 @@ def _default_media_filename(msgtype: str, identifier: str) -> str:
         "video": ".mp4",
     }.get(msgtype, ".bin")
     return f"{msgtype or 'file'}_{clean}{extension}"
-
-
-def _filename_from_media_url(url: str, msgtype: str) -> str:
-    path_name = Path(unquote(urlparse(url).path)).name
-    if path_name and "." in path_name:
-        return path_name
-    return _default_media_filename(msgtype, path_name or "upload")
 
 
 def _default_media_mime_type(msgtype: str) -> str:
