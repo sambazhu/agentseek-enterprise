@@ -4275,3 +4275,63 @@ extracted.md: **2 个 `<table>`**, **2 个 H1 页签名**(`# 一年级退餐明�
 - 若 MinerU 对内嵌 PNG 仍不产出文字，metadata 应明确为 `unchanged`，普通表格/另一页签不受影响。
 - 若换用 MinerU 可识别的文字图片，metadata 应为 `replace` 或 `append_supplement`，OCR 文本进入
   `extracted.md`。
+
+---
+
+## c19962a Mac mini 复验 (2026-07-11 13:01) — 全 PASS（活体+离线）
+
+代码 `c19962a`，网关重启后 PID 35075 干净启动（`Application startup complete` / `Uvicorn :12000` /
+`channel.manager started listening`），自重启起 **0 SIGBUS / 0 HTTP 非200 / 0 Traceback**。
+
+### 1. 自动化 — 全 PASS ✅
+
+`make check-files` **47 passed**（+7 新用例）；`make test-wecom` **38**；`make test-enterprise` **79**；
+template **25**；MCP 零 diff vs `68d7b25`。
+
+### 2. 离线 oracle（对真实 97K extracted.md，file_2c3397b9850e24a6）
+
+`analyze_content` 现正确产出：`sheet_names=['一年级退餐明细','二年级退餐明细']`，`data_rows=800`，
+`unique_people=800`，`large_file_summary` 含 `页签: 一年级退餐明细(400 行); 二年级退餐明细(400 行)`。
+- `group_counts("每个班分别多少人")` = **20 班 / 合计 800**（一年级 10 + 二年级 10）✅（5fc85c0 时仅 10 班/400）
+- `group_counts("二年级每个班多少人")` = **只二年级 10 班 / 400**（一年级 0）✅
+
+### 3. 活体大文件（多页签大文件.xlsx，file_2c3397b9850e24a6，88458 字 >50K）
+
+重传后两问（bot 调 analyze_file）：
+- **Q1 "每个班分别多少人？请列出所有班级"** → 页签A 一一班…一十班 各40（小计 **400**）+ 页签B
+  二一班…二十班 各40（小计 **400**）；合计 **20 班 / 每班40 / 总记录800 / 总人数800**。两页签各 400
+  行明确标出。✅ 与 oracle 逐字命中。
+- **Q2 "二年级每个班多少人"** → 仅返回二年级 10 班 / 每班40 / 合计 **400**（一年级未出现）。✅
+  `_tables_for_question` 的 sheet 过滤生效。
+
+group_counts 跨页签聚合 + sheet_name 归属 + 指定页签过滤，三项活体全部命中。**5fc85c0 的
+group_counts 首表返回 bug 已修复。**
+
+### 4. 活体含图片文件（多页签测试.xlsx，file_924599af10141be6，重传 7/11）
+
+Scheme C 触发：首遍 `is_ocr=false` → 发现图片引用 → 后台 `is_ocr=true, pipeline`（13:00:57）→
+`bg_ocr done`（13:01:22）。`metadata.metadata.background_ocr`：
+```json
+{"result_changed": false, "merge_strategy": "unchanged",
+ "image_refs_before": 1, "image_refs_after": 1, "result_chars": 1868}
+```
+- MinerU 对内嵌 PNG（渲染的表格图）**未产出文字** → `result_changed=false / merge_strategy=unchanged`，
+  不合并，extracted.md 保持 1868/2072 字。✅（与任务预期"若 MinerU 没产生 OCR"分支一致）
+- extracted.md 完整性：**2 个 `<table>`（8+6 数据行）/ 2 个 H1 页签名（页签A普通、页签B含图）/
+  1 处图片引用**——普通表格与另一页签**未受**图片 OCR 结果影响。✅
+- 日志同步：`files.mixed_pdf_bg_ocr done file_id=file_924599af10141be6 changed=False strategy=unchanged`。
+
+> 注：该内嵌 PNG 本身不被 MinerU pipeline OCR 出文字（图片侧限制），非 agentseek 缺陷；agentseek
+> 侧现在如实记录 `unchanged` 而非误报成功，行为正确。若日后用 MinerU 可识别的文字图片，应走
+> `replace`/`append_supplement` 分支（已有单测覆盖三种策略）。
+
+### 5. 安全/回归 — PASS ✅
+
+自重启起 **0 SIGBUS / 0 HTTP 非200 / 0 Traceback**；outbound 回复 0 处 `/Users`/`sambazhu`/`runtime/files`
+泄露、0 处 original 二进制；MCP 零 diff vs `68d7b25`；网关 PID 35075 持续运行。
+
+### 6. 结论
+
+c19962a 三项修复全部活体坐实通过：① group_counts 跨页签聚合（含指定页签过滤）② ParsedTable.sheet_name
+页签归属 ③ background_ocr 的 result_changed/merge_strategy 如实记录（replace/append/unchanged 三策略）。
+5fc85c0 遗留的 group_counts 首表返回 bug 已消除。
