@@ -4405,3 +4405,22 @@ analyze_file 对所有 `<table>` 聚合，与来源 pptx/xlsx 无关)，且 code
 pptx 活体专项 PASS：多页标题/顺序保留、文字+表格完整、图片 Scheme C `replace` 首次活体命中、
 非文字图/未 OCR 图正确降级为 unparsed 不幻觉、其它页不受影响、安全/回归全清。
 **Office 三件套(docx/xlsx/pptx)完整覆盖**，v0.0.9-rc1 的文件能力验证收口。
+
+---
+
+## v0.0.9 RC1 release preparation (2026-07-11)
+
+Release candidate ref: `enterprise-wecom-v0.0.9-rc1`.
+
+- Verified source before release documentation: `662372d`.
+- File plugin implementation: through `c19962a`.
+- Final Mac mini PPTX verification report: `662372d`.
+- Automated acceptance: files 47 / WeCom 38 / enterprise 79 / templates 25.
+- Live coverage: digital/scanned/mixed PDF, DOCX, multi-sheet XLSX, PPTX, TXT,
+  image, voice, and mixed messages.
+- Health: 0 SIGBUS, 0 traceback, 0 non-200 callback response in final validation.
+- Security: MCP frozen files have zero diff from `68d7b25`; no host path,
+  original binary, token, or secret appeared in outbound replies.
+- Production remains pinned to `enterprise-wecom-v0.0.8-ga` until GA promotion.
+- RC installation, smoke test, and rollback: `RC1_RUNBOOK.md`.
+- Release delta and known limitations: `CHANGELOG.md`.

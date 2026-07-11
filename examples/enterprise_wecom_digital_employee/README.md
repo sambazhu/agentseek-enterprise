@@ -24,6 +24,16 @@ git clone --branch enterprise-wecom-v0.0.8-ga http://172.200.6.12:9091/zhuchunli
 
 GitHub mirrors both refs at `https://github.com/sambazhu/agentseek-enterprise.git`.
 
+### v0.0.9 release candidate
+
+`enterprise-wecom-v0.0.9-rc1` adds verified AI Bot file intake, MinerU OCR,
+CurrentFiles refresh, complete large-file analysis, multi-sheet XLSX statistics,
+and ordered PPTX extraction. It is a release candidate, not the production GA
+baseline. Follow `RC1_RUNBOOK.md` for installation, acceptance, and rollback.
+
+Keep `enterprise-wecom-v0.0.8-ga` as the immutable production rollback tag
+until v0.0.9 receives a GA tag.
+
 ## Setup
 
 ```bash
