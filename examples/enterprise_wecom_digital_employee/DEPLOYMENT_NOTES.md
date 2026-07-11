@@ -4335,3 +4335,73 @@ Scheme C 触发：首遍 `is_ocr=false` → 发现图片引用 → 后台 `is_oc
 c19962a 三项修复全部活体坐实通过：① group_counts 跨页签聚合（含指定页签过滤）② ParsedTable.sheet_name
 页签归属 ③ background_ocr 的 result_changed/merge_strategy 如实记录（replace/append/unchanged 三策略）。
 5fc85c0 遗留的 group_counts 首表返回 bug 已消除。
+
+---
+
+## pptx 活体专项验证 (c19962a, 2026-07-11 13:26) — PASS
+
+Office 三件套最后一块。代码 `c19962a`，网关 PID 35075 未重启。测试文件
+`/tmp/pptx_test/office三件套验证.pptx`(53KB，未提交)，6 页：①封面(含备注) ②核心能力(4 要点)
+③季度销售(表格 Q1–Q4) ④月活趋势(**带文字柱状图**) ⑤品牌标识(**非文字 Logo**) ⑥谢谢(页脚+备注)。
+含 2 张内嵌图 + 2 个 notesSlide。
+
+### 1. file_id + 解析
+
+`file_id = file_4d627a376c35dfd3`。首遍 `is_ocr=false, vlm` → 发现 2 图引用 → Scheme C 后台
+`is_ocr=true, pipeline`（13:19:15）→ **`bg_ocr done changed=True strategy=replace`**（13:19:45）。
+**`replace` 策略首次活体命中**（xlsx 含图那次是 `unchanged`）。
+
+`metadata.metadata.background_ocr`：
+```json
+{"result_changed": true, "merge_strategy": "replace",
+ "image_refs_before": 2, "image_refs_after": 2, "result_chars": 933}
+```
+
+### 2. extracted.md 结构 — 多页解析 PASS ✅
+
+- **6 页幻灯片标题 + 顺序保留**：`## AgentSeek v0.0.9 文件能力汇报` → `## 核心能力` →
+  `## 季度销售` → "2026上半年月活用户(万)" → "品牌标识" → `## 谢谢`（MinerU 以 H2 还原每页标题）。
+- **文字完整**：4 条核心能力要点 + 页脚。
+- **表格完整**：`<table>` 季度销售 Q1–Q4 = 320/450/510/680 万元（Q1 环比为空，em-dash 未提取，非关键）。
+- **2 张图片引用**：slide4 `images/73823cca…`(柱状图)、slide5 `images/b37fb6fa…`(Logo)。
+- **bg OCR replace 把第 4 页柱状图的标题"2026上半年月活用户(万)"与注脚"数据来源:AgentSeek演示数据|单位:万人"
+  并入 extracted.md**（首遍没拿到这段文字）。柱状图的具体**柱值**(50/62/…/120)是图形化数据，未 OCR 成文字。
+
+### 3. Q1–Q4 活体回复（全 PASS，bot 从 excerpt 直读，文件 <50K 未触发 analyze_file）
+
+| Q | bot 回复要点 | oracle | |
+|---|---|---|---|
+| Q1 共几页/按序列标题 | **6 页**：①AgentSeek v0.0.9 文件能力汇报(封面) ②核心能力 ③季度销售 ④2026上半年月活用户(万) ⑤品牌标识 ⑥谢谢 | 6 页 + 顺序 | ✅ |
+| Q2 分别概括(不混) | 6 页逐页：封面/4 能力/季度表(Q1-Q4)/月活图/品牌图/谢谢页脚，各自独立 | 不混淆 | ✅ |
+| Q3 第3/4页 | 第3页季度销售表(320/450/510/680+环比)；第4页月活趋势图+数据来源/单位 | 各页准确 | ✅ |
+| Q4 第4/5页图片 | 第4页：读出标题"2026上半年月活用户(万)"+数据来源+单位，但图片标 unparsed（柱值未 OCR）；第5页 Logo 无内容、unparsed。**不猜测** | 不幻觉、如实标注 | ✅ |
+
+### 4. 图片处理结论
+
+- **Scheme C `replace` 活体命中** ✅：柱状图的标题+注脚文字由 bg OCR 补回并入 extracted.md。
+- **柱值未 OCR**（图形化数据，非文字）+ **Logo 无文字**（非文字图）→ 两张图 `image_refs 2→2` 保留，
+  bot 据实标 `unparsed`、不猜测内容。✅
+- **普通文字、表格、其它页不受图片 OCR 影响** ✅（季度销售表、要点、页脚均完整）。
+- ⚠️ **非阻塞观察**：`replace` 已 changed=true（图表标题+注脚并入），但 bot 仍把第 4 页图标 `unparsed`——
+  因 `_analyze_image_ocr` 判定"图后实质文字 < `_MIN_OCR_TEXT_CHARS=100`"(注脚仅 ~20 字)。即"bg OCR 确实
+  补了文字"与"bot 认定图片已解析"之间存在阈值差。bot 行为安全(不幻觉)，但后续可考虑：图前后文字合并计数、
+  或对 `strategy=replace` 的图放宽阈值，让 bot 把"标题/注脚已 OCR"呈现给用户。
+
+### 5. analyze_file 截断路径 — 本次未触发（符合预期）
+
+extracted.md ~933–1100 字 < `_LARGE_FILE_THRESHOLD=50000`，故 `build_current_files_context` 不加
+analyze_file hint，日志无 tool-call。**跨"页/表"聚合已在 xlsx 多页签活体坐实**(c19962a，
+analyze_file 对所有 `<table>` 聚合，与来源 pptx/xlsx 无关)，且 codex 新增单测覆盖。pptx 专属的大文件截断
+路径如需活体确认，另造 >50K 多页带表 pptx 即可（本次未做，非阻塞）。
+
+### 6. 安全/回归 — PASS ✅
+
+自 pptx 上传起 **0 SIGBUS / 0 HTTP 非200 / 0 Traceback**；outbound 0 处宿主路径泄露、0 处 original
+二进制；MCP 零 diff vs `68d7b25`；网关 PID 35075 持续运行（intake 轮 ~1.5 分钟，因含图触发 Scheme C，
+**非卡死**，回复后 CPU 归零）。
+
+### 7. 结论
+
+pptx 活体专项 PASS：多页标题/顺序保留、文字+表格完整、图片 Scheme C `replace` 首次活体命中、
+非文字图/未 OCR 图正确降级为 unparsed 不幻觉、其它页不受影响、安全/回归全清。
+**Office 三件套(docx/xlsx/pptx)完整覆盖**，v0.0.9-rc1 的文件能力验证收口。
