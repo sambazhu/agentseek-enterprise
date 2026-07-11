@@ -46,7 +46,10 @@ def build_current_files_context(
         text = extract_map.get(record.file_id, "")
         if text:
             if len(text) > _LARGE_FILE_THRESHOLD:
-                content_analysis = analyze_content(text)
+                content_analysis = analyze_content(
+                    text,
+                    infer_sheet_names=record.sanitized_filename.lower().endswith(".xlsx"),
+                )
                 lines.append(f"  extract_total_chars: {content_analysis.total_chars}")
                 lines.append(f"  extract_total_lines: {content_analysis.total_lines}")
                 lines.append("  extract_truncated: true")

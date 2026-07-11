@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from agentseek_files.content_analysis import analyze_content, group_counts, unique_people
+from agentseek_files.content_analysis import (
+    analyze_content,
+    group_counts,
+    group_counts_by_sheet,
+    sheet_summaries,
+    unique_people,
+)
 
 
 def test_mineru_table_skips_merged_titles_before_real_header() -> None:
@@ -35,3 +41,49 @@ def test_simple_table_still_uses_first_row_as_header() -> None:
 
     assert analysis.headers == ("商品", "库存")
     assert analysis.data_rows == 2
+
+
+def test_non_spreadsheet_can_disable_h1_sheet_inference() -> None:
+    analysis = analyze_content(
+        "# PDF 章节标题\n<table><tr><td>字段</td></tr><tr><td>内容</td></tr></table>",
+        infer_sheet_names=False,
+    )
+
+    assert analysis.tables[0].sheet_name is None
+    assert sheet_summaries(analysis) == []
+
+
+def test_multi_sheet_group_counts_aggregate_all_tables_and_deduplicate_names() -> None:
+    analysis = analyze_content(
+        "# 一年级退餐明细\n"
+        "<table><tr><td>序号</td><td>姓名</td><td>班级</td></tr>"
+        "<tr><td>1</td><td>张三</td><td>一一班</td></tr>"
+        "<tr><td>2</td><td>李四</td><td>一一班</td></tr></table>\n"
+        "# 二年级退餐明细\n"
+        "<table><tr><td>序号</td><td>姓名</td><td>班级</td></tr>"
+        "<tr><td>1</td><td>张三</td><td>一一班</td></tr>"
+        "<tr><td>2</td><td>王五</td><td>二一班</td></tr></table>"
+    )
+
+    assert [table.sheet_name for table in analysis.tables] == ["一年级退餐明细", "二年级退餐明细"]
+    assert analysis.data_rows == 4
+    assert unique_people(analysis) == 3
+    assert group_counts(analysis, "每个班分别多少人？") == (
+        "班级",
+        [("一一班", 2), ("二一班", 1)],
+    )
+    assert group_counts(analysis, "二年级每个班分别多少人？") == (
+        "班级",
+        [("一一班", 1), ("二一班", 1)],
+    )
+
+    sheets = sheet_summaries(analysis)
+    assert [(sheet.sheet_name, sheet.data_rows, sheet.unique_people) for sheet in sheets] == [
+        ("一年级退餐明细", 2, 2),
+        ("二年级退餐明细", 2, 2),
+    ]
+    sheet_groups = group_counts_by_sheet(analysis, "每个班分别多少人？")
+    assert [(group.sheet_name, group.counts) for group in sheet_groups] == [
+        ("一年级退餐明细", (("一一班", 2),)),
+        ("二年级退餐明细", (("一一班", 1), ("二一班", 1))),
+    ]

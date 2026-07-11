@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from loguru import logger
 
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
-from agentseek_files.extractors.mineru import MinerUExtractor
+from agentseek_files.extractors.mineru import (
+    MinerUExtractor,
+    image_reference_count,
+    merge_background_ocr_markdown,
+)
 from agentseek_files.models import ExtractResult, FileRecord, FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import LocalFileStore
@@ -192,11 +196,30 @@ class InboundFileService:
 
             record = self.store.load_record(relative_dir)
             if result.status == "done":
+                first_pass = self.store.load_extract_text(record)
+                background_pass = result.markdown or result.text
+                merged, changed, strategy = merge_background_ocr_markdown(first_pass, background_pass)
                 record.mixed_pdf_bg_ocr = True
                 record.bg_ocr_status = "done"
                 record.bg_ocr_task_id = pending.provider_task_id
-                self.store.save_extract(record, result)
-                logger.info("files.mixed_pdf_bg_ocr done file_id={}", record.file_id)
+                record.metadata["background_ocr"] = {
+                    "result_changed": changed,
+                    "merge_strategy": strategy,
+                    "result_chars": len(background_pass),
+                    "image_refs_before": image_reference_count(first_pass),
+                    "image_refs_after": image_reference_count(background_pass),
+                }
+                if changed:
+                    result = replace(result, markdown=merged, text=merged, chars=len(merged))
+                    self.store.save_extract(record, result)
+                else:
+                    self.store.save_record(record)
+                logger.info(
+                    "files.mixed_pdf_bg_ocr done file_id={} changed={} strategy={}",
+                    record.file_id,
+                    changed,
+                    strategy,
+                )
                 return
             record.bg_ocr_status = "failed"
             self.store.save_record(record)

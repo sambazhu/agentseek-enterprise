@@ -380,17 +380,56 @@ class _ClientContext:
 
 def has_substantive_text(content: str) -> bool:
     """Return whether MinerU output contains useful text beyond image placeholders."""
+    return substantive_character_count(content) > _MIN_SUBSTANTIVE_CHARS
+
+
+def substantive_character_count(content: str) -> int:
+    """Count useful alphanumeric characters after removing image placeholders."""
     text = _HTML_IMAGE_COMMENT_RE.sub("", str(content or ""))
     text = _MARKDOWN_IMAGE_RE.sub("", text)
     text = _HTML_IMAGE_RE.sub("", text)
-    meaningful = "".join(character for character in text if character.isalnum())
-    return len(meaningful) > _MIN_SUBSTANTIVE_CHARS
+    return sum(character.isalnum() for character in text)
 
 
 def has_image_references(content: str) -> bool:
     """Return whether MinerU markdown still contains an unparsed image page."""
     text = str(content or "")
     return bool(_HTML_IMAGE_COMMENT_RE.search(text) or _MARKDOWN_IMAGE_RE.search(text) or _HTML_IMAGE_RE.search(text))
+
+
+def image_reference_count(content: str) -> int:
+    """Count unresolved image placeholders in MinerU markdown."""
+    text = str(content or "")
+    return (
+        len(_HTML_IMAGE_COMMENT_RE.findall(text))
+        + len(_MARKDOWN_IMAGE_RE.findall(text))
+        + len(_HTML_IMAGE_RE.findall(text))
+    )
+
+
+def merge_background_ocr_markdown(first_pass: str, background_pass: str) -> tuple[str, bool, str]:
+    """Select or merge a Scheme C result without discarding useful first-pass text."""
+    first = str(first_pass or "").strip()
+    background = str(background_pass or "").strip()
+    if not background or _comparison_text(background) == _comparison_text(first):
+        return first, False, "unchanged"
+
+    first_chars = substantive_character_count(first)
+    background_chars = substantive_character_count(background)
+    first_images = image_reference_count(first)
+    background_images = image_reference_count(background)
+    improved = background_images < first_images or background_chars > first_chars + 20
+    if not improved:
+        return first, False, "no_ocr_improvement"
+
+    if not first or first in background or len(background) >= max(1, len(first) // 2):
+        return background, True, "replace"
+    merged = f"{first}\n\n<!-- MinerU background OCR supplement -->\n{background}"
+    return merged, True, "append_supplement"
+
+
+def _comparison_text(content: str) -> str:
+    return "".join(str(content or "").split())
 
 
 def _extract_metadata(record: FileRecord) -> dict[str, Any]:

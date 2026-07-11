@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
@@ -31,12 +31,34 @@ _HEADER_MARKERS = (
     "amount",
     "quantity",
 )
+_MARKDOWN_H1_RE = re.compile(r"(?m)^#(?!#)\s+(.+?)\s*$")
+_SHEET_SELECTOR_RE = re.compile(
+    r"(?:页签|sheet)\s*[A-Za-z0-9一二三四五六七八九十百]+|[一二三四五六七八九十百]+年级",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
 class ParsedTable:
     headers: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
+    sheet_name: str | None = None
+
+
+@dataclass(frozen=True)
+class SheetSummary:
+    sheet_name: str
+    table_count: int
+    data_rows: int
+    unique_people: int | None
+    headers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SheetGroupCounts:
+    sheet_name: str
+    column: str
+    counts: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True)
@@ -78,16 +100,20 @@ class _TableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[list[list[tuple[str, bool]]]] = []
+        self.table_sheet_names: list[str | None] = []
         self._table: list[list[tuple[str, bool]]] | None = None
+        self._table_sheet_name: str | None = None
         self._row: list[tuple[str, bool]] | None = None
         self._cell_parts: list[str] | None = None
         self._cell_is_header = False
+        self._outside_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         tag = tag.lower()
         if tag == "table":
             self._table = []
+            self._table_sheet_name = _nearest_h1("".join(self._outside_parts))
         elif tag == "tr" and self._table is not None:
             self._row = []
         elif tag in {"td", "th"} and self._row is not None:
@@ -99,6 +125,8 @@ class _TableParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._cell_parts is not None:
             self._cell_parts.append(data)
+        elif self._table is None:
+            self._outside_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -112,13 +140,19 @@ class _TableParser(HTMLParser):
         elif tag == "table" and self._table is not None:
             if self._table:
                 self.tables.append(self._table)
+                self.table_sheet_names.append(self._table_sheet_name)
             self._table = None
+            self._table_sheet_name = None
 
 
-def analyze_content(text: str) -> ContentAnalysis:
+def analyze_content(text: str, *, infer_sheet_names: bool = True) -> ContentAnalysis:
     parser = _TableParser()
     parser.feed(text)
-    tables = tuple(_normalize_table(rows) for rows in parser.tables if rows)
+    tables = tuple(
+        _normalize_table(rows, sheet_name=sheet_name if infer_sheet_names else None)
+        for rows, sheet_name in zip(parser.tables, parser.table_sheet_names, strict=True)
+        if rows
+    )
     return ContentAnalysis(
         total_chars=len(text),
         total_lines=text.count("\n") + (1 if text else 0),
@@ -135,6 +169,9 @@ def format_large_file_summary(analysis: ContentAnalysis) -> list[str]:
     ]
     if analysis.tables:
         lines.append(f"表格数据行数（不含表头）: {analysis.data_rows}")
+    sheets = sheet_summaries(analysis)
+    if sheets:
+        lines.append("页签: " + "; ".join(f"{sheet.sheet_name}({sheet.data_rows} 行)" for sheet in sheets[:20]))
     if analysis.headers:
         lines.append(f"字段: {' | '.join(analysis.headers)}")
     if analysis.last_record:
@@ -163,30 +200,98 @@ def numeric_ranges(analysis: ContentAnalysis) -> list[tuple[str, str, str]]:
 
 def group_counts(analysis: ContentAnalysis, question: str) -> tuple[str, list[tuple[str, int]]] | None:
     """Infer a requested grouping column and count rows or unique people per value."""
+    aggregated = _aggregate_group_counts(_tables_for_question(analysis, question), question)
+    if aggregated is None:
+        return None
+    column, counts = aggregated
+    return column, sorted(counts.items(), key=lambda item: item[0])
+
+
+def group_counts_by_sheet(analysis: ContentAnalysis, question: str) -> list[SheetGroupCounts]:
+    """Return the requested grouping independently for each named sheet."""
+    grouped_tables: dict[str, list[ParsedTable]] = defaultdict(list)
+    for table in _tables_for_question(analysis, question):
+        if table.sheet_name:
+            grouped_tables[table.sheet_name].append(table)
+
+    result: list[SheetGroupCounts] = []
+    for sheet_name, tables in grouped_tables.items():
+        aggregated = _aggregate_group_counts(tables, question)
+        if aggregated is None:
+            continue
+        column, counts = aggregated
+        result.append(
+            SheetGroupCounts(
+                sheet_name=sheet_name,
+                column=column,
+                counts=tuple(sorted(counts.items(), key=lambda item: item[0])),
+            )
+        )
+    return result
+
+
+def sheet_summaries(analysis: ContentAnalysis) -> list[SheetSummary]:
+    """Summarize tables associated with each MinerU-preserved Markdown H1."""
+    grouped_tables: dict[str, list[ParsedTable]] = defaultdict(list)
     for table in analysis.tables:
+        if table.sheet_name:
+            grouped_tables[table.sheet_name].append(table)
+
+    summaries: list[SheetSummary] = []
+    for sheet_name, tables in grouped_tables.items():
+        seen_headers: dict[str, None] = {}
+        for table in tables:
+            for header in table.headers:
+                seen_headers.setdefault(header, None)
+        summaries.append(
+            SheetSummary(
+                sheet_name=sheet_name,
+                table_count=len(tables),
+                data_rows=sum(len(table.rows) for table in tables),
+                unique_people=_unique_people_in_tables(tables),
+                headers=tuple(seen_headers)[:_MAX_HEADERS],
+            )
+        )
+    return summaries
+
+
+def _aggregate_group_counts(
+    tables: list[ParsedTable],
+    question: str,
+) -> tuple[str, Counter[str]] | None:
+    column: str | None = None
+    row_counts: Counter[str] = Counter()
+    names_by_group: dict[str, set[str]] = defaultdict(set)
+    for table in tables:
         group_index = _group_column_index(table.headers, question)
         if group_index is None:
             continue
+        column = column or table.headers[group_index]
         name_index = _find_header(table.headers, ("姓名", "名字", "name"))
         if name_index is None:
-            counts = Counter(row[group_index] for row in table.rows if group_index < len(row) and row[group_index])
+            row_counts.update(row[group_index] for row in table.rows if group_index < len(row) and row[group_index])
         else:
-            values: dict[str, set[str]] = {}
             for row in table.rows:
                 if group_index >= len(row) or not row[group_index]:
                     continue
                 person = row[name_index] if name_index < len(row) else ""
                 if person:
-                    values.setdefault(row[group_index], set()).add(person)
-            counts = Counter({group: len(people) for group, people in values.items()})
-        return table.headers[group_index], sorted(counts.items(), key=lambda item: item[0])
-    return None
+                    names_by_group[row[group_index]].add(person)
+    if column is None:
+        return None
+    counts = Counter(row_counts)
+    counts.update({group: len(people) for group, people in names_by_group.items()})
+    return column, counts
 
 
 def unique_people(analysis: ContentAnalysis) -> int | None:
+    return _unique_people_in_tables(list(analysis.tables))
+
+
+def _unique_people_in_tables(tables: list[ParsedTable]) -> int | None:
     people: set[str] = set()
     found_name_column = False
-    for table in analysis.tables:
+    for table in tables:
         name_index = _find_header(table.headers, ("姓名", "名字", "name"))
         if name_index is None:
             continue
@@ -211,12 +316,33 @@ def matching_rows(analysis: ContentAnalysis, question: str, *, limit: int = 8) -
     return total, matches
 
 
-def _normalize_table(raw_rows: list[list[tuple[str, bool]]]) -> ParsedTable:
+def _normalize_table(
+    raw_rows: list[list[tuple[str, bool]]],
+    *,
+    sheet_name: str | None,
+) -> ParsedTable:
     header_index = _detect_header_index(raw_rows)
     header_row = raw_rows[header_index]
     headers = tuple(cell or f"列{index + 1}" for index, (cell, _) in enumerate(header_row))
     rows = tuple(tuple(cell for cell, _ in row) for row in raw_rows[header_index + 1 :])
-    return ParsedTable(headers=headers, rows=rows)
+    return ParsedTable(headers=headers, rows=rows, sheet_name=sheet_name)
+
+
+def _nearest_h1(text: str) -> str | None:
+    matches = list(_MARKDOWN_H1_RE.finditer(text))
+    return matches[-1].group(1).strip() if matches else None
+
+
+def _tables_for_question(analysis: ContentAnalysis, question: str) -> list[ParsedTable]:
+    selectors = tuple(match.group(0).strip().lower() for match in _SHEET_SELECTOR_RE.finditer(question))
+    if not selectors:
+        return list(analysis.tables)
+    selected = [
+        table
+        for table in analysis.tables
+        if table.sheet_name and any(selector in table.sheet_name.lower() for selector in selectors)
+    ]
+    return selected or list(analysis.tables)
 
 
 def _detect_header_index(raw_rows: list[list[tuple[str, bool]]]) -> int:

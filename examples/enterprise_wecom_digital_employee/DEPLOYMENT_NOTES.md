@@ -4214,3 +4214,64 @@ extracted.md: **2 个 `<table>`**, **2 个 H1 页签名**(`# 一年级退餐明�
 
 - `DEPLOYMENT_NOTES.md`: 本节大文件多页签活体坐实 group_counts bug 的报告(三方互证)。
 - **不提交** runtime/测试 xlsx/secret(测试文件仅存 `/tmp/xlsx_test/`)。
+
+---
+
+## Codex 修复：多页签全文统计、页签归属与 xlsx 后台 OCR 可观测性（2026-07-11）
+
+基于 `be40fd6` 的复测报告完成以下修复，等待 Mac mini 活体复验。
+
+### 1. `group_counts` 跨表聚合
+
+- 不再在第一个匹配表格返回；遍历所有目标表格后统一输出。
+- 有“姓名”列时，按 `分组 -> name set` 跨表合并后计数，同一姓名跨表重复不会重复计数。
+- 没有“姓名”列的表格继续按行数累加。
+- 问题明确包含“一年级/二年级/页签A/Sheet B”等页签选择器时，只统计对应页签；未指定时统计全部页签。
+- 800 行双页签合成 oracle：20 个班、每班 40、分组合计 800；指定“二年级”时只返回二年级 10 班/400。
+
+### 2. H1 页签归属
+
+- `ParsedTable` 新增 `sheet_name: str | None`。
+- xlsx 的每个 `<table>` 绑定其之前最近的 Markdown H1（MinerU 输出的页签名称）。
+- `analyze_file` 同时输出整体统计、逐页签行数/表格数/唯一人员/字段，以及逐页签分组统计。
+- 仅 xlsx 主流程启用 H1 页签推断，避免把 PDF/Word 的章节 H1 错称为页签。
+
+### 3. Scheme C xlsx 图片结果
+
+代码审计确认：旧逻辑在后台任务 `done` 后会直接把第二遍 MinerU markdown 写入 `extracted.md`；
+`file_924599af10141be6` 第二遍仍为 1868 字且仍止于同一裸图片引用，说明该次 MinerU pipeline
+没有返回新增 OCR 文本，不是本地保存漏写。
+
+本轮增强：
+
+- 后台 OCR 有新增文本/图片引用减少时，采用完整第二遍结果；若 MinerU 只返回短 OCR 补充，则追加到首遍结果。
+- 后台结果为空、相同或没有 OCR 改善时，保留首遍可用结果，不用较差结果覆盖。
+- `metadata.json -> metadata.background_ocr` 新增脱敏诊断：
+  `result_changed`、`merge_strategy`、`result_chars`、`image_refs_before/after`。
+- 对本次 xlsx 裸图片预期标记：`result_changed=false`、`merge_strategy=unchanged`，明确归因 MinerU 侧未产出 OCR。
+- 新增 xlsx Scheme C 回归，模拟 MinerU 返回可用 OCR 时确认最终 `extracted.md` 正确更新。
+
+### 4. 自动化结果
+
+- `make check-files`: **47 passed**，ty clean。
+- `make test-wecom`: **38 passed**。
+- `make test-enterprise`: **79 passed**。
+- template render: **25 passed**。
+- MCP 冻结文件相对 `68d7b25`: 空 diff。
+- 新增覆盖：双页签聚合、跨表姓名去重、指定页签过滤、逐页签工具输出、非 xlsx H1 隔离、xlsx OCR
+  replace/append/unchanged 三种策略。
+
+### 5. Mac mini 待复验
+
+重启后重传 `/tmp/xlsx_test/多页签大文件.xlsx`：
+
+- `analyze_file("每个班分别多少人")` 应返回 20 班、每班 40、合计 800。
+- 输出应分别列出“一年级退餐明细”400 行与“二年级退餐明细”400 行。
+- 问“二年级每个班”应只返回二年级 10 班/400，不得返回一年级。
+
+重传 `/tmp/xlsx_test/多页签测试.xlsx`：
+
+- 两个页签名称与 8/6 行统计应分别呈现。
+- 若 MinerU 对内嵌 PNG 仍不产出文字，metadata 应明确为 `unchanged`，普通表格/另一页签不受影响。
+- 若换用 MinerU 可识别的文字图片，metadata 应为 `replace` 或 `append_supplement`，OCR 文本进入
+  `extracted.md`。

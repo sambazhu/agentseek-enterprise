@@ -7,10 +7,13 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
 from agentseek_files.content_analysis import (
+    ContentAnalysis,
     analyze_content,
     format_large_file_summary,
     group_counts,
+    group_counts_by_sheet,
     matching_rows,
+    sheet_summaries,
     unique_people,
 )
 from agentseek_files.models import FileRecord
@@ -47,21 +50,22 @@ def _analyze_current_file(
     loaded = _load_current_extract(store, state, file_id)
     if isinstance(loaded, str):
         return loaded
-    _, text = loaded
+    record, text = loaded
 
-    analysis = analyze_content(text)
+    analysis = analyze_content(
+        text,
+        infer_sheet_names=record.sanitized_filename.lower().endswith(".xlsx"),
+    )
     lines = [f"完整文件分析（file_id={file_id}）:", *format_large_file_summary(analysis)]
     people = unique_people(analysis)
     if people is not None:
         lines.append(f"唯一人员数（按姓名去重）: {people}")
+    lines.extend(_format_sheet_summaries(analysis))
 
     grouped = group_counts(analysis, question)
     if grouped is not None:
         column, counts = grouped
-        lines.append(f"按“{column}”统计:")
-        lines.extend(f"- {name}: {count}" for name, count in counts[:200])
-        if len(counts) > 200:
-            lines.append(f"- 其余 {len(counts) - 200} 组已省略")
+        lines.extend(_format_group_counts(analysis, question, column, counts))
     else:
         match_count, samples = matching_rows(analysis, question)
         if match_count:
@@ -70,6 +74,39 @@ def _analyze_current_file(
 
     lines.append("以上统计基于完整 extracted.md/extracted.txt，不是 CurrentFiles 截断片段。")
     return "\n".join(lines)[:_MAX_TOOL_RESULT_CHARS]
+
+
+def _format_sheet_summaries(analysis: ContentAnalysis) -> list[str]:
+    sheets = sheet_summaries(analysis)
+    if not sheets:
+        return []
+    lines = ["按页签统计:"]
+    for sheet in sheets[:50]:
+        details = [f"数据行数={sheet.data_rows}", f"表格数={sheet.table_count}"]
+        if sheet.unique_people is not None:
+            details.append(f"唯一人员数={sheet.unique_people}")
+        if sheet.headers:
+            details.append(f"字段={' | '.join(sheet.headers)}")
+        lines.append(f"- {sheet.sheet_name}: {', '.join(details)}")
+    return lines
+
+
+def _format_group_counts(
+    analysis: ContentAnalysis,
+    question: str,
+    column: str,
+    counts: list[tuple[str, int]],
+) -> list[str]:
+    lines = [f"按“{column}”统计:", *(f"- {name}: {count}" for name, count in counts[:200])]
+    if len(counts) > 200:
+        lines.append(f"- 其余 {len(counts) - 200} 组已省略")
+    sheet_groups = group_counts_by_sheet(analysis, question)
+    if sheet_groups:
+        lines.append(f"各页签按“{column}”统计:")
+        for sheet_group in sheet_groups[:50]:
+            rendered = "; ".join(f"{name}={count}" for name, count in sheet_group.counts[:100])
+            lines.append(f"- {sheet_group.sheet_name}: {rendered}")
+    return lines
 
 
 def _load_current_extract(

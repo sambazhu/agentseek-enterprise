@@ -60,6 +60,50 @@ def test_analyze_file_rejects_file_outside_current_state(tmp_path) -> None:
     assert "不在当前会话" in result
 
 
+def test_analyze_file_reports_aggregate_and_per_sheet_group_counts(tmp_path) -> None:
+    store = LocalFileStore(FilesSettings(root_dir=tmp_path, allowed_extensions=(".xlsx",)))
+    record = store.store_bytes(
+        scope=FileScope("tenant", "employee", "session"),
+        filename="多页签.xlsx",
+        data=b"multi-sheet",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    markdown = (
+        "# 一年级退餐明细\n"
+        "<table><tr><td>姓名</td><td>班级</td></tr>"
+        "<tr><td>张三</td><td>一一班</td></tr></table>\n"
+        "# 二年级退餐明细\n"
+        "<table><tr><td>姓名</td><td>班级</td></tr>"
+        "<tr><td>李四</td><td>二一班</td></tr></table>"
+    )
+    record = store.save_extract(
+        record,
+        ExtractResult(
+            file_id=record.file_id,
+            provider="test",
+            status="done",
+            markdown=markdown,
+            chars=len(markdown),
+        ),
+    )
+
+    result = _analyze_current_file(
+        store,
+        {"current_files": [record.to_dict()]},
+        file_id=record.file_id,
+        question="每个班分别多少人？",
+    )
+
+    assert "按页签统计:" in result
+    assert "一年级退餐明细: 数据行数=1" in result
+    assert "二年级退餐明细: 数据行数=1" in result
+    assert "- 一一班: 1" in result
+    assert "- 二一班: 1" in result
+    assert "各页签按“班级”统计:" in result
+    assert "一年级退餐明细: 一一班=1" in result
+    assert "二年级退餐明细: 二一班=1" in result
+
+
 def test_file_analysis_tools_exposes_analyze_file(tmp_path) -> None:
     store = LocalFileStore(FilesSettings(root_dir=tmp_path))
 

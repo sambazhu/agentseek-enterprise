@@ -10,7 +10,12 @@ import httpx
 import pytest
 from agentseek_files.context import build_current_files_context
 from agentseek_files.extractors.local import LocalTextExtractor
-from agentseek_files.extractors.mineru import MinerUExtractor, has_image_references, has_substantive_text
+from agentseek_files.extractors.mineru import (
+    MinerUExtractor,
+    has_image_references,
+    has_substantive_text,
+    merge_background_ocr_markdown,
+)
 from agentseek_files.inbound import InboundFileService
 from agentseek_files.models import ExtractResult, FileScope
 from agentseek_files.settings import FilesSettings
@@ -266,9 +271,11 @@ def test_mineru_auto_detect_retries_image_only_pdf_with_pipeline_ocr(tmp_path, m
     assert done.extract_text == ocr_text
 
 
-def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_ocr(
+@pytest.mark.parametrize("extension", [".pdf", ".xlsx"])
+def test_mineru_mixed_file_returns_first_pass_then_replaces_it_with_background_ocr(
     tmp_path,
     monkeypatch,
+    extension: str,
 ):
     submitted: list[dict] = []
     first_text = ("这是数字文字页的快速提取结果。" * 12) + "\n![](images/scanned-page.jpg)"
@@ -304,7 +311,7 @@ def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_oc
 
     settings = FilesSettings(
         root_dir=tmp_path,
-        allowed_extensions=(".pdf",),
+        allowed_extensions=(extension,),
         extractor="mineru",
         mixed_pdf_bg_ocr=True,
         mineru_base_url="https://mineru.example.com",
@@ -322,9 +329,9 @@ def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_oc
             monkeypatch.setattr(service, "_mineru_extractor", MinerUExtractor(settings, client=client))
             pending = await service.handle_bytes(
                 scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
-                filename="mixed.pdf",
-                data=b"%PDF-1.4\nmixed",
-                mime_type="application/pdf",
+                filename=f"mixed{extension}",
+                data=b"mixed file with an embedded image",
+                mime_type="application/octet-stream",
             )
             first_pass = await service.poll_pending(pending.record)
             assert first_pass.pending is False
@@ -351,6 +358,8 @@ def test_mineru_mixed_pdf_returns_first_pass_then_replaces_it_with_background_oc
     assert stored_metadata["mixed_pdf_bg_ocr"] is True
     assert stored_metadata["bg_ocr_status"] == "done"
     assert stored_metadata["bg_ocr_task_id"] == "batch-2"
+    assert stored_metadata["metadata"]["background_ocr"]["result_changed"] is True
+    assert stored_metadata["metadata"]["background_ocr"]["merge_strategy"] == "replace"
     assert service.store.load_extract_text(final_record) == complete_text
 
 
@@ -400,6 +409,82 @@ def test_mineru_mixed_pdf_background_failure_preserves_first_pass(tmp_path, monk
     assert final_record.extract_task_id == "batch-1"
     assert final_record.mixed_pdf_bg_ocr is True
     assert final_record.bg_ocr_status == "failed"
+    assert service.store.load_extract_text(final_record) == first_text
+
+
+def test_xlsx_background_ocr_done_without_new_text_records_upstream_limitation(tmp_path, monkeypatch):
+    settings = FilesSettings(
+        root_dir=tmp_path,
+        allowed_extensions=(".xlsx",),
+        extractor="mineru",
+        mixed_pdf_bg_ocr=True,
+        mineru_poll_interval_s=0,
+    )
+    service = InboundFileService(settings)
+    record = service.store.store_bytes(
+        scope=FileScope("hmac-t", "hmac-e", "hmac-s"),
+        filename="mixed.xlsx",
+        data=b"xlsx with embedded image",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    first_text = ("两个页签的普通单元格内容。" * 12) + "\n![](images/embedded-table.jpg)"
+    record = service.store.save_extract(
+        record,
+        ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="done",
+            markdown=first_text,
+            text=first_text,
+            chars=len(first_text),
+            provider_task_id="batch-1",
+            metadata={"mode": "extract_batch", "ocr_mode": "auto", "is_ocr": False},
+        ),
+    )
+
+    async def submit_background(*args, **kwargs):
+        del args, kwargs
+        return ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="pending",
+            provider_task_id="batch-2",
+            metadata={"mode": "extract_batch", "ocr_mode": "auto", "is_ocr": True},
+        )
+
+    async def finish_background(*args, **kwargs):
+        del args, kwargs
+        return ExtractResult(
+            file_id=record.file_id,
+            provider="mineru",
+            status="done",
+            markdown=first_text,
+            text=first_text,
+            chars=len(first_text),
+            provider_task_id="batch-2",
+            metadata={"mode": "extract_batch", "ocr_mode": "auto", "is_ocr": True},
+        )
+
+    monkeypatch.setattr(service._mineru_extractor, "retry_with_ocr", submit_background)
+    monkeypatch.setattr(service._mineru_extractor, "poll_result", finish_background)
+
+    async def run_background():
+        service._schedule_mixed_pdf_background_ocr(record)
+        await asyncio.gather(*tuple(service._background_tasks))
+
+    asyncio.run(run_background())
+    final_record = service.store.load_record(record.relative_dir)
+
+    assert final_record.bg_ocr_status == "done"
+    assert final_record.bg_ocr_task_id == "batch-2"
+    assert final_record.extract_task_id == "batch-1"
+    assert final_record.metadata["background_ocr"] == {
+        "result_changed": False,
+        "merge_strategy": "unchanged",
+        "result_chars": len(first_text),
+        "image_refs_before": 1,
+        "image_refs_after": 1,
+    }
     assert service.store.load_extract_text(final_record) == first_text
 
 
@@ -463,6 +548,28 @@ def test_mineru_substantive_text_ignores_image_only_placeholders() -> None:
     assert has_substantive_text("有效的数字 PDF 正文内容。" * 12) is True
     assert has_image_references("正文\n![](images/one.jpg)") is True
     assert has_image_references("只有正文") is False
+
+
+def test_background_ocr_merge_preserves_first_pass_when_mineru_returns_same_bare_image() -> None:
+    first = ("两个页签的有效表格文字。" * 12) + "\n![](images/embedded-table.jpg)"
+
+    merged, changed, strategy = merge_background_ocr_markdown(first, first)
+
+    assert merged == first
+    assert changed is False
+    assert strategy == "unchanged"
+
+
+def test_background_ocr_merge_appends_short_ocr_supplement() -> None:
+    first = ("数字单元格正文。" * 30) + "\n![](images/embedded-table.jpg)"
+    supplement = "图片表格 OCR：月份 一月 二月 三月；销售额 120 135 150。"
+
+    merged, changed, strategy = merge_background_ocr_markdown(first, supplement)
+
+    assert first in merged
+    assert supplement in merged
+    assert changed is True
+    assert strategy == "append_supplement"
 
 
 @pytest.mark.parametrize("extension", [".pdf", ".docx", ".pptx", ".xlsx"])
