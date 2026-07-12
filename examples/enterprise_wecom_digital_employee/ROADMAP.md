@@ -496,6 +496,8 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 
 - 新增通用 `contrib/agentseek-work` Bub 插件，承载 WorkItem、事件、审批和 worker；
 - 行业报告数字员工岗位档案；
+- 版本化 industry-report DigitalEmployeePack；
+- Profile-scoped Skills、Playbooks、tool grants、assets、policies 和 evals；
 - 报告任务合同 `ReportBrief`；
 - 可跨重启恢复的 `WorkItem` 和 `WorkEvent`；
 - `securities_industry_report/v1` 标准作业流程；
@@ -522,7 +524,7 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 ### 发布分段
 
 ```text
-v0.1.0-alpha1  Profile、WorkItem、WorkEvent、状态机和恢复
+v0.1.0-alpha1  Profile、DigitalEmployeePack、WorkItem、WorkEvent、状态机和恢复
 v0.1.0-alpha2  ReportBrief、材料、证据和研究
 v0.1.0-beta1   提纲、初稿、质量门和 Markdown
 v0.1.0-rc1     主动通知、DOCX、批准、交付和故障恢复
@@ -530,6 +532,31 @@ v0.1.0-ga      一个限定行业报告主题端到端通过
 ```
 
 不把 v0.1.0 GA 降级为只有任务账本的技术版本。
+
+### 后续智能办公复用
+
+`deepagents/enterprise-wecom` 保持通用 runtime 模板。行业报告能力以角色包存在，
+不写死在 AgentSeek core、`agentseek-work` 或通用系统 prompt 中。
+
+后续智能办公数字员工复用相同插件底座，并提供独立 smart-office 角色包：
+
+```text
+DigitalEmployeePack
+  profile
+  skills
+  playbooks
+  tool grants
+  assets
+  policies
+  evals
+```
+
+Skills 负责方法和规范，Playbook 负责正式流程，Tools 执行动作，Policy 强制边界，
+WorkItem 保存状态和证据。Skill 不能授予工具权限或替代审批、事务、egress 和审计。
+
+v0.1.0 采用一个生成项目、一个企微 Bot、一个 Profile、一个启用角色包。
+未来多数字员工单 gateway 需要 profile-scoped agent registry 和 SkillResolver，
+不能把所有岗位 Skills 同时暴露给一个 agent。
 
 ### Sandbox 的新定位
 
