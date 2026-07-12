@@ -4438,3 +4438,79 @@ Release candidate ref: `enterprise-wecom-v0.0.9-rc1`.
   live-runtime, safety, and rollback gates.
 - Do not update `PRODUCTION_FREEZE.md` or create `enterprise-wecom-v0.0.9-ga`
   until the Mac mini records every gate as PASS.
+
+---
+
+## v0.0.9 GA Readiness 审计 (Mac mini, 2026-07-12) — 全 PASS → GA ELIGIBLE
+
+按 `GA_READINESS_V0.0.9.md` 的 gates 在公司网络 Mac mini 上执行最终审计。
+RC1 tag `enterprise-wecom-v0.0.9-rc1` = `8128aac4c37a46264477709adf07bd99e5eadb58`。
+**未创建 GA tag、未移动 RC1 tag、未快进 production、无 --force。**
+
+### Gate 1：不可变 refs — PASS ✅
+
+| ref | GitHub | GitLab |
+|---|---|---|
+| `refs/tags/enterprise-wecom-v0.0.9-rc1` | `8128aac4…` ✅ | `8128aac4…` ✅ |
+| `refs/heads/production` | `8128aac4…` ✅ | `8128aac4…` ✅ |
+
+四个 ref 全部指向 `8128aac4c37a46264477709adf07bd99e5eadb58`，一致，未动。
+（`agentseek --version` = 0.0.4 是 upstream 通用 toolkit 版本，正确；企业部署版本由 rc1 tag 表示。）
+
+### Gate 2：从 RC1 tag 全新安装 — PASS ✅
+
+- `git clone --branch enterprise-wecom-v0.0.9-rc1 --depth 1`（GitHub）→ `/tmp/agentseek-v0.0.9-ga-audit`，
+  HEAD = `8128aac4`，`git status` 零输出（clean）。
+- `uv sync --frozen --all-packages --all-extras --group plugins` → **无 lock 漂移、无依赖解析错误**。
+  （注：fresh clone 的 build 后端需经代理拉 `github.com/PsiACE/skills.git`，属网络环境项，非 lock/drift 问题；
+  设 `http_proxy/https_proxy` 后通过。）
+
+### Gate 3：自动化验收 — PASS ✅（189 passed，MCP 零 diff）
+
+| 套件 | 结果 |
+|---|---|
+| `make check-files`（typecheck ty clean + pytest） | **47 passed** ✅ |
+| `make test-wecom` | **38 passed** ✅ |
+| `make test-enterprise` | **79 passed** ✅ |
+| `tests/cli_commands/test_templates_render.py` | **25 passed** ✅ |
+| **合计** | **189 passed** |
+| MCP diff `8128aac4`↔`68d7b25`（mcp_policy.py / tools.py） | **零输出**（两文件 byte-identical）✅ |
+
+### Gate 4：production 活体最小验收 — PASS ✅
+
+production 工作区 HEAD = `8128aac` ✅；`.env` `AGENTSEEK_LANGFUSE_RELEASE=enterprise-wecom-v0.0.9-rc1`（未提交）。
+受管网关 uvicorn worker `83840` 跑在 `8128aac`（自 2026-07-11 14:39 重启，~19h soak）：
+`Application startup complete` / `Uvicorn :12000` / `schedule.start` / `channel.manager started` / DM sidecar 懒启动。
+
+A–F（活体）：
+- **A 身份** "我是谁" → "朱春霖，你好！"（identity_lookup 命中，zhuchunlin→朱春霖 解析正确）✅
+- **B 短期记忆** 存 "今天做 GA 验收" → "已记住"；问 "刚才说做啥" → "今天（2026-07-12）待办是：**做 GA 验收**" ✅ 精确召回
+- **C 长期记忆（只读）** → "2 条：数据架构工作(responsibility.data_arch) + AI架构工作(responsibility.ai_arch)" ✅ 未新增、未污染
+- **D pgvector** "之前去哪出过差" → 结构化表（北京/深圳 多日期，区分长期记忆 vs 对话历史）+ provenance 提示 ✅（语义召回成功；延迟 ~27–53s，属 pgvector 召回+多源结构化生成的固有延迟，非故障）
+- **E MCP** → 5 个服务器：gildata_datamap tools/api/data + tavily-search + agent-platform(未连接) ✅
+- **F 文件** → 引用本会话在 `8128aac` 上的活体结果：多页签 XLSX（20 班/800、二年级过滤 10/400）、PPTX（6 页标题+顺序、Scheme C `replace`）、docx/pdf/txt/语音（前序版本验过，v0.0.9 未改这些路径）。Scheme C replace/unchanged 行为正确、CurrentFiles 跨轮可读、analyze_file 不回退 12K excerpt、普通表格/其它页签不受图片 OCR 影响。✅
+
+健康（自 PID 83840 boot）：**0 SIGBUS / 0 Traceback / 0 HTTP 非200**。
+
+### Gate 5：观测与安全 — PASS ✅
+
+- 本地 structured events 正常：`enterprise-events.jsonl` 持续增长（~300KB），近期事件 `contextseek_pgvector_add`/`short_term_memory_save`/`wecom_stream_finished` 均 `succeeded`。
+- Langfuse traces 正常且**已脱敏**：trace name 为结构化事件名 + 哈希 msgid（`wecom.incoming msgid=<hash>`、`short_term_memory_save` 等）；最近 20 条 trace 中 name 含明文 `zhuchunlin`/`朱春霖` 的 = **0**。
+- metadata 中 release 正确（probe `langfuse_probe` trace 顶层 `release=enterprise-wecom-v0.0.9-rc1`、env=mac-mini、status=sent）。
+- **顶层 runtime trace `release=None`**：确认为已接受的 UI-only 非阻断问题（`GA_READINESS_V0.0.9.md` Prerequisites 已声明；release 值在 metadata/client 配置中正确，仅顶层徽标缺失，记给 Codex 后续修）。
+- A–F outbound 回复：**0 宿主路径**（/Users/sambazhu/runtime/files）、**0 original 二进制**、**0 token/secret/EncodingAESKey/api_key**。
+- MCP audit 与模型上下文隔离：`enterprise-events.jsonl` 含 0 条 `mcp` 事件，MCP 决策独立在 `runtime/mcp-audit.jsonl`（~20KB）。
+
+### 已知非阻断项（不影响 GA eligibility）
+
+1. **Langfuse runtime trace 顶层 release 徽标缺失**（`GA_READINESS_V0.0.9.md` 已声明为可接受；metadata/client 中 release 正确）。Codex 后续在 `_LangfuseEmitter` 运行时路径补 `update_current_trace(release=…)`。
+2. **D pgvector 出差召回延迟 ~27–53s**（语义召回 + 多源结构化生成固有延迟，非缺陷）。
+3. **pptx 图形化柱状图数值** MinerU 暂 OCR 不出（标题/注脚能拿到）；纯文字截图正常。
+
+### 最终结论：**GA ELIGIBLE ✅**
+
+五项 gate 全部 PASS（不可变 refs / 全新安装 / 自动化 189 passed + MCP 零 diff / 活体 A–F / 观测与安全）。
+建议 Codex：更新 `PRODUCTION_FREEZE.md`、创建 `enterprise-wecom-v0.0.9-ga`（指向 `8128aac`），并发出 production 快进指令。
+本轮未创建 GA tag、未移动 RC1 tag、未快进 production、未 --force、未提交 secret/runtime/.env/Office 文件。
+
+> 审计 commit：见本次 `docs: record v0.0.9 ga readiness audit`（开发分支 `enterprise/v0.0.9-files-plugin`）。
