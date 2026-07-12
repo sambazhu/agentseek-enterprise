@@ -518,7 +518,7 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 
 冻结状态、证据和签定结果统一登记在 `V0.1.0_M0_FREEZE.md`。
 
-- 自建应用主动文本和文件消息探针；
+- 短连接 `response_url` 一次性延迟回复探针；
 - 公司 Word 模板或获批的临时中性模板；
 - 来源快照、商业许可和保留策略；
 - 企微稳定 `section_id` 结构化评审意见；
@@ -542,7 +542,7 @@ industry-report pack 在 M4 建立 contract/model eval 基线，并在 M6 纳入
 v0.1.0-alpha1  Profile、DigitalEmployeePack、WorkItem、WorkEvent、状态机和恢复
 v0.1.0-alpha2  ReportBrief、材料、证据和研究
 v0.1.0-beta1   提纲、初稿、质量门和 Markdown
-v0.1.0-rc1     主动通知、DOCX、批准、交付和故障恢复
+v0.1.0-rc1     短连接延迟回复、DOCX、批准、交付和故障恢复
 v0.1.0-ga      一个限定行业报告主题端到端通过
 ```
 

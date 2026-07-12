@@ -60,6 +60,14 @@ class FakeMediaClient:
         )
 
 
+class FakeResponseUrlSender:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def send_markdown(self, response_url: str, content: str) -> None:
+        self.calls.append((response_url, content))
+
+
 class FakeFileService:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -190,17 +198,15 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
     channel.bind_receiver(on_receive)
 
     plain = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgid": "file-msg-1",
-                "msgtype": "file",
-                "from": {"userid": "chenkang2"},
-                "file": {
-                    "url": "https://ww-aibot-img.example.com/report.txt?sign=secret",
-                    "filesize": 10,
-                },
-            }
-        )
+        channel._handle_plain_message({
+            "msgid": "file-msg-1",
+            "msgtype": "file",
+            "from": {"userid": "chenkang2"},
+            "file": {
+                "url": "https://ww-aibot-img.example.com/report.txt?sign=secret",
+                "filesize": 10,
+            },
+        })
     )
     payload = json.loads(plain or "{}")
 
@@ -225,12 +231,10 @@ def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
     monkeypatch.setattr(channel, "_handle_media_message", handle_media)
 
     result = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgtype": "image",
-                "image": {"url": "https://ww-aibot-img.example.com/opaque?sign=secret"},
-            }
-        )
+        channel._handle_plain_message({
+            "msgtype": "image",
+            "image": {"url": "https://ww-aibot-img.example.com/opaque?sign=secret"},
+        })
     )
 
     assert result == "image-routed"
@@ -266,18 +270,16 @@ def test_legacy_office_file_returns_conversion_notice() -> None:
 
     channel.bind_receiver(on_receive)
     plain = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgid": "legacy-doc-1",
-                "msgtype": "file",
-                "from": {"userid": "chenkang2"},
-                "file": {
-                    "url": "https://ww-aibot-img.example.com/legacy.doc?sign=secret",
-                    "filename": "legacy.doc",
-                    "mime_type": "application/msword",
-                },
-            }
-        )
+        channel._handle_plain_message({
+            "msgid": "legacy-doc-1",
+            "msgtype": "file",
+            "from": {"userid": "chenkang2"},
+            "file": {
+                "url": "https://ww-aibot-img.example.com/legacy.doc?sign=secret",
+                "filename": "legacy.doc",
+                "mime_type": "application/msword",
+            },
+        })
     )
     payload = json.loads(plain or "{}")
 
@@ -315,18 +317,16 @@ def test_pending_file_waits_for_extract_before_dispatching_model() -> None:
 
     channel.bind_receiver(on_receive)
     plain = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgid": "pending-pdf-1",
-                "msgtype": "file",
-                "from": {"userid": "chenkang2"},
-                "file": {
-                    "url": "https://ww-aibot-img.example.com/report.pdf?sign=secret",
-                    "filename": "report.pdf",
-                    "mime_type": "application/pdf",
-                },
-            }
-        )
+        channel._handle_plain_message({
+            "msgid": "pending-pdf-1",
+            "msgtype": "file",
+            "from": {"userid": "chenkang2"},
+            "file": {
+                "url": "https://ww-aibot-img.example.com/report.pdf?sign=secret",
+                "filename": "report.pdf",
+                "mime_type": "application/pdf",
+            },
+        })
     )
     payload = json.loads(plain or "{}")
 
@@ -356,13 +356,11 @@ def test_text_message_creates_stream_and_emits_channel_message() -> None:
     channel.bind_receiver(on_receive)
 
     plain = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgtype": "text",
-                "from": {"userid": "chenkang2"},
-                "text": {"content": "帮我查一下制度"},
-            }
-        )
+        channel._handle_plain_message({
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "帮我查一下制度"},
+        })
     )
     payload = json.loads(plain or "{}")
 
@@ -393,13 +391,11 @@ def test_text_message_resolves_open_userid_before_dispatch() -> None:
     channel.bind_receiver(on_receive)
 
     plain = asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgtype": "text",
-                "from": {"userid": "encrypted-open-userid"},
-                "text": {"content": "你好"},
-            }
-        )
+        channel._handle_plain_message({
+            "msgtype": "text",
+            "from": {"userid": "encrypted-open-userid"},
+            "text": {"content": "你好"},
+        })
     )
     payload = json.loads(plain or "{}")
 
@@ -433,20 +429,19 @@ def test_text_message_returns_placeholder_before_slow_receive_completes() -> Non
 
         channel.bind_receiver(on_receive)
 
-        first_plain = await channel._handle_plain_message(
-            {
-                "msgtype": "text",
-                "from": {"userid": "chenkang2"},
-                "text": {"content": "确认"},
-            }
-        )
+        first_plain = await channel._handle_plain_message({
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "确认"},
+        })
         first_payload = json.loads(first_plain or "{}")
         proceed.set()
 
         for _ in range(20):
-            final_plain = await channel._handle_plain_message(
-                {"msgtype": "stream", "stream": {"id": first_payload["stream"]["id"]}}
-            )
+            final_plain = await channel._handle_plain_message({
+                "msgtype": "stream",
+                "stream": {"id": first_payload["stream"]["id"]},
+            })
             final_payload = json.loads(final_plain or "{}")
             if final_payload["stream"]["finish"]:
                 return first_payload, final_payload
@@ -479,17 +474,15 @@ def test_text_message_sanitizes_wecom_raw_payload() -> None:
     channel.bind_receiver(on_receive)
 
     asyncio.run(
-        channel._handle_plain_message(
-            {
-                "msgid": "m1",
-                "aibotid": "bot-1",
-                "chattype": "single",
-                "msgtype": "text",
-                "from": {"userid": "chenkang2"},
-                "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=secret",
-                "text": {"content": "你好"},
-            }
-        )
+        channel._handle_plain_message({
+            "msgid": "m1",
+            "aibotid": "bot-1",
+            "chattype": "single",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=secret",
+            "text": {"content": "你好"},
+        })
     )
 
     raw = received[0].context["wecom"]["raw"]
@@ -502,6 +495,75 @@ def test_text_message_sanitizes_wecom_raw_payload() -> None:
         "text": {"content": "你好"},
     }
     assert "responseurl" not in raw
+
+
+def test_response_url_probe_consumes_url_once_without_dispatching_to_agent() -> None:
+    sender = FakeResponseUrlSender()
+    received: list[ChannelMessage] = []
+    channel = WeComChannel(
+        on_receive=received.append,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            userid_resolve_mode="",
+            response_url_probe_trigger="probe-challenge",
+            response_url_probe_delay_seconds=0.01,
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> dict[str, Any]:
+        response = await channel._handle_plain_message({
+            "msgid": "probe-message",
+            "msgtype": "text",
+            "from": {"userid": "probe-user"},
+            "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=sensitive",
+            "text": {"content": "probe-challenge"},
+        })
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(response or "{}")
+
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["finish"] is True
+    assert "探针已启动" in payload["stream"]["content"]
+    assert received == []
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=sensitive",
+            "AgentSeek v0.1.0 M0：短连接 response_url 延迟回复探针成功。",
+        )
+    ]
+
+
+def test_response_url_probe_fails_closed_when_callback_has_no_url() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            userid_resolve_mode="",
+            response_url_probe_trigger="probe-challenge",
+        ),
+        response_url_sender=sender,
+    )
+
+    response = asyncio.run(
+        channel._handle_plain_message({
+            "msgid": "probe-message",
+            "msgtype": "text",
+            "from": {"userid": "probe-user"},
+            "text": {"content": "probe-challenge"},
+        })
+    )
+    payload = json.loads(response or "{}")
+
+    assert payload["stream"]["finish"] is True
+    assert "未包含 response_url" in payload["stream"]["content"]
+    assert sender.calls == []
 
 
 def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> None:
@@ -540,9 +602,10 @@ def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> Non
         proceed.set()
         first_payload = json.loads(first_plain or "{}")
         for _ in range(20):
-            final_plain = await channel._handle_plain_message(
-                {"msgtype": "stream", "stream": {"id": first_payload["stream"]["id"]}}
-            )
+            final_plain = await channel._handle_plain_message({
+                "msgtype": "stream",
+                "stream": {"id": first_payload["stream"]["id"]},
+            })
             final_payload = json.loads(final_plain or "{}")
             if final_payload["stream"]["finish"]:
                 break
@@ -621,7 +684,7 @@ def test_stream_events_appends_text_chunks() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
     message = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="hi")
-    message._agentseek_wecom_stream_id = stream.stream_id
+    message._agentseek_wecom_stream_id = stream.stream_id  # ty: ignore[unresolved-attribute]
 
     async def events():
         yield StreamEvent("text", {"delta": "你"})
@@ -639,9 +702,7 @@ def test_stream_events_appends_text_chunks() -> None:
 def test_enter_chat_event_returns_welcome_text() -> None:
     channel = _channel()
 
-    plain = asyncio.run(
-        channel._handle_plain_message({"msgtype": "event", "event": {"eventtype": "enter_chat"}})
-    )
+    plain = asyncio.run(channel._handle_plain_message({"msgtype": "event", "event": {"eventtype": "enter_chat"}}))
     payload = json.loads(plain or "{}")
 
     assert payload["msgtype"] == "text"
@@ -741,7 +802,7 @@ def test_outbound_with_stream_id_attr_routes_to_that_stream() -> None:
     stream_b = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))
 
     reply = ChannelMessage(session_id="wecom:u1", channel="wecom", chat_id="u1", content="定向回复")
-    reply._agentseek_wecom_stream_id = stream_a.stream_id
+    reply._agentseek_wecom_stream_id = stream_a.stream_id  # ty: ignore[unresolved-attribute]
     asyncio.run(channel.send(reply))
 
     assert stream_a.content == "定向回复"

@@ -82,6 +82,20 @@ class WeComSettings(BaseSettings):
         default=10.0,
         validation_alias=AliasChoices("BUB_WECOM_API_TIMEOUT_SECONDS", "AGENTSEEK_WECOM_API_TIMEOUT_SECONDS"),
     )
+    response_url_probe_trigger: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_RESPONSE_URL_PROBE_TRIGGER",
+            "AGENTSEEK_WECOM_RESPONSE_URL_PROBE_TRIGGER",
+        ),
+    )
+    response_url_probe_delay_seconds: float = Field(
+        default=5.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_RESPONSE_URL_PROBE_DELAY_SECONDS",
+            "AGENTSEEK_WECOM_RESPONSE_URL_PROBE_DELAY_SECONDS",
+        ),
+    )
     welcome_text: str = Field(
         default="你好，我是你的企业数字员工。",
         validation_alias=AliasChoices("BUB_WECOM_WELCOME_TEXT", "AGENTSEEK_WECOM_WELCOME_TEXT"),

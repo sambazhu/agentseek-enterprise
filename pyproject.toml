@@ -200,6 +200,8 @@ ignore = [
 "contrib/agentseek-wecom/src/agentseek_wecom/channel.py" = ["C901"]
 # WeCom API resolver intentionally calls configured HTTPS endpoints.
 "contrib/agentseek-wecom/src/agentseek_wecom/userid_resolver.py" = ["S310", "TRY004"]
+# Signed response_url sender validates the official HTTPS host and exact API path before opening it.
+"contrib/agentseek-wecom/src/agentseek_wecom/response_url.py" = ["S310"]
 # Generated example code keeps direct, user-facing validation errors simple.
 "examples/enterprise_wecom_digital_employee/src/**/*.py" = ["TRY003", "TRY004"]
 # Probe scripts intentionally call configured endpoints and exit with concise diagnostics.

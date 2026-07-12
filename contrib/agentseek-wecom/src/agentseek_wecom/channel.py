@@ -23,6 +23,7 @@ from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.media import MediaDownload, WeComMediaClient, decode_encoding_aes_key
 from agentseek_wecom.messages import make_text, make_text_stream
+from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
@@ -52,6 +53,10 @@ class InboundFileServiceProtocol(Protocol):
     ) -> Any: ...
 
     async def poll_pending(self, record: Any) -> Any: ...
+
+
+class ResponseUrlSenderProtocol(Protocol):
+    def send_markdown(self, response_url: str, content: str) -> None: ...
 
 
 @dataclass
@@ -86,6 +91,7 @@ class WeComChannel(Channel):
         userid_resolver: UseridResolver | None = None,
         media_client: MediaClient | None = None,
         file_service: InboundFileServiceProtocol | None = None,
+        response_url_sender: ResponseUrlSenderProtocol | None = None,
     ) -> None:
         self._on_receive = on_receive
         self.settings = settings
@@ -93,6 +99,10 @@ class WeComChannel(Channel):
         self._media_client = media_client
         self._file_service = file_service
         self._file_service_initialized = file_service is not None
+        self._response_url_sender = response_url_sender or WeComResponseUrlSender(
+            api_base_url=settings.api_base_url,
+            timeout_seconds=settings.api_timeout_seconds,
+        )
         self._crypto: WeComJsonCrypto | None = None
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task[None] | None = None
@@ -273,7 +283,45 @@ class WeComChannel(Channel):
 
     async def _handle_text(self, data: dict[str, Any]) -> str:
         content = str((data.get("text") or {}).get("content") or "")
+        trigger = self.settings.response_url_probe_trigger
+        if trigger and content == trigger:
+            return await self._handle_response_url_probe(data)
         return await self._dispatch_user_message(data, content)
+
+    async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
+        from_userid = _extract_from_userid(data)
+        stream = await self._create_stream(
+            session_id=f"wecom:{from_userid or 'unknown'}",
+            chat_id=from_userid or "wecom:unknown",
+            from_userid=from_userid,
+        )
+        response_url = _extract_response_url(data)
+        if not response_url:
+            stream.update(content="短连接延迟回复探针失败：回调未包含 response_url。", finish=True)
+            return await self._stream_response(stream.stream_id)
+
+        stream.update(content="短连接延迟回复探针已启动，请等待第二条消息。", finish=True)
+        task = asyncio.create_task(
+            self._run_response_url_probe(response_url),
+            name=f"agentseek-wecom.response-url-probe.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+        return await self._stream_response(stream.stream_id)
+
+    async def _run_response_url_probe(self, response_url: str) -> None:
+        await asyncio.sleep(max(self.settings.response_url_probe_delay_seconds, 0.0))
+        try:
+            await asyncio.to_thread(
+                self._response_url_sender.send_markdown,
+                response_url,
+                "AgentSeek v0.1.0 M0：短连接 response_url 延迟回复探针成功。",
+            )
+        except Exception as exc:
+            logger.warning("wecom.response_url_probe failed error_type={}", type(exc).__name__)
+            _emit_enterprise_event("wecom_response_url_probe", status="error", error_type=type(exc).__name__)
+        else:
+            _emit_enterprise_event("wecom_response_url_probe", status="succeeded")
 
     async def _handle_voice(self, data: dict[str, Any]) -> str:
         content = str((data.get("voice") or {}).get("content") or "")
@@ -345,7 +393,10 @@ class WeComChannel(Channel):
             if user_notice:
                 content = "\n".join(part for part in (content, user_notice) if part).strip()
             else:
-                content = content or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
+                content = (
+                    content
+                    or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
+                )
         else:
             files_context = result.to_context()
             content_parts = [content] if content else []
@@ -612,9 +663,7 @@ class WeComChannel(Channel):
             self._streams.pop(stream_id, None)
         if expired:
             expired_ids = set(expired)
-            stale_msgids = [
-                msgid for msgid, stream_id in self._stream_ids_by_msgid.items() if stream_id in expired_ids
-            ]
+            stale_msgids = [msgid for msgid, stream_id in self._stream_ids_by_msgid.items() if stream_id in expired_ids]
             for msgid in stale_msgids:
                 self._stream_ids_by_msgid.pop(msgid, None)
 
@@ -850,6 +899,11 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _extract_response_url(data: dict[str, Any]) -> str | None:
+    value = data.get("responseurl") or data.get("response_url")
+    return str(value).strip() if value else None
 
 
 def _file_error_user_notice(exc: Exception) -> str | None:
