@@ -8,6 +8,7 @@ sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.0_INDUSTRY_REPORT_DIGITAL_EMPLOYEE_PLAN.md
+  - examples/enterprise_wecom_digital_employee/V0.1.0_M0_FREEZE.md
   - docs/concepts/enterprise-wecom-template.zh.md
   - templates/deepagents/enterprise-wecom/README.md
 ---
@@ -514,6 +515,8 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 - 权限、保密等级、人工接管和任务运营入口。
 
 ### M0 冻结门
+
+冻结状态、证据和签定结果统一登记在 `V0.1.0_M0_FREEZE.md`。
 
 - 自建应用主动文本和文件消息探针；
 - 公司 Word 模板或获批的临时中性模板；
