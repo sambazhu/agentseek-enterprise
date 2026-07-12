@@ -518,8 +518,20 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 - 自建应用主动文本和文件消息探针；
 - 公司 Word 模板或获批的临时中性模板；
 - 来源快照、商业许可和保留策略；
-- 企微章节编号结构化评审意见；
+- 企微稳定 `section_id` 结构化评审意见；
+- DirectTurn/WorkItem 路由规则和 tool contract；
 - 一个限定的证券行业报告验收主题。
+
+### M1 工程合同
+
+- 最小 `pack.yaml` schema、受限 `pack_loader.py` 和 Profile-scoped SkillResolver；
+- 内容寻址 `PackSnapshot`，同时记录 source commit，保证历史 pack 可取回；
+- WorkItem 绑定 `pack_snapshot_id` 和权威 `runtime_release`；
+- Langfuse runtime release 的 OTel/SDK 兼容探针，Langfuse 字段仅作辅助观测；
+- pack 测试覆盖 manifest、skill_refs、版本固定、snapshot 取回、路径逃逸和二进制 asset 隔离。
+
+industry-report pack 在 M4 建立 contract/model eval 基线，并在 M6 纳入 RC/GA 回归。
+`smart-office` 是未来 cookiecutter 第一方可选 pack，不随 v0.1.0 发布，首版不拆独立仓库。
 
 ### 发布分段
 
