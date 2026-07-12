@@ -16,26 +16,24 @@ need an immutable rollback or audit target.
 git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-To pin the verified v0.0.8 build:
+To pin the verified v0.0.9 build:
 
 ```bash
-git clone --branch enterprise-wecom-v0.0.8-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.0.9-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
 GitHub mirrors both refs at `https://github.com/sambazhu/agentseek-enterprise.git`.
 
-### v0.0.9 release candidate
+### v0.0.9 GA
 
-`enterprise-wecom-v0.0.9-rc1` adds verified AI Bot file intake, MinerU OCR,
+`enterprise-wecom-v0.0.9-ga` adds verified AI Bot file intake, MinerU OCR,
 CurrentFiles refresh, complete large-file analysis, multi-sheet XLSX statistics,
-and ordered PPTX extraction. It is a release candidate, not the production GA
-baseline. Follow `RC1_RUNBOOK.md` for installation, acceptance, and rollback.
+and ordered PPTX extraction. The final Mac mini audit passed every gate in
+`GA_READINESS_V0.0.9.md`.
 
-Keep `enterprise-wecom-v0.0.8-ga` as the immutable production rollback tag
-until v0.0.9 receives a GA tag.
+Keep `enterprise-wecom-v0.0.8-ga` as the immutable rollback tag.
 
-Before GA promotion, run the five gates in `GA_READINESS_V0.0.9.md` from a
-clean RC1 tag checkout on the company-network Mac mini.
+Use `RC1_RUNBOOK.md` and `GA_READINESS_V0.0.9.md` as the acceptance record.
 
 ## Setup
 
@@ -141,7 +139,7 @@ smoke-test prompts, and rollback knobs before changing production behavior.
 For production deployment, prefer the immutable GA tag:
 
 ```bash
-git checkout enterprise-wecom-v0.0.8-ga
+git checkout enterprise-wecom-v0.0.9-ga
 ```
 
 For Mac mini process supervision, edit the repo path in

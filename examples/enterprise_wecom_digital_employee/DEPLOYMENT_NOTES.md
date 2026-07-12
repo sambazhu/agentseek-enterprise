@@ -4514,3 +4514,17 @@ A–F（活体）：
 本轮未创建 GA tag、未移动 RC1 tag、未快进 production、未 --force、未提交 secret/runtime/.env/Office 文件。
 
 > 审计 commit：见本次 `docs: record v0.0.9 ga readiness audit`（开发分支 `enterprise/v0.0.9-files-plugin`）。
+
+## v0.0.9 GA release decision (Codex, 2026-07-12)
+
+- Final GA tag: `enterprise-wecom-v0.0.9-ga`.
+- Audited runtime commit: `8128aac4c37a46264477709adf07bd99e5eadb58`.
+- RC1 and GA intentionally identify the same audited runtime commit. The GA
+  documentation update remains on the development branch and does not alter the
+  audited runtime tree.
+- Final production promotion is a no-force fast-forward/equality operation to
+  `enterprise-wecom-v0.0.9-ga` on GitHub and the company GitLab mirror.
+- Rollback tag: `enterprise-wecom-v0.0.8-ga` (`5833571`).
+- Accepted non-blocking items remain recorded in the GA readiness audit:
+  Langfuse runtime top-level release badge, pgvector structured-recall latency,
+  and MinerU OCR limits for graphical PPTX values.

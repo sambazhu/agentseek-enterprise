@@ -6,28 +6,47 @@ digital employee runtime.
 ## Baseline
 
 - Recommended deployment branch: `production`
-- Final GA tag: `enterprise-wecom-v0.0.8-ga`
-- Final GA tag commit: `5833571`
-- Documentation branch commit after GA: current `production`
-- Previous GA tag: `enterprise-wecom-v0.0.7-ga`
-- Previous GA commit: `0485453`
+- Final GA tag: `enterprise-wecom-v0.0.9-ga`
+- Final GA tag commit: `8128aac4c37a46264477709adf07bd99e5eadb58`
+- Documentation branch commit after GA: current `enterprise/v0.0.9-files-plugin`
+- Previous GA tag: `enterprise-wecom-v0.0.8-ga`
+- Previous GA commit: `5833571`
 - Earlier GA tag: `enterprise-wecom-v0.0.6-ga-20260702`
 - Earlier GA commit: `7b442a5`
 - Earlier GA tag: `enterprise-wecom-v0.0.5-ga-20260630`
 - Earlier production freeze tag: `enterprise-wecom-v0.0.4-prod-20260629`
 - Verification host: company-network Mac mini
-- Verification date: 2026-07-08
+- Verification date: 2026-07-12
 
-The v0.0.8 GA includes the v0.0.7 PostgreSQL/pgvector runtime, the v0.0.6 MCP
-policy/audit path, WeCom stream placeholder delivery fix, durable employee
-memory dedup/slot supersession, durable-memory concurrent-write serialization,
-PostgreSQL SCRAM authentication, ContextSeek semantic memory backed by
-PostgreSQL + pgvector with bge-m3 ONNX embeddings, and Langfuse observability
-with HMAC/redacted trace metadata.
+The v0.0.9 GA retains the v0.0.8 identity, memory, pgvector, MCP policy/audit,
+and Langfuse baseline. It adds WeCom AI Bot file intake, signed-URL download and
+AES decryption, scoped file storage, MinerU extraction and OCR, CurrentFiles
+refresh, complete large-file analysis, multi-sheet XLSX statistics, and ordered
+PPTX extraction.
 Runtime deployments should pin the GA tag for exact
 reproducibility or use `production` for the latest documented deployment
-baseline. The older v0.0.7, v0.0.6, v0.0.5, and v0.0.4 tags are kept immutable
+baseline. The older v0.0.8, v0.0.7, v0.0.6, v0.0.5, and v0.0.4 tags are kept immutable
 for audit history.
+
+## v0.0.9 File Intake And Analysis
+
+- WeCom AI Bot `file`, `image`, `video`, `voice`, and mixed callbacks are
+  accepted without changing the v0.0.8 text-message path.
+- Signed media URLs are downloaded and decrypted with the configured WeCom
+  EncodingAESKey before HMAC-scoped storage.
+- Text-like files are extracted locally. PDF, DOCX, XLSX, PPTX, and supported
+  images use MinerU when configured.
+- Digital documents use a non-OCR first pass. Scanned files retry with OCR.
+  Mixed documents can improve in the background without blocking the first reply.
+- CurrentFiles refreshes completed extraction on later turns. The read-only
+  `analyze_file` tool evaluates complete extracted text for large-file queries.
+- Multi-sheet XLSX analysis preserves sheet names and aggregates all matching
+  tables. PPTX extraction preserves slide order and available OCR text.
+
+The final Mac mini audit passed 189 automated tests, live identity and memory
+checks, pgvector recall, MCP inspection, file-path checks, and observability and
+redaction gates. Gateway health remained at zero SIGBUS, traceback, and non-200
+callback responses during the final audit.
 
 ## v0.0.8 Observability
 
@@ -98,7 +117,7 @@ memory writes as cross-process safe.
 
 | Location | Purpose | URL / ref |
 | --- | --- | --- |
-| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.8-ga` |
+| GitHub tag | External collaboration and immutable source ref | `https://github.com/sambazhu/agentseek-enterprise/tree/enterprise-wecom-v0.0.9-ga` |
 | GitHub repository | Upstream-facing fork and source of truth for development | `https://github.com/sambazhu/agentseek-enterprise` |
 | Company GitLab mirror | Internal production mirror | `http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git` |
 
@@ -106,15 +125,17 @@ Published refs:
 
 | Ref | Commit | Use |
 | --- | --- | --- |
-| `production` | current docs-only successor of `5833571` | Recommended branch for internal deployment docs |
-| `enterprise-wecom-v0.0.8-ga` | `5833571` | Final immutable v0.0.8 runtime deployment tag |
+| `production` | `8128aac4c37a46264477709adf07bd99e5eadb58` after final fast-forward | Recommended production deployment branch |
+| `enterprise-wecom-v0.0.9-ga` | `8128aac4c37a46264477709adf07bd99e5eadb58` | Final immutable v0.0.9 runtime deployment tag |
+| `enterprise-wecom-v0.0.9-rc1` | `8128aac4c37a46264477709adf07bd99e5eadb58` | Audited release-candidate ref, kept immutable |
+| `enterprise-wecom-v0.0.8-ga` | `5833571` | Previous GA deployment and rollback tag |
 | `enterprise-wecom-v0.0.7-ga` | `0485453` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.6-ga-20260702` | `7b442a5` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.5-ga-20260630` | `5cce3a2` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-ga-20260629` | `1b06692` | Previous GA deployment tag, kept for audit |
 | `enterprise-wecom-v0.0.4-prod-20260629` | `6cd8d41` | Earlier example-only freeze tag, kept for audit |
 
-Runtime deployments should pin `enterprise-wecom-v0.0.8-ga`. Teams that want
+Runtime deployments should pin `enterprise-wecom-v0.0.9-ga`. Teams that want
 the latest deployment instructions can clone `production` and then check out
 the GA tag before starting the service.
 
@@ -129,7 +150,7 @@ For production deployment from the company GitLab mirror:
 ```bash
 git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.8-ga
+git checkout enterprise-wecom-v0.0.9-ga
 ```
 
 For production deployment from GitHub:
@@ -137,7 +158,7 @@ For production deployment from GitHub:
 ```bash
 git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.0.8-ga
+git checkout enterprise-wecom-v0.0.9-ga
 ```
 
 Do not commit deployment `.env`, `.agents/mcp.local.json`, runtime databases,

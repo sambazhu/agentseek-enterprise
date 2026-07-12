@@ -3,7 +3,7 @@ title: Enterprise WeCom changelog
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-07-11
+verified_on: 2026-07-12
 sources:
   - contrib/agentseek-files/src/agentseek_files
   - contrib/agentseek-wecom/src/agentseek_wecom
@@ -13,10 +13,11 @@ sources:
 
 # Enterprise WeCom changelog
 
-## enterprise-wecom-v0.0.9-rc1 — 2026-07-11
+## enterprise-wecom-v0.0.9-ga — 2026-07-12
 
-Status — Release candidate. The production GA baseline remains
-`enterprise-wecom-v0.0.8-ga` until v0.0.9 receives a GA tag.
+Status — Final production GA. The audited runtime commit is
+`8128aac4c37a46264477709adf07bd99e5eadb58`. The immutable rollback baseline is
+`enterprise-wecom-v0.0.8-ga`.
 
 ### Added
 
@@ -74,16 +75,17 @@ Status — Release candidate. The production GA baseline remains
 | --- | --- |
 | MinerU returns no OCR text for an embedded image | Preserve the first pass and record `unchanged`; other sheets remain available. |
 | Non-text charts, logos, signatures, and seals | Keep the image reference unparsed and do not infer its contents. |
-| Short OCR captions below the context threshold | Text may be present in the extract while the image remains marked unparsed. This does not block RC1. |
+| Short OCR captions below the context threshold | Text may be present in the extract while the image remains marked unparsed. This does not block GA. |
 | AI Bot proactive notification | Not available; the employee asks again and CurrentFiles refreshes the completed result. |
+| Langfuse runtime top-level release badge | Runtime metadata contains the release, but the UI top-level badge may be empty. |
+| pgvector multi-source recall latency | A complex structured answer may take tens of seconds. |
 
 ## enterprise-wecom-v0.0.8-ga — 2026-07-08
 
-Status — Current production GA and rollback baseline.
+Status — Previous production GA and current rollback baseline.
 
 | Area | Baseline capability |
 | --- | --- |
 | Runtime | Enterprise identity, short-term memory, durable memory, pgvector semantic recall, and MCP policy/audit. |
 | Observability | Local structured events and sanitized Langfuse export. |
 | Stability | DM sidecar isolation prevents JVM and ONNX from sharing the gateway process. |
-
