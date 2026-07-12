@@ -58,6 +58,7 @@ plugins = [
     "agentseek-enterprise",
     "agentseek-files",
     "agentseek-wecom",
+    "agentseek-work",
 ]
 
 [build-system]
@@ -95,6 +96,7 @@ agentseek-contextseek = { workspace = true }
 agentseek-enterprise = { workspace = true }
 agentseek-files = { workspace = true }
 agentseek-wecom = { workspace = true }
+agentseek-work = { workspace = true }
 
 [tool.uv.workspace]
 members = [
@@ -102,6 +104,7 @@ members = [
     "contrib/agentseek-enterprise",
     "contrib/agentseek-files",
     "contrib/agentseek-wecom",
+    "contrib/agentseek-work",
     "contrib/agentseek-langchain",
     "contrib/agentseek-schedule-sqlalchemy",
     "contrib/agentseek-tapestore-oceanbase",
