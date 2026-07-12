@@ -34,6 +34,9 @@ baseline. Follow `RC1_RUNBOOK.md` for installation, acceptance, and rollback.
 Keep `enterprise-wecom-v0.0.8-ga` as the immutable production rollback tag
 until v0.0.9 receives a GA tag.
 
+Before GA promotion, run the five gates in `GA_READINESS_V0.0.9.md` from a
+clean RC1 tag checkout on the company-network Mac mini.
+
 ## Setup
 
 ```bash

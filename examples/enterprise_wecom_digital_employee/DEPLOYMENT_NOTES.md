@@ -4424,3 +4424,17 @@ Release candidate ref: `enterprise-wecom-v0.0.9-rc1`.
 - Production remains pinned to `enterprise-wecom-v0.0.8-ga` until GA promotion.
 - RC installation, smoke test, and rollback: `RC1_RUNBOOK.md`.
 - Release delta and known limitations: `CHANGELOG.md`.
+
+### v0.0.9 GA readiness handoff (2026-07-12)
+
+- RC1 tag and GitHub `production` both resolve to `8128aac`.
+- Company GitLab ref equality was reported from the Mac mini and must be checked
+  again as Gate 1 of the final audit.
+- Root `agentseek` remains `0.0.4`, matching current upstream `main` and tag
+  `v0.0.4`; the enterprise deployment version remains a separate tag line.
+- The Langfuse runtime top-level `release=None` badge is accepted as a UI-only,
+  non-blocking RC1 limitation. Metadata, redaction, and probe release values work.
+- `GA_READINESS_V0.0.9.md` defines immutable-ref, clean-install, automated,
+  live-runtime, safety, and rollback gates.
+- Do not update `PRODUCTION_FREEZE.md` or create `enterprise-wecom-v0.0.9-ga`
+  until the Mac mini records every gate as PASS.
