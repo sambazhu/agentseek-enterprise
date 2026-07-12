@@ -500,13 +500,36 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 - 可跨重启恢复的 `WorkItem` 和 `WorkEvent`；
 - `securities_industry_report/v1` 标准作业流程；
 - 来源、证据和关键主张之间的可追溯关系；
+- 按来源许可保存快照或稳定复核记录，并显式处理 EvidenceConflict；
 - 提纲评审、最终批准和版本绑定；
-- 受控 Markdown、DOCX 和可选 PDF 产物；
+- WorkItem/WorkEvent 恢复真相源、WorkBudget 和 `waiting_external`；
+- 外部模型、MinerU、MCP、消息和文件交付前的 egress 硬策略；
+- `python-docx` 和战略发展部批准模板生成的 DOCX，可选 PDF；
 - outbound 文件登记和企微交付；
 - `work_id` 贯穿业务事件、Langfuse 和 MCP audit；
 - 简化组织映射：战略发展部委派人兼任评审人、批准人、数据所有者和交付对象；
 - 信息技术部 Agent 运维负责运行保障，不默认读取业务内容；
 - 权限、保密等级、人工接管和任务运营入口。
+
+### M0 冻结门
+
+- 自建应用主动文本和文件消息探针；
+- 公司 Word 模板或获批的临时中性模板；
+- 来源快照、商业许可和保留策略；
+- 企微章节编号结构化评审意见；
+- 一个限定的证券行业报告验收主题。
+
+### 发布分段
+
+```text
+v0.1.0-alpha1  Profile、WorkItem、WorkEvent、状态机和恢复
+v0.1.0-alpha2  ReportBrief、材料、证据和研究
+v0.1.0-beta1   提纲、初稿、质量门和 Markdown
+v0.1.0-rc1     主动通知、DOCX、批准、交付和故障恢复
+v0.1.0-ga      一个限定行业报告主题端到端通过
+```
+
+不把 v0.1.0 GA 降级为只有任务账本的技术版本。
 
 ### Sandbox 的新定位
 
