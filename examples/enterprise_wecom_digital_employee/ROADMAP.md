@@ -3,10 +3,11 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-07-09
+verified_on: 2026-07-12
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
+  - examples/enterprise_wecom_digital_employee/V0.1.0_INDUSTRY_REPORT_DIGITAL_EMPLOYEE_PLAN.md
   - docs/concepts/enterprise-wecom-template.zh.md
   - templates/deepagents/enterprise-wecom/README.md
 ---
@@ -349,9 +350,9 @@ mineru_precise ：精准解析 API，Token，200MB，200 页，Markdown/JSON/Zip
 
 生产环境优先使用 Token 驱动的精准解析 API；轻量 API 适合试用或小文件。
 
-在 v0.1.0 sandbox 完成之前，v0.0.9 不做本地复杂转换。
+v0.0.9 不做本地复杂转换。
 任何需要外部命令、脚本执行、LibreOffice、Pandoc 或本地复杂转换的处理，
-都应等任务级 sandbox 完成后再启用。
+都应进入 v0.1.0 受 WorkItem 授权的任务级 sandbox 后再启用。
 
 首版暂不做：
 
@@ -470,11 +471,46 @@ v0.0.9 必须默认做到：
 - 超大文件和非 allowlist 文件被拒绝；
 - MCP policy/audit 行为不变。
 
-## v0.1.0：sandbox workspace foundation
+## v0.1.0：行业报告编写数字员工
 
-v0.0.9 完成文件插件后，后续任务能力层进入 v0.1.x 系列组织。
-v0.1.0 建议优先补齐沙箱工作区基础，而不是直接进入复杂 research
-或文件生成。
+v0.1.0 的首个企业岗位场景确定为“行业报告编写数字员工”。
+
+它服务公司战略发展部，负责证券行业发展报告和公司专题报告的材料整理、
+研究分析、提纲评审、报告编写、质量检查、版本修订和正式交付。
+
+v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
+
+```text
+数字员工岗位
+-> 持久 WorkItem
+-> 报告 Playbook
+-> Source / Evidence / Claim
+-> 人工评审和批准
+-> 版本化报告产物
+-> 任务事件和审计
+```
+
+详细规划见 `V0.1.0_INDUSTRY_REPORT_DIGITAL_EMPLOYEE_PLAN.md`。
+
+### 核心交付
+
+- 新增通用 `contrib/agentseek-work` Bub 插件，承载 WorkItem、事件、审批和 worker；
+- 行业报告数字员工岗位档案；
+- 报告任务合同 `ReportBrief`；
+- 可跨重启恢复的 `WorkItem` 和 `WorkEvent`；
+- `securities_industry_report/v1` 标准作业流程；
+- 来源、证据和关键主张之间的可追溯关系；
+- 提纲评审、最终批准和版本绑定；
+- 受控 Markdown、DOCX 和可选 PDF 产物；
+- outbound 文件登记和企微交付；
+- `work_id` 贯穿业务事件、Langfuse 和 MCP audit；
+- 简化组织映射：战略发展部委派人兼任评审人、批准人、数据所有者和交付对象；
+- 信息技术部 Agent 运维负责运行保障，不默认读取业务内容；
+- 权限、保密等级、人工接管和任务运营入口。
+
+### Sandbox 的新定位
+
+sandbox 仍是 v0.1.0 的底层能力，但只为已授权的 WorkItem 服务。
 
 沙箱不应简单设计成“每个员工一个常驻执行沙箱”。
 更合适的模型是：
@@ -553,11 +589,24 @@ employee scoped inputs
 registered outputs
 ```
 
-这样 v0.1.1 之后的 research、content 和文件生成都站在同一个隔离边界上。
+这样行业研究、报告写作和文件生成都站在同一个任务与隔离边界上。
 
-## v0.1.1：企业 research workflow
+## v0.1.1：企业授权、审批与运营
 
-v0.1.1 建议在 `enterprise-wecom` template 内实现轻量企业 research。
+v0.1.1 建议增强组织级治理：
+
+- 在 v0.1.0 简化角色映射基础上支持可选的多人评审和职责分离；
+- 组织 RBAC 和数据范围；
+- 职责分离；
+- 审批中心；
+- SLA、超时和升级；
+- 任务管理和人工接管；
+- 质量、成本和风险指标。
+
+## v0.1.2：受治理的企业 research workflow
+
+企业 research 不作为脱离 WorkItem 的自由 Agent。
+它在 `enterprise-wecom` 的报告 Playbook 内执行。
 
 推荐结构：
 
@@ -590,9 +639,9 @@ run_enterprise_research(objective, file_ids=None, output_format="summary")
 plan -> search/query -> read -> synthesize -> answer
 ```
 
-## v0.1.2：企业 content workflow
+## v0.1.3：企业 content 与报告产物
 
-v0.1.2 可以吸收 `content-builder` 的思想，实现企业内容生产工作流。
+v0.1.3 可以吸收 `content-builder` 的思想，实现企业内容生产工作流。
 
 推荐结构：
 
@@ -636,23 +685,22 @@ content result
 -> agentseek-wecom send file
 ```
 
-## v0.1.3 及以后
+## v0.1.4 及以后
 
 后续可以继续扩展：
 
-### 文件输出发送
+### 更多文件输出格式
 
-- 生成 Markdown / docx / PDF / xlsx；
-- 通过企微上传 media；
-- 发送给员工；
-- 记录 outbound 文件元数据。
+- 在 v0.1.0 DOCX 报告交付基础上扩展 PDF、XLSX 和 PPTX；
+- 支持公司级模板、样式和品牌规范；
+- 支持文档系统归档和跨渠道交付。
 
-### OCR 和图片理解
+### 高级图片和图表理解
 
-- 图片下载；
-- OCR；
-- 图片摘要；
-- 截图和表格识别。
+- 在 v0.0.9 OCR 基础上增加非文字图片描述；
+- 理解流程图、组织架构图和复杂图表；
+- 对图形化数值生成可验证的结构化数据；
+- 保留图片区域、OCR 结果和报告引用之间的对应关系。
 
 ### 文件长期化
 
@@ -681,17 +729,17 @@ content result
 
 ## 总体路线
 
-v0.0.8 完成的是企业数字员工 runtime 底座。
-
-v0.0.9 开始进入任务能力层：
+v0.0.8 完成企业数字员工 runtime 底座，v0.0.9 完成文件输入与分析。
+v0.1.0 开始进入岗位和任务完成层：
 
 ```text
 v0.0.8  可观测、可部署、可审计的企业 runtime
-v0.0.9  agentseek-files 插件，支持文件输入和上下文
-v0.1.0  sandbox workspace foundation，支持任务级执行隔离
-v0.1.1  enterprise research workflow，支持多步调研
-v0.1.2  enterprise content workflow，支持材料生产
-v0.1.3  文件生成和企微发送，形成交付物闭环
+v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
+v0.1.0  行业报告数字员工、WorkItem、Playbook、证据、评审和报告交付
+v0.1.1  企业授权、正式审批、任务运营和人工接管
+v0.1.2  受 WorkItem 治理的 enterprise research
+v0.1.3  企业 content、模板化报告和多格式产物
+v0.1.4  团队任务队列、岗位协作和跨数字员工移交
 ```
 
 最终目标是把 `enterprise-wecom` 从：
