@@ -20,6 +20,7 @@ from agentseek_work.playbook import (
     WorkPlaybookRegistry,
 )
 from agentseek_work.repository import (
+    ActiveWorkConflictError,
     BudgetExceededError,
     BudgetReservationError,
     CreateWorkResult,
@@ -49,6 +50,7 @@ from agentseek_work.worker import PhaseRunResult, PhaseWorker, phase_payload_dig
 
 __all__ = [
     "LATEST_SCHEMA_VERSION",
+    "ActiveWorkConflictError",
     "ActorType",
     "BudgetAmount",
     "BudgetExceededError",

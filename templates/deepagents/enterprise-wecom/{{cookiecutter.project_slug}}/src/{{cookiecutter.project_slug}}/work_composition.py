@@ -128,6 +128,7 @@ class IndustryReportWorkComposition:
         self.repository = repository
         self.loaded_pack = loaded_pack
         self.profile = loaded_pack.profile
+        self.playbook_id, _ = _single_playbook_ref(self.profile)
         self.pack_snapshot_id = pack_snapshot_id
         self.permissions_digest = _permissions_digest(self.profile)
         self.skill_set_digest = _skill_set_digest(loaded_pack)
@@ -182,10 +183,11 @@ class IndustryReportWorkComposition:
                 "pack_snapshot_id": self.pack_snapshot_id,
             },
         )
-        current = self.repository.find_current_work(
+        current = self.repository.find_active_work(
             tenant_id=tenant_id,
             requester_id=requester_key,
             digital_employee_id=self.profile.digital_employee_id,
+            playbook_id=self.playbook_id,
         )
         if current is not None:
             self._publish_current_work(state, current)
@@ -235,10 +237,11 @@ class IndustryReportWorkComposition:
         enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
         if enterprise is None or state.get(_DIGITAL_EMPLOYEE_STATUS_KEY) != "found":
             return None
-        return self.repository.find_current_work(
+        return self.repository.find_active_work(
             tenant_id=str(enterprise["tenant_id"]),
             requester_id=str(enterprise["user_key"]),
             digital_employee_id=self.profile.digital_employee_id,
+            playbook_id=self.playbook_id,
         )
 
     def _authorization_status(self, state: Mapping[str, object]) -> str:

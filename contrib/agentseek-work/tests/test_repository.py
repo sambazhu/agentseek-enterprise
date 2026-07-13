@@ -1,10 +1,12 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import agentseek_work.repository as repository_module
 import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 from agentseek_work.models import ActorType, PackSnapshot, WorkBudget, WorkItem, WorkStatus
 from agentseek_work.repository import (
+    ActiveWorkConflictError,
     NonJsonValueError,
     SQLAlchemyWorkRepository,
     WorkConflictError,
@@ -12,7 +14,8 @@ from agentseek_work.repository import (
 )
 from agentseek_work.schema import schema_versions
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
-from sqlalchemy import create_engine, insert, inspect
+from sqlalchemy import Connection, create_engine, insert, inspect
+from sqlalchemy.exc import IntegrityError
 
 NOW = datetime(2026, 7, 12, tzinfo=UTC)
 
@@ -34,21 +37,24 @@ def make_item(
     work_id: str = "work_001",
     tenant_id: str = "tenant_001",
     idempotency_key: str = "request_001",
+    requester_id: str = "employee_001",
+    digital_employee_id: str = "industry-report",
+    playbook_id: str = "securities_industry_report",
 ) -> WorkItem:
     return WorkItem(
         work_id=work_id,
         tenant_id=tenant_id,
-        digital_employee_id="industry-report",
+        digital_employee_id=digital_employee_id,
         pack_id="industry-report",
         pack_version="1.0.0",
         pack_snapshot_id="sha256:pack",
         runtime_release="enterprise-wecom-v0.1.0-alpha1",
-        requester_id="employee_001",
-        reviewer_id="employee_001",
-        approver_id="employee_001",
-        data_owner_id="employee_001",
-        beneficiary_id="employee_001",
-        playbook_id="securities_industry_report",
+        requester_id=requester_id,
+        reviewer_id=requester_id,
+        approver_id=requester_id,
+        data_owner_id=requester_id,
+        beneficiary_id=requester_id,
+        playbook_id=playbook_id,
         playbook_version="1",
         budget_id="budget_001",
         idempotency_key=idempotency_key,
@@ -97,6 +103,19 @@ def transition(item: WorkItem, to_status: WorkStatus, *, event_id: str):
     )
 
 
+def _create_legacy_work_items_table(connection: Connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE enterprise_work_items ("
+        "work_id VARCHAR(128) PRIMARY KEY, "
+        "tenant_id VARCHAR(128) NOT NULL, "
+        "requester_id VARCHAR(128) NOT NULL, "
+        "digital_employee_id VARCHAR(128) NOT NULL, "
+        "playbook_id VARCHAR(128) NOT NULL, "
+        "status VARCHAR(32) NOT NULL"
+        ")"
+    )
+
+
 def test_migration_is_idempotent() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
@@ -120,13 +139,62 @@ def test_revision_four_adds_profile_audit_columns_to_revision_three_database() -
         connection.exec_driver_sql(
             "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
         )
-        connection.exec_driver_sql("CREATE TABLE enterprise_work_items (work_id VARCHAR(128) PRIMARY KEY)")
+        _create_legacy_work_items_table(connection)
         connection.execute(insert(schema_versions).values(version=3, applied_at=NOW))
 
     assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
     columns = {column["name"] for column in inspect(engine).get_columns("enterprise_work_items")}
     assert "digital_employee_profile_version" in columns
     assert "digital_employee_permissions_digest" in columns
+
+
+def test_revision_five_creates_active_playbook_unique_index() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        )
+        _create_legacy_work_items_table(connection)
+        connection.execute(insert(schema_versions).values(version=4, applied_at=NOW))
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    indexes = {index["name"]: index for index in inspect(engine).get_indexes("enterprise_work_items")}
+    assert indexes["uq_work_items_active_playbook"]["unique"] == 1
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO enterprise_work_items "
+            "(work_id, tenant_id, requester_id, digital_employee_id, playbook_id, status) VALUES "
+            "('terminal_1', 'tenant', 'requester', 'employee', 'playbook', 'succeeded'), "
+            "('terminal_2', 'tenant', 'requester', 'employee', 'playbook', 'failed'), "
+            "('active_1', 'tenant', 'requester', 'employee', 'playbook', 'draft')"
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO enterprise_work_items "
+            "(work_id, tenant_id, requester_id, digital_employee_id, playbook_id, status) VALUES "
+            "('active_2', 'tenant', 'requester', 'employee', 'playbook', 'running')"
+        )
+
+
+def test_revision_five_fails_closed_when_active_scopes_are_duplicated() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        )
+        _create_legacy_work_items_table(connection)
+        connection.exec_driver_sql(
+            "INSERT INTO enterprise_work_items "
+            "(work_id, tenant_id, requester_id, digital_employee_id, playbook_id, status) VALUES "
+            "('work_1', 'tenant', 'requester', 'employee', 'playbook', 'draft'), "
+            "('work_2', 'tenant', 'requester', 'employee', 'playbook', 'running')"
+        )
+        connection.execute(insert(schema_versions).values(version=4, applied_at=NOW))
+
+    with pytest.raises(RuntimeError, match=r"active WorkItem scope.*duplicates"):
+        apply_migrations(engine)
+    indexes = {index["name"] for index in inspect(engine).get_indexes("enterprise_work_items")}
+    assert "uq_work_items_active_playbook" not in indexes
 
 
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
@@ -139,11 +207,95 @@ def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository
     assert replay.item.work_id == original.work_id
 
 
+def test_different_request_is_rejected_when_same_playbook_scope_is_active(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    original = repository.create_work(make_item()).item
+
+    with pytest.raises(ActiveWorkConflictError) as raised:
+        repository.create_work(make_item(work_id="work_002", idempotency_key="request_002"))
+
+    assert raised.value.existing.work_id == original.work_id
+
+
+def test_database_race_is_converted_to_typed_active_work_conflict(
+    repository: SQLAlchemyWorkRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = repository.create_work(make_item()).item
+    real_find = repository_module._find_active_work
+    calls = 0
+
+    def hide_active_scope_once(
+        connection: Connection,
+        *,
+        tenant_id: str,
+        requester_id: str,
+        digital_employee_id: str,
+        playbook_id: str,
+    ) -> WorkItem | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return real_find(
+            connection,
+            tenant_id=tenant_id,
+            requester_id=requester_id,
+            digital_employee_id=digital_employee_id,
+            playbook_id=playbook_id,
+        )
+
+    monkeypatch.setattr(repository_module, "_find_active_work", hide_active_scope_once)
+
+    with pytest.raises(ActiveWorkConflictError) as raised:
+        repository.create_work(make_item(work_id="work_racing", idempotency_key="request_racing"))
+
+    assert calls == 2
+    assert raised.value.existing.work_id == original.work_id
+
+
+def test_different_playbooks_can_be_active_together(repository: SQLAlchemyWorkRepository) -> None:
+    first = repository.create_work(make_item()).item
+    second = repository.create_work(
+        make_item(
+            work_id="work_002",
+            idempotency_key="request_002",
+            playbook_id="another_report",
+        )
+    ).item
+
+    assert first.playbook_id != second.playbook_id
+    assert repository.find_active_work(
+        tenant_id=second.tenant_id,
+        requester_id=second.requester_id,
+        digital_employee_id=second.digital_employee_id,
+        playbook_id=second.playbook_id,
+    ) == second
+
+
+def test_terminal_work_releases_playbook_scope(repository: SQLAlchemyWorkRepository) -> None:
+    original = repository.create_work(make_item()).item
+    cancelled = transition(original, WorkStatus.CANCELLED, event_id="event_cancelled")
+    repository.commit_transition(tenant_id=original.tenant_id, expected_version=0, result=cancelled)
+
+    replacement = repository.create_work(make_item(work_id="work_002", idempotency_key="request_002"))
+
+    assert replacement.created is True
+    assert replacement.item.work_id == "work_002"
+
+
 def test_find_current_work_is_tenant_requester_and_employee_scoped(
     repository: SQLAlchemyWorkRepository,
 ) -> None:
     first = repository.create_work(make_item(work_id="work_first", idempotency_key="request_first")).item
-    later = repository.create_work(make_item(work_id="work_later", idempotency_key="request_later")).item
+    later = repository.create_work(
+        make_item(
+            work_id="work_later",
+            idempotency_key="request_later",
+            playbook_id="another_report",
+        )
+    ).item
 
     current = repository.find_current_work(
         tenant_id=later.tenant_id,

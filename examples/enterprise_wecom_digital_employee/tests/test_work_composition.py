@@ -3,9 +3,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import pytest
 from agentseek_enterprise.runtime import EnterpriseIdentityContext
 from agentseek_langchain.ag_ui import application_state_from_state, runtime_context_from_state
-from agentseek_work import SQLAlchemyWorkRepository, WorkStatus, apply_migrations
+from agentseek_work import ActiveWorkConflictError, SQLAlchemyWorkRepository, WorkStatus, apply_migrations
 from enterprise_wecom_digital_employee.agent import (
     EnterpriseAgentRuntimeContext,
     EnterpriseAgentState,
@@ -178,6 +179,21 @@ def test_distinct_wecom_message_ids_do_not_collapse_identical_content(tmp_path: 
     composition.enrich_state(message(), "wecom:test", second)
 
     assert first["work_request_key"] != second["work_request_key"]
+
+
+def test_distinct_request_is_rejected_when_same_report_playbook_is_active(tmp_path: Path) -> None:
+    composition = build_composition(tmp_path)
+    first = authorized_state()
+    second = authorized_state()
+    composition.enrich_state(message("message-001"), "wecom:test", first)
+    composition.create_report_work(first)
+    composition.enrich_state(message("message-002"), "wecom:test", second)
+
+    with pytest.raises(ActiveWorkConflictError) as raised:
+        composition.create_report_work(second)
+
+    assert raised.value.existing.work_id == "work_live_001"
+    assert second["current_work"]["work_id"] == "work_live_001"
 
 
 def test_graph_boundary_preserves_tool_state_and_passes_private_runtime_as_context(tmp_path: Path) -> None:

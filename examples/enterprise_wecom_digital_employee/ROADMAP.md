@@ -530,6 +530,7 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 - 最小 `pack.yaml` schema、受限 `pack_loader.py` 和 Profile-scoped SkillResolver；
 - 内容寻址 `PackSnapshot`，同时记录 source commit，保证历史 pack 可取回；
 - WorkItem 绑定 `pack_snapshot_id` 和权威 `runtime_release`；
+- 同一 tenant/requester/digital-employee/playbook 最多一个非终态 WorkItem，由 revision 5 partial unique index 保证；
 - Langfuse runtime release 的 OTel/SDK 兼容探针，Langfuse 字段仅作辅助观测；
 - pack 测试覆盖 manifest、skill_refs、版本固定、snapshot 取回、路径逃逸和二进制 asset 隔离。
 

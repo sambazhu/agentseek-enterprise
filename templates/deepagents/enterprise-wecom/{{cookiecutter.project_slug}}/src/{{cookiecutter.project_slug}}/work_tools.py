@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agentseek_work import ActiveWorkConflictError
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
@@ -24,6 +25,13 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:
 
         try:
             result = composition.create_report_work(runtime.state, runtime.context)
+        except ActiveWorkConflictError as exc:
+            item = exc.existing
+            return (
+                "当前已有进行中的同类报告任务："
+                f"work_id={item.work_id}，status={item.status.value}，phase={item.current_phase}。"
+                "请先继续、完成或取消该任务，再创建新的同类报告任务。"
+            )
         except WorkCompositionError as exc:
             return str(exc)
         verb = "已创建" if result.created else "已找到同一幂等请求创建的"

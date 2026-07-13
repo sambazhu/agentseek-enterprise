@@ -10,6 +10,7 @@ from sqlalchemy import Connection, Engine, RowMapping, insert, select, update
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from agentseek_work.models import (
+    TERMINAL_WORK_STATUSES,
     ActorType,
     BudgetAmount,
     BudgetReservation,
@@ -42,6 +43,17 @@ class WorkNotFoundError(WorkRepositoryError):
 
 class WorkConflictError(WorkRepositoryError):
     """Raised when a unique or append-only ledger constraint is violated."""
+
+
+class ActiveWorkConflictError(WorkConflictError):
+    """Raised when a different request targets an already-active playbook scope."""
+
+    def __init__(self, existing: WorkItem) -> None:
+        self.existing = existing
+        super().__init__(
+            "an active WorkItem already exists for this tenant, requester, "
+            "digital employee, and playbook"
+        )
 
 
 class NonJsonValueError(WorkRepositoryError):
@@ -174,6 +186,15 @@ class SQLAlchemyWorkRepository:
                 )
                 if existing is not None:
                     return CreateWorkResult(item=_row_to_item(existing), created=False)
+                active = _find_active_work(
+                    connection,
+                    tenant_id=item.tenant_id,
+                    requester_id=item.requester_id,
+                    digital_employee_id=item.digital_employee_id,
+                    playbook_id=item.playbook_id,
+                )
+                if active is not None:
+                    raise ActiveWorkConflictError(active)
                 _require_pack_snapshot_binding(connection, item)
                 connection.execute(insert(work_items).values(**values))
         except IntegrityError as exc:
@@ -183,6 +204,14 @@ class SQLAlchemyWorkRepository:
             )
             if existing is not None:
                 return CreateWorkResult(item=existing, created=False)
+            active = self.find_active_work(
+                tenant_id=item.tenant_id,
+                requester_id=item.requester_id,
+                digital_employee_id=item.digital_employee_id,
+                playbook_id=item.playbook_id,
+            )
+            if active is not None:
+                raise ActiveWorkConflictError(active) from exc
             raise WorkConflictError("work item creation failed") from exc
         except StatementError as exc:
             self._raise_write_error(exc, "work item creation failed")
@@ -214,9 +243,6 @@ class SQLAlchemyWorkRepository:
     ) -> WorkItem | None:
         """Return the requester's most recently updated non-terminal WorkItem."""
 
-        terminal_statuses = tuple(
-            status.value for status in (WorkStatus.SUCCEEDED, WorkStatus.FAILED, WorkStatus.CANCELLED)
-        )
         with self.engine.connect() as connection:
             row = (
                 connection
@@ -226,7 +252,7 @@ class SQLAlchemyWorkRepository:
                         work_items.c.tenant_id == tenant_id,
                         work_items.c.requester_id == requester_id,
                         work_items.c.digital_employee_id == digital_employee_id,
-                        work_items.c.status.not_in(terminal_statuses),
+                        work_items.c.status.not_in(_terminal_status_values()),
                     )
                     .order_by(work_items.c.updated_at.desc(), work_items.c.work_id.desc())
                     .limit(1)
@@ -235,6 +261,25 @@ class SQLAlchemyWorkRepository:
                 .one_or_none()
             )
         return _row_to_item(row) if row is not None else None
+
+    def find_active_work(
+        self,
+        *,
+        tenant_id: str,
+        requester_id: str,
+        digital_employee_id: str,
+        playbook_id: str,
+    ) -> WorkItem | None:
+        """Return the active WorkItem for one concurrency-controlled playbook scope."""
+
+        with self.engine.connect() as connection:
+            return _find_active_work(
+                connection,
+                tenant_id=tenant_id,
+                requester_id=requester_id,
+                digital_employee_id=digital_employee_id,
+                playbook_id=playbook_id,
+            )
 
     def commit_transition(
         self,
@@ -845,6 +890,38 @@ class SQLAlchemyWorkRepository:
         if _contains_json_error(exc):
             raise NonJsonValueError(message) from exc
         raise WorkConflictError(message) from exc
+
+
+def _terminal_status_values() -> tuple[str, ...]:
+    return tuple(status.value for status in TERMINAL_WORK_STATUSES)
+
+
+def _find_active_work(
+    connection: Connection,
+    *,
+    tenant_id: str,
+    requester_id: str,
+    digital_employee_id: str,
+    playbook_id: str,
+) -> WorkItem | None:
+    row = (
+        connection
+        .execute(
+            select(work_items)
+            .where(
+                work_items.c.tenant_id == tenant_id,
+                work_items.c.requester_id == requester_id,
+                work_items.c.digital_employee_id == digital_employee_id,
+                work_items.c.playbook_id == playbook_id,
+                work_items.c.status.not_in(_terminal_status_values()),
+            )
+            .order_by(work_items.c.updated_at.desc(), work_items.c.work_id.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return _row_to_item(row) if row is not None else None
 
 
 def _locked_budget_usage(

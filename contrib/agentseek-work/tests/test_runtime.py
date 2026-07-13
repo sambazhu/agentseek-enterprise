@@ -13,7 +13,12 @@ NOW = datetime(2026, 7, 13, tzinfo=UTC)
 LEASE = timedelta(seconds=30)
 
 
-def make_item(*, work_id: str = "work_001", priority: int = 0) -> WorkItem:
+def make_item(
+    *,
+    work_id: str = "work_001",
+    priority: int = 0,
+    requester_id: str = "employee_001",
+) -> WorkItem:
     return WorkItem(
         work_id=work_id,
         tenant_id="tenant_001",
@@ -22,11 +27,11 @@ def make_item(*, work_id: str = "work_001", priority: int = 0) -> WorkItem:
         pack_version="1.0.0",
         pack_snapshot_id="sha256:pack",
         runtime_release="enterprise-wecom-v0.1.0-alpha1",
-        requester_id="employee_001",
-        reviewer_id="employee_001",
-        approver_id="employee_001",
-        data_owner_id="employee_001",
-        beneficiary_id="employee_001",
+        requester_id=requester_id,
+        reviewer_id=requester_id,
+        approver_id=requester_id,
+        data_owner_id=requester_id,
+        beneficiary_id=requester_id,
         playbook_id="securities_industry_report",
         playbook_version="1",
         budget_id="budget_001",
@@ -91,7 +96,7 @@ def runtime(repository: SQLAlchemyWorkRepository, worker_id: str = "worker_a") -
 
 def test_claim_prefers_priority_and_holds_finite_lease(repository: SQLAlchemyWorkRepository) -> None:
     queue(repository, make_item(work_id="low", priority=1))
-    queue(repository, make_item(work_id="high", priority=5))
+    queue(repository, make_item(work_id="high", priority=5, requester_id="employee_002"))
 
     claimed = runtime(repository).claim_next(now=NOW + timedelta(seconds=2))
 
