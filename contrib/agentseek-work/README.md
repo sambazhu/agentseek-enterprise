@@ -11,6 +11,9 @@ Implemented M1 slices contain:
 - tenant-scoped, idempotent WorkItem creation;
 - optimistic WorkItem updates and append-only WorkEvent commits in one transaction;
 - JSON round-trip validation before JSONB persistence;
+- priority-ordered queued claim with finite worker leases;
+- lease renewal, graceful abandon, expired-lease recovery, and bounded retry failure;
+- waiting-external wakeup and requester cancellation without holding a worker slot;
 - a Bub plugin entry point reserved for later runtime hooks.
 
 The repository uses JSONB for `brief` and identifier snapshots on PostgreSQL.
@@ -18,5 +21,6 @@ SQLite is used only for portable transaction-semantics tests. A deployment must
 apply the migration to PostgreSQL before wiring runtime hooks.
 
 It does not contain WeCom protocol handling, employee identity lookup, report-writing rules,
-file parsing, MCP configuration, or DOCX rendering. It does not yet provide worker
-leases, recovery, approvals, outbox delivery, Profile loading, or PackSnapshot loading.
+file parsing, MCP configuration, or DOCX rendering. It does not yet provide budget
+reservation, a phase execution loop, approvals, outbox delivery, Profile loading,
+or PackSnapshot loading.

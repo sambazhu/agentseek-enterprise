@@ -6,6 +6,7 @@ from agentseek_work.repository import (
     WorkConflictError,
     WorkNotFoundError,
 )
+from agentseek_work.runtime import WorkRuntimeService
 from agentseek_work.state_machine import (
     InvalidTransitionError,
     OptimisticConcurrencyError,
@@ -26,6 +27,7 @@ __all__ = [
     "WorkEvent",
     "WorkItem",
     "WorkNotFoundError",
+    "WorkRuntimeService",
     "WorkStatus",
     "transition_work_item",
 ]

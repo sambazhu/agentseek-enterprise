@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
 
-from sqlalchemy import Engine, RowMapping, insert, select, update
+from sqlalchemy import Connection, Engine, RowMapping, insert, select, update
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from agentseek_work.models import ActorType, WorkBudget, WorkEvent, WorkItem, WorkStatus
@@ -164,6 +164,292 @@ class SQLAlchemyWorkRepository:
                 select(work_events).where(work_events.c.work_id == work_id).order_by(work_events.c.work_version)
             ).mappings()
             return tuple(_row_to_event(row) for row in rows)
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        event_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        tenant_id: str | None = None,
+    ) -> WorkItem | None:
+        _validate_lease_request(worker_id, now, lease_duration)
+        with self.engine.begin() as connection:
+            query = select(work_items).where(work_items.c.status == WorkStatus.QUEUED.value)
+            if tenant_id is not None:
+                query = query.where(work_items.c.tenant_id == tenant_id)
+            row = (
+                connection
+                .execute(
+                    query
+                    .order_by(work_items.c.priority.desc(), work_items.c.created_at)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            item = _row_to_item(row)
+            result = _system_transition(
+                item,
+                to_status=WorkStatus.RUNNING,
+                event_id=event_id,
+                event_type="work_claimed",
+                actor_id=worker_id,
+                occurred_at=now,
+            )
+            claimed = replace(
+                result.item,
+                lease_owner=worker_id,
+                lease_expires_at=now + lease_duration,
+            )
+            _update_snapshot(connection, item=item, updated=claimed)
+            connection.execute(insert(work_events).values(**_event_to_values(result.event)))
+            return claimed
+
+    def renew_lease(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        worker_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+    ) -> WorkItem:
+        _validate_lease_request(worker_id, now, lease_duration)
+        expires_at = now + lease_duration
+        with self.engine.begin() as connection:
+            updated = connection.execute(
+                update(work_items)
+                .where(
+                    work_items.c.tenant_id == tenant_id,
+                    work_items.c.work_id == work_id,
+                    work_items.c.status == WorkStatus.RUNNING.value,
+                    work_items.c.lease_owner == worker_id,
+                    work_items.c.lease_expires_at > now,
+                )
+                .values(lease_expires_at=expires_at)
+            )
+            if updated.rowcount != 1:
+                raise WorkConflictError("lease is missing, expired, or owned by another worker")
+        return self.get_work(tenant_id=tenant_id, work_id=work_id)
+
+    def abandon_lease(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        worker_id: str,
+        now: datetime,
+    ) -> bool:
+        _require_aware_datetime(now, "now")
+        with self.engine.begin() as connection:
+            updated = connection.execute(
+                update(work_items)
+                .where(
+                    work_items.c.tenant_id == tenant_id,
+                    work_items.c.work_id == work_id,
+                    work_items.c.status == WorkStatus.RUNNING.value,
+                    work_items.c.lease_owner == worker_id,
+                )
+                .values(lease_expires_at=now)
+            )
+            return updated.rowcount == 1
+
+    def commit_worker_transition(
+        self,
+        *,
+        tenant_id: str,
+        worker_id: str,
+        expected_version: int,
+        now: datetime,
+        result: TransitionResult,
+    ) -> WorkItem:
+        item = result.item
+        event = result.event
+        if event.work_id != item.work_id or event.work_version != item.version:
+            raise WorkConflictError("transition event does not match the WorkItem snapshot")
+        if event.to_status is not item.status or event.phase != item.current_phase:
+            raise WorkConflictError("transition event status or phase does not match the WorkItem snapshot")
+        _require_aware_datetime(now, "now")
+        committed = replace(item, lease_owner=None, lease_expires_at=None)
+        values = _item_to_values(committed)
+        values.pop("work_id")
+        values.pop("tenant_id")
+        try:
+            with self.engine.begin() as connection:
+                updated = connection.execute(
+                    update(work_items)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.work_id == item.work_id,
+                        work_items.c.version == expected_version,
+                        work_items.c.status == WorkStatus.RUNNING.value,
+                        work_items.c.lease_owner == worker_id,
+                        work_items.c.lease_expires_at > now,
+                    )
+                    .values(**values)
+                )
+                if updated.rowcount != 1:
+                    _raise_worker_lease_required()
+                connection.execute(insert(work_events).values(**_event_to_values(event)))
+        except WorkConflictError:
+            raise
+        except (IntegrityError, StatementError) as exc:
+            self._raise_write_error(exc, "worker transition commit failed")
+        return committed
+
+    def requeue_due_external(
+        self,
+        *,
+        event_id: str,
+        now: datetime,
+        tenant_id: str | None = None,
+    ) -> WorkItem | None:
+        _require_aware_datetime(now, "now")
+        with self.engine.begin() as connection:
+            query = select(work_items).where(
+                work_items.c.status == WorkStatus.WAITING_EXTERNAL.value,
+                work_items.c.next_poll_at.is_not(None),
+                work_items.c.next_poll_at <= now,
+            )
+            if tenant_id is not None:
+                query = query.where(work_items.c.tenant_id == tenant_id)
+            row = (
+                connection
+                .execute(query.order_by(work_items.c.next_poll_at).limit(1).with_for_update(skip_locked=True))
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            item = _row_to_item(row)
+            result = _system_transition(
+                item,
+                to_status=WorkStatus.QUEUED,
+                event_id=event_id,
+                event_type="external_poll_due",
+                actor_id="scheduler",
+                occurred_at=now,
+            )
+            queued = replace(result.item, next_poll_at=None)
+            _update_snapshot(connection, item=item, updated=queued)
+            connection.execute(insert(work_events).values(**_event_to_values(result.event)))
+            return queued
+
+    def recover_expired_lease(
+        self,
+        *,
+        worker_id: str,
+        event_id: str,
+        now: datetime,
+        lease_duration: timedelta,
+        tenant_id: str | None = None,
+    ) -> WorkItem | None:
+        _validate_lease_request(worker_id, now, lease_duration)
+        with self.engine.begin() as connection:
+            query = (
+                select(work_items, work_budgets.c.max_retry_count)
+                .join(work_budgets, work_items.c.budget_id == work_budgets.c.budget_id)
+                .where(
+                    work_items.c.status == WorkStatus.RUNNING.value,
+                    work_items.c.lease_expires_at.is_not(None),
+                    work_items.c.lease_expires_at <= now,
+                )
+            )
+            if tenant_id is not None:
+                query = query.where(work_items.c.tenant_id == tenant_id)
+            row = (
+                connection
+                .execute(query.order_by(work_items.c.lease_expires_at).limit(1).with_for_update(skip_locked=True))
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            item = _row_to_item(row)
+            max_retry_count = int(row["max_retry_count"])
+            if item.phase_attempt <= max_retry_count:
+                recovered = replace(
+                    item,
+                    phase_attempt=item.phase_attempt + 1,
+                    version=item.version + 1,
+                    updated_at=now,
+                    lease_owner=worker_id,
+                    lease_expires_at=now + lease_duration,
+                )
+                event = _operational_event(
+                    item=item,
+                    updated=recovered,
+                    event_id=event_id,
+                    event_type="lease_recovered",
+                    actor_id=worker_id,
+                    occurred_at=now,
+                )
+            else:
+                result = _system_transition(
+                    item,
+                    to_status=WorkStatus.FAILED,
+                    event_id=event_id,
+                    event_type="retry_exhausted",
+                    actor_id=worker_id,
+                    occurred_at=now,
+                )
+                recovered = replace(result.item, lease_owner=None, lease_expires_at=None)
+                event = result.event
+            _update_snapshot(connection, item=item, updated=recovered)
+            connection.execute(insert(work_events).values(**_event_to_values(event)))
+            return recovered
+
+    def cancel_work(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        event_id: str,
+        actor_type: ActorType,
+        actor_id: str,
+        now: datetime,
+    ) -> WorkItem:
+        _require_aware_datetime(now, "now")
+        with self.engine.begin() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_items)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.work_id == work_id,
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
+            item = _row_to_item(row)
+            from agentseek_work.state_machine import transition_work_item
+
+            result = transition_work_item(
+                item,
+                to_status=WorkStatus.CANCELLED,
+                expected_version=item.version,
+                event_id=event_id,
+                event_type="work_cancelled",
+                actor_type=actor_type,
+                actor_id=actor_id,
+                occurred_at=now,
+                payload_digest="sha256:cancelled",
+                policy_decision="allowed",
+            )
+            cancelled = replace(result.item, lease_owner=None, lease_expires_at=None)
+            _update_snapshot(connection, item=item, updated=cancelled)
+            connection.execute(insert(work_events).values(**_event_to_values(result.event)))
+            return cancelled
 
     def _get_by_idempotency_key(
         self,
@@ -340,3 +626,87 @@ def _contains_json_error(exc: Exception) -> bool:
 
 def _raise_optimistic_concurrency(work_id: str) -> NoReturn:
     raise OptimisticConcurrencyError(f"work item version mismatch or tenant scope denied for {work_id}")
+
+
+def _raise_worker_lease_required() -> NoReturn:
+    raise WorkConflictError("active worker lease is required to commit phase output")
+
+
+def _validate_lease_request(worker_id: str, now: datetime, lease_duration: timedelta) -> None:
+    if not worker_id.strip():
+        raise ValueError("worker_id must not be blank")
+    _require_aware_datetime(now, "now")
+    if lease_duration <= timedelta(0):
+        raise ValueError("lease_duration must be positive")
+
+
+def _require_aware_datetime(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+
+
+def _system_transition(
+    item: WorkItem,
+    *,
+    to_status: WorkStatus,
+    event_id: str,
+    event_type: str,
+    actor_id: str,
+    occurred_at: datetime,
+) -> TransitionResult:
+    from agentseek_work.state_machine import transition_work_item
+
+    return transition_work_item(
+        item,
+        to_status=to_status,
+        expected_version=item.version,
+        event_id=event_id,
+        event_type=event_type,
+        actor_type=ActorType.SYSTEM,
+        actor_id=actor_id,
+        occurred_at=occurred_at,
+        payload_digest="sha256:operational",
+        policy_decision="allowed",
+    )
+
+
+def _operational_event(
+    *,
+    item: WorkItem,
+    updated: WorkItem,
+    event_id: str,
+    event_type: str,
+    actor_id: str,
+    occurred_at: datetime,
+) -> WorkEvent:
+    return WorkEvent(
+        event_id=event_id,
+        work_id=item.work_id,
+        event_type=event_type,
+        actor_type=ActorType.SYSTEM,
+        actor_id=actor_id,
+        phase=updated.current_phase,
+        from_status=item.status,
+        to_status=updated.status,
+        work_version=updated.version,
+        payload_digest="sha256:operational",
+        policy_decision="allowed",
+        occurred_at=occurred_at,
+    )
+
+
+def _update_snapshot(connection: Connection, *, item: WorkItem, updated: WorkItem) -> None:
+    values = _item_to_values(updated)
+    values.pop("work_id")
+    values.pop("tenant_id")
+    result = connection.execute(
+        update(work_items)
+        .where(
+            work_items.c.tenant_id == item.tenant_id,
+            work_items.c.work_id == item.work_id,
+            work_items.c.version == item.version,
+        )
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        _raise_optimistic_concurrency(item.work_id)
