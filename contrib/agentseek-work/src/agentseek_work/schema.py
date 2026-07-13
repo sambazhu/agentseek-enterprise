@@ -67,6 +67,8 @@ work_items = Table(
     Column("work_id", String(128), primary_key=True),
     Column("tenant_id", String(128), nullable=False),
     Column("digital_employee_id", String(128), nullable=False),
+    Column("digital_employee_profile_version", String(64)),
+    Column("digital_employee_permissions_digest", String(160)),
     Column("pack_id", String(128), nullable=False),
     Column("pack_version", String(64), nullable=False),
     Column("pack_snapshot_id", String(160), nullable=False),

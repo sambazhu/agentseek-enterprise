@@ -14,6 +14,8 @@ def test_postgresql_work_items_ddl_uses_jsonb_and_idempotency_constraint() -> No
 
     assert "brief JSONB NOT NULL" in ddl
     assert "skill_digests JSONB NOT NULL" in ddl
+    assert "digital_employee_profile_version VARCHAR(64)" in ddl
+    assert "digital_employee_permissions_digest VARCHAR(160)" in ddl
     assert "CONSTRAINT uq_work_items_tenant_idempotency UNIQUE (tenant_id, idempotency_key)" in ddl
     assert "CONSTRAINT ck_work_items_status CHECK" in ddl
     assert "version INTEGER NOT NULL" in ddl

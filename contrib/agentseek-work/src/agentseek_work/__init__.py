@@ -1,3 +1,4 @@
+from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations, current_schema_version
 from agentseek_work.models import (
     ActorType,
     BudgetAmount,
@@ -27,6 +28,16 @@ from agentseek_work.repository import (
     WorkConflictError,
     WorkNotFoundError,
 )
+from agentseek_work.routing import (
+    InteractionRoute,
+    RouteDecision,
+    RouteRequest,
+    SideEffect,
+    ToolContract,
+    ToolContractRegistry,
+    WorkMode,
+    decide_interaction_route,
+)
 from agentseek_work.runtime import WorkRuntimeService
 from agentseek_work.state_machine import (
     InvalidTransitionError,
@@ -37,6 +48,7 @@ from agentseek_work.state_machine import (
 from agentseek_work.worker import PhaseRunResult, PhaseWorker, phase_payload_digest
 
 __all__ = [
+    "LATEST_SCHEMA_VERSION",
     "ActorType",
     "BudgetAmount",
     "BudgetExceededError",
@@ -45,6 +57,7 @@ __all__ = [
     "BudgetReservationStatus",
     "BudgetUsage",
     "CreateWorkResult",
+    "InteractionRoute",
     "InvalidTransitionError",
     "NonJsonValueError",
     "OptimisticConcurrencyError",
@@ -55,17 +68,26 @@ __all__ = [
     "PhaseRunResult",
     "PhaseWorker",
     "PlaybookRegistryError",
+    "RouteDecision",
+    "RouteRequest",
     "SQLAlchemyWorkRepository",
+    "SideEffect",
+    "ToolContract",
+    "ToolContractRegistry",
     "TransitionResult",
     "WorkBudget",
     "WorkConflictError",
     "WorkEvent",
     "WorkItem",
+    "WorkMode",
     "WorkNotFoundError",
     "WorkPlaybook",
     "WorkPlaybookRegistry",
     "WorkRuntimeService",
     "WorkStatus",
+    "apply_migrations",
+    "current_schema_version",
+    "decide_interaction_route",
     "phase_payload_digest",
     "transition_work_item",
 ]

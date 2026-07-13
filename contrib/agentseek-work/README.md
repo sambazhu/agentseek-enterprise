@@ -19,11 +19,12 @@ Implemented M1 slices contain:
 - one-phase-at-a-time claim, budget, execute, validate, and commit orchestration;
 - fail-closed budget exhaustion to `waiting_approval`;
 - immutable, content-addressed `PackSnapshot` metadata and WorkItem binding validation;
-- a Bub plugin entry point reserved for later runtime hooks.
+- deterministic `DirectTurn`/`WorkItem` routing from server-owned tool contracts;
+- an opt-in Bub message-key/state-enrichment hook with an explicit template binding boundary.
 
 The repository uses JSONB for `brief` and identifier snapshots on PostgreSQL.
 SQLite is used only for portable transaction-semantics tests. A deployment must
-apply schema revision 3 to PostgreSQL before wiring runtime hooks.
+apply schema revision 4 to PostgreSQL before enabling runtime composition.
 
 `PhaseWorker` reserves the phase's declared maximum resource use before the
 playbook can call a model or external service. It settles actual aggregate use
@@ -36,8 +37,9 @@ version)` implementation through `WorkPlaybookRegistry`. `agentseek-work` does
 not import the enterprise WeCom template or report-writing modules.
 
 It does not contain WeCom protocol handling, employee identity lookup, report-writing rules,
-file parsing, MCP configuration, or DOCX rendering. It does not yet provide budget
-extensions, approval decisions, outbox delivery, Profile loading, pack content
-storage, a production scheduler channel, or a concrete report playbook. Pack
-content loading and Profile-scoped Skill materialization belong to the template;
-this package persists only immutable snapshot metadata and validates WorkItem binding.
+file parsing, MCP configuration, or DOCX rendering. It does not yet provide approval
+decisions, outbox delivery, Profile loading, pack content storage, a production scheduler
+channel, or a concrete report playbook. Pack content loading, Profile authorization,
+Profile-scoped Skill materialization, and WorkItem factory policy belong to the template;
+this package persists generic ledger/snapshot metadata, validates bindings, and enforces
+server-owned routing contracts.

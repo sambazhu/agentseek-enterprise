@@ -12,7 +12,7 @@ from agentseek_work.repository import (
 )
 from agentseek_work.schema import schema_versions
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
-from sqlalchemy import create_engine, insert
+from sqlalchemy import create_engine, insert, inspect
 
 NOW = datetime(2026, 7, 12, tzinfo=UTC)
 
@@ -114,6 +114,21 @@ def test_migration_rejects_newer_database_version() -> None:
         apply_migrations(engine)
 
 
+def test_revision_four_adds_profile_audit_columns_to_revision_three_database() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        )
+        connection.exec_driver_sql("CREATE TABLE enterprise_work_items (work_id VARCHAR(128) PRIMARY KEY)")
+        connection.execute(insert(schema_versions).values(version=3, applied_at=NOW))
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    columns = {column["name"] for column in inspect(engine).get_columns("enterprise_work_items")}
+    assert "digital_employee_profile_version" in columns
+    assert "digital_employee_permissions_digest" in columns
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -122,6 +137,30 @@ def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository
     assert first.created
     assert not replay.created
     assert replay.item.work_id == original.work_id
+
+
+def test_find_current_work_is_tenant_requester_and_employee_scoped(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    first = repository.create_work(make_item(work_id="work_first", idempotency_key="request_first")).item
+    later = repository.create_work(make_item(work_id="work_later", idempotency_key="request_later")).item
+
+    current = repository.find_current_work(
+        tenant_id=later.tenant_id,
+        requester_id=later.requester_id,
+        digital_employee_id=later.digital_employee_id,
+    )
+
+    assert current is not None
+    assert current.work_id == later.work_id
+    assert (
+        repository.find_current_work(
+            tenant_id="tenant_other",
+            requester_id=first.requester_id,
+            digital_employee_id=first.digital_employee_id,
+        )
+        is None
+    )
 
 
 def test_create_requires_registered_matching_pack_snapshot(

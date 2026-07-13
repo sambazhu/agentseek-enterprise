@@ -205,6 +205,37 @@ class SQLAlchemyWorkRepository:
             raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
         return _row_to_item(row)
 
+    def find_current_work(
+        self,
+        *,
+        tenant_id: str,
+        requester_id: str,
+        digital_employee_id: str,
+    ) -> WorkItem | None:
+        """Return the requester's most recently updated non-terminal WorkItem."""
+
+        terminal_statuses = tuple(
+            status.value for status in (WorkStatus.SUCCEEDED, WorkStatus.FAILED, WorkStatus.CANCELLED)
+        )
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_items)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.requester_id == requester_id,
+                        work_items.c.digital_employee_id == digital_employee_id,
+                        work_items.c.status.not_in(terminal_statuses),
+                    )
+                    .order_by(work_items.c.updated_at.desc(), work_items.c.work_id.desc())
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _row_to_item(row) if row is not None else None
+
     def commit_transition(
         self,
         *,
@@ -1084,6 +1115,8 @@ def _item_to_values(item: WorkItem) -> dict[str, Any]:
         "work_id": item.work_id,
         "tenant_id": item.tenant_id,
         "digital_employee_id": item.digital_employee_id,
+        "digital_employee_profile_version": item.digital_employee_profile_version,
+        "digital_employee_permissions_digest": item.digital_employee_permissions_digest,
         "pack_id": item.pack_id,
         "pack_version": item.pack_version,
         "pack_snapshot_id": item.pack_snapshot_id,
@@ -1141,6 +1174,8 @@ def _row_to_item(row: RowMapping | Mapping[str, Any]) -> WorkItem:
         work_id=str(row["work_id"]),
         tenant_id=str(row["tenant_id"]),
         digital_employee_id=str(row["digital_employee_id"]),
+        digital_employee_profile_version=_optional_text(row["digital_employee_profile_version"]),
+        digital_employee_permissions_digest=_optional_text(row["digital_employee_permissions_digest"]),
         pack_id=str(row["pack_id"]),
         pack_version=str(row["pack_version"]),
         pack_snapshot_id=str(row["pack_snapshot_id"]),

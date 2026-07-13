@@ -220,6 +220,8 @@ class WorkItem:
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     due_at: datetime | None = None
+    digital_employee_profile_version: str | None = None
+    digital_employee_permissions_digest: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -248,6 +250,10 @@ class WorkItem:
             value = getattr(self, field_name)
             if value is not None:
                 _require_aware(value, field_name)
+        for field_name in ("digital_employee_profile_version", "digital_employee_permissions_digest"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_text(value, field_name)
         if self.updated_at < self.created_at:
             raise ValueError("updated_at must not be earlier than created_at")
         if self.phase_attempt < 0:

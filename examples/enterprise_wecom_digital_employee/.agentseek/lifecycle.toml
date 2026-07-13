@@ -14,6 +14,8 @@ required = [
   "scripts/bub_gateway.py",
   "scripts/prod_check.py",
   "src/enterprise_wecom_digital_employee/agent.py",
+  "src/enterprise_wecom_digital_employee/work_composition.py",
+  "digital_employees/industry-report/pack.yaml",
   "vendor/dameng",
 ]
 
@@ -44,6 +46,35 @@ required = true
 default = ".agents/mcp.json"
 description = "MCP server configuration path."
 aliases = ["BUB_MCP_CONFIG_PATH"]
+
+[env.AGENTSEEK_WORK_ENABLED]
+required = false
+default = "false"
+description = "Enable the isolated v0.1.0 WorkItem composition after ledger review."
+
+[env.AGENTSEEK_WORK_BINDING]
+required = false
+default = "enterprise_wecom_digital_employee.work_composition:build_work_binding"
+description = "Template-owned WorkStateBinding factory."
+
+[env.AGENTSEEK_WORK_SQLALCHEMY_URL]
+required = false
+description = "Dedicated SQLAlchemy URL for the enterprise work ledger."
+
+[env.AGENTSEEK_WORK_AUTO_MIGRATE]
+required = false
+default = "false"
+description = "Apply work-ledger migrations at startup only in an explicitly isolated environment."
+
+[env.AGENTSEEK_WORK_SNAPSHOT_PATH]
+required = false
+default = "./runtime/work-pack-snapshots"
+description = "Content-addressed role-pack text snapshot directory."
+
+[env.AGENTSEEK_WORK_RUNTIME_RELEASE]
+required = false
+default = "enterprise-wecom-v0.1.0-m1"
+description = "Authoritative runtime release frozen into newly created WorkItems."
 
 [env.AGENTSEEK_WECOM_CALLBACK_PATH]
 required = true

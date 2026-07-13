@@ -64,6 +64,35 @@ class ProjectSettings(BaseSettings):
             "AGENTSEEK_ENTERPRISE_LONG_TERM_MEMORY_SQLALCHEMY_URL",
         ),
     )
+    work_enabled: bool = Field(default=False, validation_alias=AliasChoices("AGENTSEEK_WORK_ENABLED"))
+    work_sqlalchemy_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_SQLALCHEMY_URL"),
+    )
+    work_auto_migrate: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AGENTSEEK_WORK_AUTO_MIGRATE"),
+    )
+    work_snapshot_path: str = Field(
+        default="./runtime/work-pack-snapshots",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_SNAPSHOT_PATH"),
+    )
+    work_template_asset_path: str = Field(
+        default="./digital_employees/industry-report/assets/neutral-industry-report-v1.docx",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_TEMPLATE_ASSET_PATH"),
+    )
+    work_runtime_release: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_RUNTIME_RELEASE", "AGENTSEEK_LANGFUSE_RELEASE"),
+    )
+    work_source_repository: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_SOURCE_REPOSITORY"),
+    )
+    work_source_commit: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_SOURCE_COMMIT"),
+    )
 
     def require_model(self) -> str:
         model = self.model.strip()
@@ -107,6 +136,30 @@ class ProjectSettings(BaseSettings):
 
     def resolved_enterprise_store_path(self) -> Path:
         path = Path(self.enterprise_store_sqlite_path.strip() or "./runtime/enterprise-long-term-store.sqlite3")
+        if path.is_absolute():
+            return path
+        return PROJECT_ROOT / path
+
+    def require_work_sqlalchemy_url(self) -> str:
+        value = self.work_sqlalchemy_url.strip()
+        if value:
+            return value
+        raise RuntimeError("Set AGENTSEEK_WORK_SQLALCHEMY_URL before enabling the work runtime.")
+
+    def require_work_runtime_release(self) -> str:
+        value = self.work_runtime_release.strip()
+        if value:
+            return value
+        raise RuntimeError("Set AGENTSEEK_WORK_RUNTIME_RELEASE before enabling the work runtime.")
+
+    def resolved_work_snapshot_path(self) -> Path:
+        path = Path(self.work_snapshot_path.strip() or "./runtime/work-pack-snapshots")
+        if path.is_absolute():
+            return path
+        return PROJECT_ROOT / path
+
+    def resolved_work_template_asset_path(self) -> Path:
+        path = Path(self.work_template_asset_path.strip())
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path
