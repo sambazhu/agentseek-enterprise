@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+
+from agentseek_work.models import ActorType, WorkStatus
+
+metadata = MetaData()
+json_document = JSON().with_variant(JSONB(), "postgresql")
+
+
+def _sql_values(values: list[str]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
+work_status_values = _sql_values([status.value for status in WorkStatus])
+actor_type_values = _sql_values([actor_type.value for actor_type in ActorType])
+
+schema_versions = Table(
+    "enterprise_work_schema_versions",
+    metadata,
+    Column("version", Integer, primary_key=True),
+    Column("applied_at", DateTime(timezone=True), nullable=False),
+)
+
+work_budgets = Table(
+    "enterprise_work_budgets",
+    metadata,
+    Column("budget_id", String(128), primary_key=True),
+    Column("max_model_calls", Integer, nullable=False),
+    Column("max_input_tokens", BigInteger, nullable=False),
+    Column("max_output_tokens", BigInteger, nullable=False),
+    Column("max_external_queries", Integer, nullable=False),
+    Column("max_phase_duration_seconds", Integer, nullable=False),
+    Column("max_work_duration_seconds", Integer, nullable=False),
+    Column("max_retry_count", Integer, nullable=False),
+    CheckConstraint("max_model_calls > 0", name="ck_work_budget_model_calls"),
+    CheckConstraint("max_input_tokens > 0", name="ck_work_budget_input_tokens"),
+    CheckConstraint("max_output_tokens > 0", name="ck_work_budget_output_tokens"),
+    CheckConstraint("max_external_queries > 0", name="ck_work_budget_external_queries"),
+    CheckConstraint("max_phase_duration_seconds > 0", name="ck_work_budget_phase_duration"),
+    CheckConstraint("max_work_duration_seconds > 0", name="ck_work_budget_work_duration"),
+    CheckConstraint("max_retry_count >= 0", name="ck_work_budget_retry_count"),
+    CheckConstraint(
+        "max_phase_duration_seconds <= max_work_duration_seconds",
+        name="ck_work_budget_duration_order",
+    ),
+)
+
+work_items = Table(
+    "enterprise_work_items",
+    metadata,
+    Column("work_id", String(128), primary_key=True),
+    Column("tenant_id", String(128), nullable=False),
+    Column("digital_employee_id", String(128), nullable=False),
+    Column("pack_id", String(128), nullable=False),
+    Column("pack_version", String(64), nullable=False),
+    Column("pack_snapshot_id", String(160), nullable=False),
+    Column("skill_set_version", String(64)),
+    Column("skill_digests", json_document, nullable=False),
+    Column("runtime_release", String(128), nullable=False),
+    Column("requester_id", String(128), nullable=False),
+    Column("reviewer_id", String(128), nullable=False),
+    Column("approver_id", String(128), nullable=False),
+    Column("data_owner_id", String(128), nullable=False),
+    Column("beneficiary_id", String(128), nullable=False),
+    Column("playbook_id", String(128), nullable=False),
+    Column("playbook_version", String(64), nullable=False),
+    Column("brief", json_document, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("current_phase", String(128), nullable=False),
+    Column("phase_attempt", Integer, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("priority", Integer, nullable=False),
+    Column("input_file_ids", json_document, nullable=False),
+    Column("source_ids", json_document, nullable=False),
+    Column("artifact_ids", json_document, nullable=False),
+    Column("approval_state", String(32), nullable=False),
+    Column("budget_id", String(128), ForeignKey("enterprise_work_budgets.budget_id"), nullable=False),
+    Column("external_task_id", String(256)),
+    Column("next_poll_at", DateTime(timezone=True)),
+    Column("lease_owner", String(128)),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("due_at", DateTime(timezone=True)),
+    Column("idempotency_key", String(256), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("tenant_id", "idempotency_key", name="uq_work_items_tenant_idempotency"),
+    CheckConstraint(f"status IN ({work_status_values})", name="ck_work_items_status"),
+    CheckConstraint("phase_attempt >= 0", name="ck_work_items_phase_attempt"),
+    CheckConstraint("version >= 0", name="ck_work_items_version"),
+)
+
+Index("ix_work_items_tenant_status", work_items.c.tenant_id, work_items.c.status)
+Index("ix_work_items_next_poll", work_items.c.next_poll_at)
+Index("ix_work_items_lease_expiry", work_items.c.lease_expires_at)
+
+work_events = Table(
+    "enterprise_work_events",
+    metadata,
+    Column("event_id", String(128), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("event_type", String(128), nullable=False),
+    Column("actor_type", String(32), nullable=False),
+    Column("actor_id", String(128), nullable=False),
+    Column("phase", String(128), nullable=False),
+    Column("from_status", String(32), nullable=False),
+    Column("to_status", String(32), nullable=False),
+    Column("work_version", Integer, nullable=False),
+    Column("payload_digest", String(160), nullable=False),
+    Column("policy_decision", String(128), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("work_id", "work_version", name="uq_work_events_work_version"),
+    CheckConstraint(f"actor_type IN ({actor_type_values})", name="ck_work_events_actor_type"),
+    CheckConstraint(f"from_status IN ({work_status_values})", name="ck_work_events_from_status"),
+    CheckConstraint(f"to_status IN ({work_status_values})", name="ck_work_events_to_status"),
+    CheckConstraint("work_version > 0", name="ck_work_events_version"),
+)
+
+Index("ix_work_events_work_occurred", work_events.c.work_id, work_events.c.occurred_at)

@@ -286,10 +286,14 @@ version = "0.1.0"
 source = { editable = "contrib/agentseek-work" }
 dependencies = [
     { name = "bub" },
+    { name = "sqlalchemy" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bub", specifier = "==0.3.9" }]
+requires-dist = [
+    { name = "bub", specifier = "==0.3.9" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
+]
 
 [[package]]
 name = "aiofile"

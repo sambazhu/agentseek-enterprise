@@ -97,3 +97,22 @@ def test_waiting_external_releases_to_queue_without_incrementing_attempt() -> No
 
     assert result.item.phase_attempt == 1
     assert result.item.status is WorkStatus.QUEUED
+
+
+def test_phase_can_change_only_when_entering_running() -> None:
+    waiting = replace(make_item(status=WorkStatus.WAITING_REVIEW, version=2), current_phase="outline")
+
+    with pytest.raises(InvalidTransitionError, match="only when entering running"):
+        transition_work_item(
+            waiting,
+            to_status=WorkStatus.QUEUED,
+            expected_version=2,
+            event_id="event_003",
+            event_type="review_completed",
+            actor_type=ActorType.REQUESTER,
+            actor_id="employee_001",
+            occurred_at=NOW + timedelta(seconds=3),
+            payload_digest="sha256:review",
+            policy_decision="allowed",
+            phase="drafting",
+        )

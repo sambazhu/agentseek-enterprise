@@ -75,6 +75,8 @@ def transition_work_item(
     next_phase = phase.strip() if phase is not None else item.current_phase
     if not next_phase:
         raise ValueError("phase must not be blank")
+    if next_phase != item.current_phase and to_status is not WorkStatus.RUNNING:
+        raise InvalidTransitionError("current_phase can change only when entering running")
     next_version = item.version + 1
     next_attempt = item.phase_attempt + 1 if to_status is WorkStatus.RUNNING else item.phase_attempt
     updated_item = replace(
