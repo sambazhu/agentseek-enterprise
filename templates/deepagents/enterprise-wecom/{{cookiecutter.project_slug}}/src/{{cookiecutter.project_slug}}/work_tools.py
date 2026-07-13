@@ -23,7 +23,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:
         """
 
         try:
-            result = composition.create_report_work(runtime.state)
+            result = composition.create_report_work(runtime.state, runtime.context)
         except WorkCompositionError as exc:
             return str(exc)
         verb = "已创建" if result.created else "已找到同一幂等请求创建的"
@@ -38,7 +38,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:
     def get_current_work_status(runtime: ToolRuntime) -> str:
         """Read the authenticated employee's current non-terminal WorkItem status."""
 
-        item = composition.current_work(runtime.state)
+        item = composition.current_work(runtime.state, runtime.context)
         if item is None:
             return "当前员工没有可见的进行中任务。"
         return (

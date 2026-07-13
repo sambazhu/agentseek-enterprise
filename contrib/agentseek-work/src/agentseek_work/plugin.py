@@ -10,6 +10,7 @@ from bub.types import Envelope, State
 from loguru import logger
 
 WORK_ENRICHED_STATE_KEY = "_work_enriched"
+DIGITAL_EMPLOYEE_STATUS_STATE_KEY = "digital_employee_status"
 WORK_BINDING_PATH_ENV = "AGENTSEEK_WORK_BINDING"
 WORK_ENABLED_ENV = "AGENTSEEK_WORK_ENABLED"
 
@@ -39,13 +40,13 @@ class WorkPlugin:
             return {}
         binding = self._get_binding()
         if binding is None:
-            return {"_digital_employee_status": "not_configured"}
+            return {DIGITAL_EMPLOYEE_STATUS_STATE_KEY: "not_configured"}
         try:
             return await asyncio.to_thread(binding.load_message_state, message, session_id)
         except Exception as exc:  # fail closed without retaining the source message identifier.
             logger.warning("work message state load failed error_type={}", type(exc).__name__)
             return {
-                "_digital_employee_status": "not_configured",
+                DIGITAL_EMPLOYEE_STATUS_STATE_KEY: "not_configured",
                 "_work_binding_error": type(exc).__name__,
             }
 
@@ -63,12 +64,12 @@ class WorkPlugin:
         state[WORK_ENRICHED_STATE_KEY] = True
         binding = self._get_binding()
         if binding is None:
-            state["_digital_employee_status"] = "not_configured"
+            state[DIGITAL_EMPLOYEE_STATUS_STATE_KEY] = "not_configured"
             return
         try:
             await asyncio.to_thread(binding.enrich_state, message, session_id, state)
         except Exception as exc:  # fail closed; prompt execution must remain available.
-            state["_digital_employee_status"] = "not_configured"
+            state[DIGITAL_EMPLOYEE_STATUS_STATE_KEY] = "not_configured"
             state["_work_binding_error"] = type(exc).__name__
             logger.warning("work state enrichment failed error_type={}", type(exc).__name__)
 

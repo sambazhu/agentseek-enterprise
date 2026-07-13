@@ -46,6 +46,8 @@ _SCOPED_KEY_RE = re.compile(r"^(?:hmac|sha256)-[a-f0-9]{64}$")
 _PACK_ROOT = PROJECT_ROOT / "digital_employees" / "industry-report"
 _ASSET_REF = "trusted-asset://strategic-report-docx/1.0.0"
 _CREATE_REPORT_TOOL = "create_industry_report_work"
+_DIGITAL_EMPLOYEE_STATUS_KEY = "digital_employee_status"
+_WORK_REQUEST_KEY = "work_request_key"
 _BUDGET_ID = "industry-report-budget-v1"
 _DEFAULT_BUDGET = WorkBudget(
     max_model_calls=30,
@@ -155,12 +157,12 @@ class IndustryReportWorkComposition:
     def enrich_state(self, message: Envelope, session_id: str, state: State) -> None:
         del session_id
         status = self._authorization_status(state)
-        state["_digital_employee_status"] = status
+        state[_DIGITAL_EMPLOYEE_STATUS_KEY] = status
         if status != "found":
             return
         enterprise = _enterprise_context(state)
         if enterprise is None:
-            state["_digital_employee_status"] = "requester_forbidden"
+            state[_DIGITAL_EMPLOYEE_STATUS_KEY] = "requester_forbidden"
             return
         requester_key = str(enterprise["user_key"])
         tenant_id = str(enterprise["tenant_id"])
@@ -168,7 +170,7 @@ class IndustryReportWorkComposition:
         state["_work_binding_digest"] = f"sha256:{sha256(self.pack_snapshot_id.encode()).hexdigest()}"
         state["_work_permissions_digest"] = self.permissions_digest
         state["_work_skill_set_digest"] = self.skill_set_digest
-        state["_work_request_key"] = _request_key(message, enterprise, state)
+        state[_WORK_REQUEST_KEY] = _request_key(message, enterprise, state)
         _merge_runtime_context(
             state,
             "digital_employee",
@@ -188,13 +190,17 @@ class IndustryReportWorkComposition:
         if current is not None:
             self._publish_current_work(state, current)
 
-    def create_report_work(self, state: Mapping[str, object]) -> CreateWorkResult:
-        if state.get("_digital_employee_status") != "found":
+    def create_report_work(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> CreateWorkResult:
+        if state.get(_DIGITAL_EMPLOYEE_STATUS_KEY) != "found":
             raise WorkCompositionError("当前员工未获授权使用行业报告数字员工。")
-        enterprise = _enterprise_context(state)
+        enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
         if enterprise is None:
             raise WorkCompositionError("企业身份上下文不可用，未创建任务。")
-        request_key = _clean(state.get("_work_request_key"))
+        request_key = _clean(state.get(_WORK_REQUEST_KEY))
         if not request_key:
             raise WorkCompositionError("当前消息缺少幂等请求标识，未创建任务。")
         contract = self._contracts.resolve(_CREATE_REPORT_TOOL)
@@ -221,9 +227,13 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), result.item)
         return result
 
-    def current_work(self, state: Mapping[str, object]) -> WorkItem | None:
-        enterprise = _enterprise_context(state)
-        if enterprise is None or state.get("_digital_employee_status") != "found":
+    def current_work(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> WorkItem | None:
+        enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
+        if enterprise is None or state.get(_DIGITAL_EMPLOYEE_STATUS_KEY) != "found":
             return None
         return self.repository.find_current_work(
             tenant_id=str(enterprise["tenant_id"]),
@@ -326,11 +336,13 @@ def _verify_registered_snapshot(candidate, stored) -> None:
         raise WorkCompositionError("已登记 PackSnapshot 与当前角色包内容不一致。")
 
 
-def _enterprise_context(state: Mapping[str, object]) -> Mapping[str, object] | None:
-    runtime = state.get("_langgraph_runtime_context")
-    if not isinstance(runtime, Mapping):
-        return None
-    enterprise = runtime.get("enterprise")
+def _enterprise_context(source: object) -> Mapping[str, object] | None:
+    if isinstance(source, Mapping):
+        private_runtime = source.get("_langgraph_runtime_context")
+        runtime = private_runtime if isinstance(private_runtime, Mapping) else source
+    else:
+        runtime = source
+    enterprise = runtime.get("enterprise") if isinstance(runtime, Mapping) else getattr(runtime, "enterprise", None)
     if not isinstance(enterprise, Mapping) or _clean(enterprise.get("version")) != "v1":
         return None
     for key in ("tenant_key", "user_key", "session_key"):

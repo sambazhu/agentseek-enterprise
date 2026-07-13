@@ -1,8 +1,16 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
+from agentseek_enterprise.runtime import EnterpriseIdentityContext
+from agentseek_langchain.ag_ui import application_state_from_state, runtime_context_from_state
 from agentseek_work import SQLAlchemyWorkRepository, WorkStatus, apply_migrations
-from enterprise_wecom_digital_employee.agent import _work_observability_config
+from enterprise_wecom_digital_employee.agent import (
+    EnterpriseAgentRuntimeContext,
+    EnterpriseAgentState,
+    _work_observability_config,
+)
 from enterprise_wecom_digital_employee.pack_loader import (
     FilesystemPackSnapshotStore,
     RestrictedPackLoader,
@@ -81,7 +89,7 @@ def test_enrichment_publishes_safe_profile_and_preserves_enterprise_context(tmp_
 
     composition.enrich_state(message(), "wecom:test", state)
 
-    assert state["_digital_employee_status"] == "found"
+    assert state["digital_employee_status"] == "found"
     profile = state["digital_employee_profile"]
     assert profile["digital_employee_id"] == "industry-report"
     assert profile["owning_org"] == "战略发展部"
@@ -90,7 +98,7 @@ def test_enrichment_publishes_safe_profile_and_preserves_enterprise_context(tmp_
     runtime = state["_langgraph_runtime_context"]
     assert runtime["enterprise"]["tenant_id"] == "tenant-test"
     assert runtime["digital_employee"]["pack_snapshot_id"] == composition.pack_snapshot_id
-    assert state["_work_request_key"].startswith("request_sha256_")
+    assert state["work_request_key"].startswith("request_sha256_")
     assert "not-published" not in str(runtime)
 
 
@@ -104,9 +112,9 @@ def test_enrichment_fails_closed_for_wrong_department_or_missing_identity(tmp_pa
     missing_identity = {"employee_context": {"dept_name": "战略发展部"}}
     composition.enrich_state(message(), "wecom:test", missing_identity)
 
-    assert wrong_department["_digital_employee_status"] == "requester_forbidden"
+    assert wrong_department["digital_employee_status"] == "requester_forbidden"
     assert "digital_employee_profile" not in wrong_department
-    assert missing_identity["_digital_employee_status"] == "requester_forbidden"
+    assert missing_identity["digital_employee_status"] == "requester_forbidden"
 
 
 def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_state(tmp_path: Path) -> None:
@@ -169,7 +177,35 @@ def test_distinct_wecom_message_ids_do_not_collapse_identical_content(tmp_path: 
     composition.enrich_state(message(), "wecom:test", first)
     composition.enrich_state(message(), "wecom:test", second)
 
-    assert first["_work_request_key"] != second["_work_request_key"]
+    assert first["work_request_key"] != second["work_request_key"]
+
+
+def test_graph_boundary_preserves_tool_state_and_passes_private_runtime_as_context(tmp_path: Path) -> None:
+    composition = build_composition(tmp_path)
+    aggregate_state = authorized_state()
+    aggregate_state.update(composition.load_message_state(message(), "wecom:test"))
+    composition.enrich_state(message(), "wecom:test", aggregate_state)
+
+    graph_state = application_state_from_state(aggregate_state)
+    runtime_mapping = runtime_context_from_state(aggregate_state)
+
+    assert "_langgraph_runtime_context" not in graph_state
+    assert graph_state["digital_employee_status"] == "found"
+    assert str(graph_state["work_request_key"]).startswith("request_sha256_")
+    assert {"digital_employee_status", "work_request_key"} <= EnterpriseAgentState.__annotations__.keys()
+    assert runtime_mapping is not None
+    runtime_context = EnterpriseAgentRuntimeContext(
+        enterprise=cast("EnterpriseIdentityContext", runtime_mapping["enterprise"]),
+        digital_employee=cast("Mapping[str, object] | None", runtime_mapping.get("digital_employee")),
+        work=cast("Mapping[str, object] | None", runtime_mapping.get("work")),
+    )
+
+    created = composition.create_report_work(graph_state, runtime_context)
+    current = composition.current_work(graph_state, runtime_context)
+
+    assert created.created is True
+    assert current is not None
+    assert current.work_id == created.item.work_id
 
 
 def test_work_observability_uses_metadata_and_tags_without_top_level_work_id() -> None:

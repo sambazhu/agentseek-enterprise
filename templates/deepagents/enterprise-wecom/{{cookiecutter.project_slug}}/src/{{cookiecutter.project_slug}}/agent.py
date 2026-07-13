@@ -65,7 +65,9 @@ class EnterpriseAgentState(DeepAgentState):
 
     current_files: NotRequired[list[dict[str, Any]]]
     current_work: NotRequired[dict[str, Any]]
+    digital_employee_status: NotRequired[str]
     digital_employee_profile: NotRequired[dict[str, Any]]
+    work_request_key: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)

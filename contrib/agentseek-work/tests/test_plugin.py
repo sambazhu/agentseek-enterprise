@@ -66,6 +66,6 @@ def test_plugin_fails_closed_without_exposing_exception_text(monkeypatch) -> Non
 
     asyncio.run(WorkPlugin().build_prompt({"content": "hello"}, "session", state))
 
-    assert state["_digital_employee_status"] == "not_configured"
+    assert state["digital_employee_status"] == "not_configured"
     assert state["_work_binding_error"] == "RuntimeError"
     assert "secret" not in str(state)
