@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+import yaml
+from enterprise_wecom_digital_employee.pack_loader import (
+    FilesystemPackSnapshotStore,
+    PackLoadError,
+    RestrictedPackLoader,
+    build_pack_snapshot,
+    materialize_profile_skills,
+)
+
+PROJECT_ROOT = Path(__file__).parents[1]
+SOURCE_PACK = PROJECT_ROOT / "digital_employees" / "industry-report"
+ASSET_REF = "trusted-asset://strategic-report-docx/1.0.0"
+
+
+def copy_pack(tmp_path: Path) -> Path:
+    pack_root = tmp_path / "industry-report"
+    shutil.copytree(SOURCE_PACK, pack_root)
+    return pack_root
+
+
+def loader(pack_root: Path) -> RestrictedPackLoader:
+    def resolve_asset(artifact_ref: str) -> Path:
+        if artifact_ref != ASSET_REF:
+            raise PackLoadError("unknown trusted asset")
+        return pack_root / "assets" / "neutral-industry-report-v1.docx"
+
+    return RestrictedPackLoader(
+        pack_root=pack_root,
+        allowed_entrypoint_package="enterprise_wecom_digital_employee",
+        asset_resolver=resolve_asset,
+    )
+
+
+def rewrite_yaml(path: Path, mutate) -> None:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    mutate(document)
+    path.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Path) -> None:
+    loaded = loader(copy_pack(tmp_path)).load()
+
+    assert loaded.schema_version == 1
+    assert loaded.pack_id == "industry-report"
+    assert loaded.pack_version == "1.0.0"
+    assert loaded.profile.owning_org == "战略发展部"
+    assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
+    assert loaded.profile.skill_refs == ("report-intake@1.0.0",)
+    assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
+    assert loaded.skill_digests == ("sha256:e6438c47f651af37c7a78d357f1d92819a25a21e1601be5f7e6b73ce053f42a5",)
+    assert loaded.playbooks[0].entrypoint.endswith("reports.playbook:build_playbook")
+
+
+def test_snapshot_is_content_addressed_retrievable_and_excludes_binary_asset(
+    tmp_path: Path,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+    loaded = loader(pack_root).load()
+    store = FilesystemPackSnapshotStore(tmp_path / "snapshots")
+    snapshot = build_pack_snapshot(
+        loaded,
+        store=store,
+        created_at=datetime(2026, 7, 13, tzinfo=UTC),
+        source_repository="https://example.invalid/agentseek",
+        source_commit="commit_001",
+    )
+    artifact_root = store.resolve(snapshot.content_artifact_id)
+    shutil.rmtree(pack_root)
+
+    assert snapshot.pack_snapshot_id.endswith(loaded.content_digest)
+    assert (artifact_root / "pack.yaml").is_file()
+    assert (artifact_root / "profile.yaml").is_file()
+    assert (artifact_root / "skills" / "report-intake" / "SKILL.md").is_file()
+    assert not tuple(artifact_root.rglob("*.docx"))
+    assert store.put(loaded) == snapshot.content_artifact_id
+
+    (artifact_root / "profile.yaml").write_text("tampered: true\n", encoding="utf-8")
+    with pytest.raises(PackLoadError, match="digest does not match"):
+        store.resolve(snapshot.content_artifact_id)
+
+
+def test_skill_resolver_materializes_only_profile_selected_text(tmp_path: Path) -> None:
+    loaded = loader(copy_pack(tmp_path)).load()
+    skills_root = tmp_path / "virtual-skills"
+
+    selected = materialize_profile_skills(loaded, skills_root)
+
+    assert selected == (skills_root / "report-intake",)
+    assert (skills_root / "report-intake" / "SKILL.md").is_file()
+    assert not tuple(skills_root.rglob("*.docx"))
+    assert not (skills_root / "report-policy.yaml").exists()
+
+
+def test_loader_rejects_tampered_skill_and_asset(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    skill = pack_root / "skills" / "report-intake" / "SKILL.md"
+    skill.write_text(f"{skill.read_text(encoding='utf-8')}\ntampered\n", encoding="utf-8")
+    with pytest.raises(PackLoadError, match="sha256 mismatch"):
+        loader(pack_root).load()
+
+    pack_root = copy_pack(tmp_path / "asset-case")
+    asset = pack_root / "assets" / "neutral-industry-report-v1.docx"
+    asset.write_bytes(b"tampered")
+    with pytest.raises(PackLoadError, match="sha256 mismatch"):
+        loader(pack_root).load()
+
+
+def test_loader_rejects_undeclared_profile_refs_and_entrypoint_escape(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "profile.yaml",
+        lambda document: document["skill_refs"].append("undeclared@1.0.0"),
+    )
+    with pytest.raises(PackLoadError, match="undeclared references"):
+        loader(pack_root).load()
+
+    pack_root = copy_pack(tmp_path / "entrypoint-case")
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].update({"entrypoint": "outside.module:run"}),
+    )
+    with pytest.raises(PackLoadError, match="outside the allowed package"):
+        loader(pack_root).load()
+
+
+def test_loader_rejects_traversal_hidden_paths_and_symlinks(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document.update({"profile": "../profile.yaml"}),
+    )
+    with pytest.raises(PackLoadError, match="normalized and relative"):
+        loader(pack_root).load()
+
+    pack_root = copy_pack(tmp_path / "hidden-case")
+    hidden = pack_root / ".hidden.yaml"
+    hidden.write_text("value: hidden\n", encoding="utf-8")
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document.update({"profile": ".hidden.yaml"}),
+    )
+    with pytest.raises(PackLoadError, match="hidden pack path"):
+        loader(pack_root).load()
+
+    pack_root = copy_pack(tmp_path / "symlink-case")
+    outside = tmp_path / "outside-skill.md"
+    outside.write_text("outside", encoding="utf-8")
+    skill = pack_root / "skills" / "report-intake" / "SKILL.md"
+    skill.unlink()
+    skill.symlink_to(outside)
+    with pytest.raises(PackLoadError, match="symlink"):
+        loader(pack_root).load()

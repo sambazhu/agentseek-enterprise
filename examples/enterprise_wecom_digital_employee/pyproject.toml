@@ -12,6 +12,7 @@ dependencies = [
     "agentseek-langchain",
     "agentseek-schedule-sqlalchemy",
     "agentseek-wecom",
+    "agentseek-work",
     "bub-mcp",
     "contextseek[seekdb]",
     "deepagents>=0.5.3",
@@ -24,6 +25,7 @@ dependencies = [
     "onnxruntime>=1.27.0",
     "psycopg[binary]>=3.2.0",
     "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0",
     "tokenizers>=0.23.0",
 ]
 
@@ -46,5 +48,6 @@ agentseek-files = { path = "../../contrib/agentseek-files", editable = true }
 agentseek-langchain = { path = "../../contrib/agentseek-langchain", editable = true }
 agentseek-schedule-sqlalchemy = { path = "../../contrib/agentseek-schedule-sqlalchemy", editable = true }
 agentseek-wecom = { path = "../../contrib/agentseek-wecom", editable = true }
+agentseek-work = { path = "../../contrib/agentseek-work", editable = true }
 
 bub-mcp = { git = "https://github.com/bubbuild/bub-contrib.git", rev = "d9f177145b45d67cc0ca4703a495f062df8e3c32", subdirectory = "packages/bub-mcp" }

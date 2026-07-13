@@ -152,6 +152,38 @@ def _validate_budget_reservation_state(reservation: BudgetReservation) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class PackSnapshot:
+    pack_snapshot_id: str
+    pack_id: str
+    pack_version: str
+    manifest_digest: str
+    content_artifact_id: str
+    asset_version_refs: tuple[str, ...]
+    created_at: datetime
+    source_repository: str | None = None
+    source_commit: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "pack_snapshot_id",
+            "pack_id",
+            "pack_version",
+            "manifest_digest",
+            "content_artifact_id",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        _require_aware(self.created_at, "created_at")
+        if self.source_repository is not None:
+            _require_text(self.source_repository, "source_repository")
+        if self.source_commit is not None:
+            _require_text(self.source_commit, "source_commit")
+        if len(self.asset_version_refs) != len(set(self.asset_version_refs)):
+            raise ValueError("asset_version_refs must not contain duplicates")
+        for asset_ref in self.asset_version_refs:
+            _require_text(asset_ref, "asset_version_refs")
+
+
+@dataclass(frozen=True, slots=True)
 class WorkItem:
     work_id: str
     tenant_id: str

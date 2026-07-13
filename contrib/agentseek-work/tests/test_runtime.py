@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from agentseek_work.migrations import apply_migrations
-from agentseek_work.models import ActorType, WorkBudget, WorkItem, WorkStatus
+from agentseek_work.models import ActorType, PackSnapshot, WorkBudget, WorkItem, WorkStatus
 from agentseek_work.repository import SQLAlchemyWorkRepository, WorkConflictError
 from agentseek_work.runtime import WorkRuntimeService
 from agentseek_work.state_machine import TransitionResult, transition_work_item
@@ -53,6 +53,17 @@ def repository() -> SQLAlchemyWorkRepository:
             max_work_duration_seconds=3000,
             max_retry_count=2,
         ),
+    )
+    repository.put_pack_snapshot(
+        PackSnapshot(
+            pack_snapshot_id="sha256:pack",
+            pack_id="industry-report",
+            pack_version="1.0.0",
+            manifest_digest="sha256:manifest",
+            content_artifact_id="pack-content://sha256/content",
+            asset_version_refs=(),
+            created_at=NOW,
+        )
     )
     return repository
 

@@ -15,12 +15,14 @@ from agentseek_work.models import (
     BudgetReservation,
     BudgetReservationStatus,
     BudgetUsage,
+    PackSnapshot,
     WorkBudget,
     WorkEvent,
     WorkItem,
     WorkStatus,
 )
 from agentseek_work.schema import (
+    pack_snapshots,
     work_budget_reservations,
     work_budget_usage,
     work_budgets,
@@ -117,6 +119,44 @@ class SQLAlchemyWorkRepository:
             max_retry_count=int(row["max_retry_count"]),
         )
 
+    def put_pack_snapshot(self, snapshot: PackSnapshot) -> PackSnapshot:
+        values = _pack_snapshot_values(snapshot)
+        try:
+            with self.engine.begin() as connection:
+                existing = (
+                    connection
+                    .execute(
+                        select(pack_snapshots).where(pack_snapshots.c.pack_snapshot_id == snapshot.pack_snapshot_id)
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is None:
+                    connection.execute(insert(pack_snapshots).values(**values))
+                    return snapshot
+                stored = _row_to_pack_snapshot(existing)
+                if stored != snapshot:
+                    raise WorkConflictError(
+                        f"pack snapshot {snapshot.pack_snapshot_id} already exists with different values"
+                    )
+                return stored
+        except IntegrityError as exc:
+            raise WorkConflictError("pack snapshot conflicts with an existing immutable version") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "pack snapshot creation failed")
+
+    def get_pack_snapshot(self, *, pack_snapshot_id: str) -> PackSnapshot:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(select(pack_snapshots).where(pack_snapshots.c.pack_snapshot_id == pack_snapshot_id))
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise WorkNotFoundError(f"pack snapshot {pack_snapshot_id} was not found")
+        return _row_to_pack_snapshot(row)
+
     def create_work(self, item: WorkItem) -> CreateWorkResult:
         values = _item_to_values(item)
         try:
@@ -134,6 +174,7 @@ class SQLAlchemyWorkRepository:
                 )
                 if existing is not None:
                     return CreateWorkResult(item=_row_to_item(existing), created=False)
+                _require_pack_snapshot_binding(connection, item)
                 connection.execute(insert(work_items).values(**values))
         except IntegrityError as exc:
             existing = self._get_by_idempotency_key(
@@ -799,6 +840,23 @@ def _locked_budget_usage(
     return BudgetUsage()
 
 
+def _require_pack_snapshot_binding(connection: Connection, item: WorkItem) -> None:
+    row = (
+        connection
+        .execute(
+            select(pack_snapshots.c.pack_id, pack_snapshots.c.pack_version).where(
+                pack_snapshots.c.pack_snapshot_id == item.pack_snapshot_id
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise WorkConflictError("WorkItem references an unregistered pack snapshot")
+    if str(row["pack_id"]) != item.pack_id or str(row["pack_version"]) != item.pack_version:
+        raise WorkConflictError("WorkItem pack id/version does not match its pack snapshot")
+
+
 def _forfeit_active_reservations(connection: Connection, *, item: WorkItem, now: datetime) -> None:
     rows = (
         connection
@@ -991,6 +1049,34 @@ def _json_document(value: Any, field_name: str) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
     except (TypeError, ValueError) as exc:
         raise NonJsonValueError(f"{field_name} must be JSON-compatible") from exc
+
+
+def _pack_snapshot_values(snapshot: PackSnapshot) -> dict[str, Any]:
+    return {
+        "pack_snapshot_id": snapshot.pack_snapshot_id,
+        "pack_id": snapshot.pack_id,
+        "pack_version": snapshot.pack_version,
+        "source_repository": snapshot.source_repository,
+        "source_commit": snapshot.source_commit,
+        "manifest_digest": snapshot.manifest_digest,
+        "content_artifact_id": snapshot.content_artifact_id,
+        "asset_version_refs": _json_document(list(snapshot.asset_version_refs), "asset_version_refs"),
+        "created_at": snapshot.created_at,
+    }
+
+
+def _row_to_pack_snapshot(row: RowMapping | Mapping[str, Any]) -> PackSnapshot:
+    return PackSnapshot(
+        pack_snapshot_id=str(row["pack_snapshot_id"]),
+        pack_id=str(row["pack_id"]),
+        pack_version=str(row["pack_version"]),
+        source_repository=_optional_text(row["source_repository"]),
+        source_commit=_optional_text(row["source_commit"]),
+        manifest_digest=str(row["manifest_digest"]),
+        content_artifact_id=str(row["content_artifact_id"]),
+        asset_version_refs=tuple(str(value) for value in row["asset_version_refs"]),
+        created_at=_aware_datetime(row["created_at"]),
+    )
 
 
 def _item_to_values(item: WorkItem) -> dict[str, Any]:

@@ -100,6 +100,14 @@ def test_template_renders_without_unrendered_jinja(
         assert "bub==0.3.9" in dependencies
         assert "agentseek-ag-ui" in dependencies
         assert "duty>=1.9" not in pyproject_data.get("dependency-groups", {}).get("dev", [])
+    if (type_name, template_name) == ("deepagents", "enterprise-wecom"):
+        assert "agentseek-work" in dependencies
+        assert "pyyaml>=6.0" in dependencies
+        pack_manifest = generated / "digital_employees" / "industry-report" / "pack.yaml"
+        pack_loader = generated / "src" / generated.name / "pack_loader.py"
+        assert pack_manifest.is_file()
+        assert pack_loader.is_file()
+        assert "{{" not in pack_manifest.read_text(encoding="utf-8")
 
     lifecycle = generated / ".agentseek" / "lifecycle.toml"
     assert lifecycle.is_file(), f"missing .agentseek/lifecycle.toml in {generated}"

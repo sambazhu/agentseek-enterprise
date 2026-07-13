@@ -1,0 +1,22 @@
+schema_version: 1
+pack_id: industry-report
+pack_version: 1.0.0
+profile: profile.yaml
+skills:
+  - id: report-intake
+    version: 1.0.0
+    path: skills/report-intake/SKILL.md
+    sha256: e6438c47f651af37c7a78d357f1d92819a25a21e1601be5f7e6b73ce053f42a5
+playbooks:
+  - id: securities-industry-report
+    version: "1"
+    entrypoint: {{ cookiecutter.project_slug }}.reports.playbook:build_playbook
+assets:
+  - id: strategic-report-docx
+    version: 1.0.0
+    artifact_ref: trusted-asset://strategic-report-docx/1.0.0
+    sha256: fb4340bd9213bd878d57ef19776c87b567f860c368af90315d242269530767e7
+policies:
+  - policies/report-policy.yaml
+evals:
+  manifest: evals/manifest.yaml

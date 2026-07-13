@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
-from agentseek_work.models import ActorType, WorkBudget, WorkItem, WorkStatus
+from agentseek_work.models import ActorType, PackSnapshot, WorkBudget, WorkItem, WorkStatus
 from agentseek_work.repository import (
     NonJsonValueError,
     SQLAlchemyWorkRepository,
@@ -66,7 +66,20 @@ def repository() -> SQLAlchemyWorkRepository:
     assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
     repo = SQLAlchemyWorkRepository(engine)
     repo.put_budget("budget_001", make_budget())
+    repo.put_pack_snapshot(make_pack_snapshot())
     return repo
+
+
+def make_pack_snapshot() -> PackSnapshot:
+    return PackSnapshot(
+        pack_snapshot_id="sha256:pack",
+        pack_id="industry-report",
+        pack_version="1.0.0",
+        manifest_digest="sha256:manifest",
+        content_artifact_id="pack-content://sha256/content",
+        asset_version_refs=(),
+        created_at=NOW,
+    )
 
 
 def transition(item: WorkItem, to_status: WorkStatus, *, event_id: str):
@@ -109,6 +122,15 @@ def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository
     assert first.created
     assert not replay.created
     assert replay.item.work_id == original.work_id
+
+
+def test_create_requires_registered_matching_pack_snapshot(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    with pytest.raises(WorkConflictError, match="unregistered pack snapshot"):
+        repository.create_work(replace(make_item(), pack_snapshot_id="missing"))
+    with pytest.raises(WorkConflictError, match="does not match"):
+        repository.create_work(replace(make_item(), pack_id="other-pack"))
 
 
 def test_tenant_scope_hides_other_tenant_work(repository: SQLAlchemyWorkRepository) -> None:
@@ -198,3 +220,25 @@ def test_budget_replay_must_match_existing_values(repository: SQLAlchemyWorkRepo
 
     with pytest.raises(WorkConflictError, match="different values"):
         repository.put_budget("budget_001", changed)
+
+
+def test_pack_snapshot_round_trip_is_idempotent_and_immutable(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    snapshot = PackSnapshot(
+        pack_snapshot_id="pack_snapshot_sha256_content",
+        pack_id="industry-report",
+        pack_version="2.0.0",
+        source_repository="https://example.invalid/repository",
+        source_commit="commit_001",
+        manifest_digest="sha256:manifest",
+        content_artifact_id="pack-content://sha256/content",
+        asset_version_refs=("strategic-report-docx@1.0.0:trusted-asset://template#digest",),
+        created_at=NOW,
+    )
+
+    assert repository.put_pack_snapshot(snapshot) == snapshot
+    assert repository.put_pack_snapshot(snapshot) == snapshot
+    assert repository.get_pack_snapshot(pack_snapshot_id=snapshot.pack_snapshot_id) == snapshot
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_pack_snapshot(replace(snapshot, source_commit="commit_changed"))

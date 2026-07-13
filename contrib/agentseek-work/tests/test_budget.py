@@ -6,6 +6,7 @@ from agentseek_work.models import (
     ActorType,
     BudgetAmount,
     BudgetReservationStatus,
+    PackSnapshot,
     WorkBudget,
     WorkItem,
     WorkStatus,
@@ -65,6 +66,17 @@ def repository() -> SQLAlchemyWorkRepository:
             max_work_duration_seconds=3_000,
             max_retry_count=2,
         ),
+    )
+    repo.put_pack_snapshot(
+        PackSnapshot(
+            pack_snapshot_id="sha256:pack",
+            pack_id="industry-report",
+            pack_version="1.0.0",
+            manifest_digest="sha256:manifest",
+            content_artifact_id="pack-content://sha256/content",
+            asset_version_refs=(),
+            created_at=NOW,
+        )
     )
     return repo
 

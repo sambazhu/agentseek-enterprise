@@ -201,6 +201,28 @@ Index(
     work_budget_reservations.c.status,
 )
 
+pack_snapshots = Table(
+    "enterprise_pack_snapshots",
+    metadata,
+    Column("pack_snapshot_id", String(160), primary_key=True),
+    Column("pack_id", String(128), nullable=False),
+    Column("pack_version", String(64), nullable=False),
+    Column("source_repository", String(512)),
+    Column("source_commit", String(160)),
+    Column("manifest_digest", String(160), nullable=False),
+    Column("content_artifact_id", String(256), nullable=False),
+    Column("asset_version_refs", json_document, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "pack_id",
+        "pack_version",
+        "manifest_digest",
+        name="uq_pack_snapshots_version_digest",
+    ),
+)
+
+Index("ix_pack_snapshots_pack_version", pack_snapshots.c.pack_id, pack_snapshots.c.pack_version)
+
 work_events = Table(
     "enterprise_work_events",
     metadata,

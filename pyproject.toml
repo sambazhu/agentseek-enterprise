@@ -207,6 +207,7 @@ ignore = [
 "contrib/agentseek-wecom/src/agentseek_wecom/response_url.py" = ["S310"]
 # Generated example code keeps direct, user-facing validation errors simple.
 "examples/enterprise_wecom_digital_employee/src/**/*.py" = ["TRY003", "TRY004"]
+"examples/enterprise_wecom_digital_employee/tests/*.py" = ["S101", "TRY003"]
 # Probe scripts intentionally call configured endpoints and exit with concise diagnostics.
 "scripts/probe_staff_identity.py" = ["S310"]
 "scripts/probe_wecom_callback.py" = ["S310", "TRY003"]

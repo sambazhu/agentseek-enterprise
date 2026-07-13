@@ -1,4 +1,5 @@
 from agentseek_work.schema import (
+    pack_snapshots,
     work_budget_reservations,
     work_budget_usage,
     work_events,
@@ -45,3 +46,11 @@ def test_postgresql_budget_reservation_ddl_is_idempotent_and_bounded() -> None:
     assert "CONSTRAINT ck_work_budget_reservation_actual_within_reserved CHECK" in ddl
     assert "CONSTRAINT ck_work_budget_reservation_finalized CHECK" in ddl
     assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl
+
+
+def test_postgresql_pack_snapshot_ddl_is_content_addressed_and_version_unique() -> None:
+    ddl = str(CreateTable(pack_snapshots).compile(dialect=postgresql.dialect()))
+
+    assert "pack_snapshot_id VARCHAR(160) NOT NULL" in ddl
+    assert "asset_version_refs JSONB NOT NULL" in ddl
+    assert "CONSTRAINT uq_pack_snapshots_version_digest UNIQUE (pack_id, pack_version, manifest_digest)" in ddl

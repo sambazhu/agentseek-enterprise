@@ -1,0 +1,10 @@
+schema_version: 1
+policy_id: industry-report-v1
+work_mode: required
+requester_org: 战略发展部
+role_mapping:
+  reviewer: requester
+  approver: requester
+  data_owner: requester
+  beneficiary: requester
+model_may_override: false

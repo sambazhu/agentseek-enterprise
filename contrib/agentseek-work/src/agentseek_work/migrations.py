@@ -6,7 +6,7 @@ from sqlalchemy import Connection, Engine, insert, select
 
 from agentseek_work.schema import metadata, schema_versions
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 
 def apply_migrations(engine: Engine) -> int:

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
-from agentseek_work.models import WorkBudget, WorkItem, WorkStatus
+from agentseek_work.models import PackSnapshot, WorkBudget, WorkItem, WorkStatus
 
 NOW = datetime(2026, 7, 12, tzinfo=UTC)
 
@@ -66,4 +66,17 @@ def test_work_budget_rejects_phase_duration_above_work_duration() -> None:
             max_phase_duration_seconds=301,
             max_work_duration_seconds=300,
             max_retry_count=2,
+        )
+
+
+def test_pack_snapshot_is_immutable_and_rejects_duplicate_assets() -> None:
+    with pytest.raises(ValueError, match="duplicates"):
+        PackSnapshot(
+            pack_snapshot_id="pack_snapshot_sha256_abc",
+            pack_id="industry-report",
+            pack_version="1.0.0",
+            manifest_digest="sha256:manifest",
+            content_artifact_id="pack-content://sha256/content",
+            asset_version_refs=("asset@1", "asset@1"),
+            created_at=NOW,
         )
