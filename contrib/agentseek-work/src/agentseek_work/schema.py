@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from agentseek_work.models import ActorType, WorkStatus
+from agentseek_work.models import ActorType, BudgetReservationStatus, WorkStatus
 
 metadata = MetaData()
 json_document = JSON().with_variant(JSONB(), "postgresql")
@@ -28,6 +28,7 @@ def _sql_values(values: list[str]) -> str:
 
 work_status_values = _sql_values([status.value for status in WorkStatus])
 actor_type_values = _sql_values([actor_type.value for actor_type in ActorType])
+budget_reservation_status_values = _sql_values([status.value for status in BudgetReservationStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -107,6 +108,98 @@ work_items = Table(
 Index("ix_work_items_tenant_status", work_items.c.tenant_id, work_items.c.status)
 Index("ix_work_items_next_poll", work_items.c.next_poll_at)
 Index("ix_work_items_lease_expiry", work_items.c.lease_expires_at)
+
+work_budget_usage = Table(
+    "enterprise_work_budget_usage",
+    metadata,
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column("used_model_calls", Integer, nullable=False, default=0),
+    Column("used_input_tokens", BigInteger, nullable=False, default=0),
+    Column("used_output_tokens", BigInteger, nullable=False, default=0),
+    Column("used_external_queries", Integer, nullable=False, default=0),
+    Column("reserved_model_calls", Integer, nullable=False, default=0),
+    Column("reserved_input_tokens", BigInteger, nullable=False, default=0),
+    Column("reserved_output_tokens", BigInteger, nullable=False, default=0),
+    Column("reserved_external_queries", Integer, nullable=False, default=0),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "used_model_calls >= 0 AND used_input_tokens >= 0 AND used_output_tokens >= 0 AND used_external_queries >= 0",
+        name="ck_work_budget_usage_used_nonnegative",
+    ),
+    CheckConstraint(
+        "reserved_model_calls >= 0 AND reserved_input_tokens >= 0 "
+        "AND reserved_output_tokens >= 0 AND reserved_external_queries >= 0",
+        name="ck_work_budget_usage_reserved_nonnegative",
+    ),
+)
+
+Index("ix_work_budget_usage_tenant", work_budget_usage.c.tenant_id)
+
+work_budget_reservations = Table(
+    "enterprise_work_budget_reservations",
+    metadata,
+    Column("reservation_id", String(128), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column("worker_id", String(128), nullable=False),
+    Column("phase", String(128), nullable=False),
+    Column("phase_attempt", Integer, nullable=False),
+    Column("idempotency_key", String(256), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("reserved_model_calls", Integer, nullable=False),
+    Column("reserved_input_tokens", BigInteger, nullable=False),
+    Column("reserved_output_tokens", BigInteger, nullable=False),
+    Column("reserved_external_queries", Integer, nullable=False),
+    Column("actual_model_calls", Integer, nullable=False, default=0),
+    Column("actual_input_tokens", BigInteger, nullable=False, default=0),
+    Column("actual_output_tokens", BigInteger, nullable=False, default=0),
+    Column("actual_external_queries", Integer, nullable=False, default=0),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("finalized_at", DateTime(timezone=True)),
+    UniqueConstraint("work_id", "idempotency_key", name="uq_work_budget_reservation_idempotency"),
+    CheckConstraint(
+        f"status IN ({budget_reservation_status_values})",
+        name="ck_work_budget_reservation_status",
+    ),
+    CheckConstraint("phase_attempt > 0", name="ck_work_budget_reservation_attempt"),
+    CheckConstraint(
+        "reserved_model_calls >= 0 AND reserved_input_tokens >= 0 "
+        "AND reserved_output_tokens >= 0 AND reserved_external_queries >= 0",
+        name="ck_work_budget_reservation_reserved_nonnegative",
+    ),
+    CheckConstraint(
+        "actual_model_calls >= 0 AND actual_input_tokens >= 0 "
+        "AND actual_output_tokens >= 0 AND actual_external_queries >= 0",
+        name="ck_work_budget_reservation_actual_nonnegative",
+    ),
+    CheckConstraint(
+        "actual_model_calls <= reserved_model_calls AND actual_input_tokens <= reserved_input_tokens "
+        "AND actual_output_tokens <= reserved_output_tokens "
+        "AND actual_external_queries <= reserved_external_queries",
+        name="ck_work_budget_reservation_actual_within_reserved",
+    ),
+    CheckConstraint(
+        "(status = 'active' AND finalized_at IS NULL) OR (status <> 'active' AND finalized_at IS NOT NULL)",
+        name="ck_work_budget_reservation_finalized",
+    ),
+)
+
+Index(
+    "ix_work_budget_reservations_work_status",
+    work_budget_reservations.c.work_id,
+    work_budget_reservations.c.status,
+)
 
 work_events = Table(
     "enterprise_work_events",

@@ -1,4 +1,9 @@
-from agentseek_work.schema import work_events, work_items
+from agentseek_work.schema import (
+    work_budget_reservations,
+    work_budget_usage,
+    work_events,
+    work_items,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
@@ -21,3 +26,22 @@ def test_postgresql_work_events_ddl_is_version_unique_and_foreign_keyed() -> Non
     assert "CONSTRAINT ck_work_events_actor_type CHECK" in ddl
     assert "CONSTRAINT ck_work_events_from_status CHECK" in ddl
     assert "CONSTRAINT ck_work_events_to_status CHECK" in ddl
+
+
+def test_postgresql_budget_usage_ddl_has_durable_counters() -> None:
+    ddl = str(CreateTable(work_budget_usage).compile(dialect=postgresql.dialect()))
+
+    assert "used_input_tokens BIGINT NOT NULL" in ddl
+    assert "reserved_output_tokens BIGINT NOT NULL" in ddl
+    assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl
+    assert "CONSTRAINT ck_work_budget_usage_used_nonnegative CHECK" in ddl
+    assert "CONSTRAINT ck_work_budget_usage_reserved_nonnegative CHECK" in ddl
+
+
+def test_postgresql_budget_reservation_ddl_is_idempotent_and_bounded() -> None:
+    ddl = str(CreateTable(work_budget_reservations).compile(dialect=postgresql.dialect()))
+
+    assert "CONSTRAINT uq_work_budget_reservation_idempotency UNIQUE (work_id, idempotency_key)" in ddl
+    assert "CONSTRAINT ck_work_budget_reservation_actual_within_reserved CHECK" in ddl
+    assert "CONSTRAINT ck_work_budget_reservation_finalized CHECK" in ddl
+    assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl

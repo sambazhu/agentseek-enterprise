@@ -28,6 +28,13 @@ class ActorType(StrEnum):
     SYSTEM = "system"
 
 
+class BudgetReservationStatus(StrEnum):
+    ACTIVE = "active"
+    SETTLED = "settled"
+    RELEASED = "released"
+    FORFEITED = "forfeited"
+
+
 TERMINAL_WORK_STATUSES = frozenset({
     WorkStatus.SUCCEEDED,
     WorkStatus.FAILED,
@@ -70,6 +77,78 @@ class WorkBudget:
             raise ValueError("max_retry_count must be non-negative")
         if self.max_phase_duration_seconds > self.max_work_duration_seconds:
             raise ValueError("max_phase_duration_seconds must not exceed max_work_duration_seconds")
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetAmount:
+    model_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    external_queries: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in ("model_calls", "input_tokens", "output_tokens", "external_queries"):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+
+    @property
+    def is_zero(self) -> bool:
+        return not any((self.model_calls, self.input_tokens, self.output_tokens, self.external_queries))
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetUsage:
+    used: BudgetAmount = field(default_factory=BudgetAmount)
+    reserved: BudgetAmount = field(default_factory=BudgetAmount)
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetReservation:
+    reservation_id: str
+    work_id: str
+    tenant_id: str
+    worker_id: str
+    phase: str
+    phase_attempt: int
+    idempotency_key: str
+    status: BudgetReservationStatus
+    reserved: BudgetAmount
+    actual: BudgetAmount
+    created_at: datetime
+    finalized_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "reservation_id",
+            "work_id",
+            "tenant_id",
+            "worker_id",
+            "phase",
+            "idempotency_key",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        if self.phase_attempt <= 0:
+            raise ValueError("phase_attempt must be greater than zero")
+        if self.reserved.is_zero:
+            raise ValueError("reserved budget must not be zero")
+        _require_aware(self.created_at, "created_at")
+        if self.finalized_at is not None:
+            _require_aware(self.finalized_at, "finalized_at")
+            if self.finalized_at < self.created_at:
+                raise ValueError("finalized_at must not be earlier than created_at")
+        if not isinstance(self.status, BudgetReservationStatus):
+            raise TypeError("status must be a BudgetReservationStatus")
+        _validate_budget_reservation_state(self)
+
+
+def _validate_budget_reservation_state(reservation: BudgetReservation) -> None:
+    for field_name in ("model_calls", "input_tokens", "output_tokens", "external_queries"):
+        if getattr(reservation.actual, field_name) > getattr(reservation.reserved, field_name):
+            raise ValueError("actual usage must not exceed reserved budget")
+    if reservation.status is BudgetReservationStatus.ACTIVE and reservation.finalized_at is not None:
+        raise ValueError("active reservation must not have finalized_at")
+    if reservation.status is not BudgetReservationStatus.ACTIVE and reservation.finalized_at is None:
+        raise ValueError("finalized reservation requires finalized_at")
 
 
 @dataclass(frozen=True, slots=True)

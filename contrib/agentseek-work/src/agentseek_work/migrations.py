@@ -6,7 +6,7 @@ from sqlalchemy import Connection, Engine, insert, select
 
 from agentseek_work.schema import metadata, schema_versions
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 
 
 def apply_migrations(engine: Engine) -> int:
@@ -14,9 +14,9 @@ def apply_migrations(engine: Engine) -> int:
     with engine.begin() as connection:
         metadata.create_all(connection)
         current = _current_version(connection)
-        if current < 1:
-            connection.execute(insert(schema_versions).values(version=1, applied_at=datetime.now(tz=UTC)))
-            current = 1
+        for version in range(current + 1, LATEST_SCHEMA_VERSION + 1):
+            connection.execute(insert(schema_versions).values(version=version, applied_at=datetime.now(tz=UTC)))
+            current = version
         if current > LATEST_SCHEMA_VERSION:
             raise RuntimeError(f"database schema version {current} is newer than supported {LATEST_SCHEMA_VERSION}")
         return current

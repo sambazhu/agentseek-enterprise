@@ -9,8 +9,24 @@ from typing import Any, NoReturn
 from sqlalchemy import Connection, Engine, RowMapping, insert, select, update
 from sqlalchemy.exc import IntegrityError, StatementError
 
-from agentseek_work.models import ActorType, WorkBudget, WorkEvent, WorkItem, WorkStatus
-from agentseek_work.schema import work_budgets, work_events, work_items
+from agentseek_work.models import (
+    ActorType,
+    BudgetAmount,
+    BudgetReservation,
+    BudgetReservationStatus,
+    BudgetUsage,
+    WorkBudget,
+    WorkEvent,
+    WorkItem,
+    WorkStatus,
+)
+from agentseek_work.schema import (
+    work_budget_reservations,
+    work_budget_usage,
+    work_budgets,
+    work_events,
+    work_items,
+)
 from agentseek_work.state_machine import OptimisticConcurrencyError, TransitionResult
 
 
@@ -28,6 +44,14 @@ class WorkConflictError(WorkRepositoryError):
 
 class NonJsonValueError(WorkRepositoryError):
     """Raised before persistence when a document contains a non-JSON value."""
+
+
+class BudgetExceededError(WorkRepositoryError):
+    """Raised before a call when its reservation would exceed the frozen budget."""
+
+
+class BudgetReservationError(WorkRepositoryError):
+    """Raised when a reservation cannot be settled or released safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +89,33 @@ class SQLAlchemyWorkRepository:
                     raise WorkConflictError(f"budget {budget_id} already exists with different values")
         except IntegrityError as exc:
             raise WorkConflictError(f"budget {budget_id} conflicts with an existing record") from exc
+
+    def get_budget_for_work(self, *, tenant_id: str, work_id: str) -> WorkBudget:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_budgets)
+                    .join(work_items, work_items.c.budget_id == work_budgets.c.budget_id)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.work_id == work_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
+        return WorkBudget(
+            max_model_calls=int(row["max_model_calls"]),
+            max_input_tokens=int(row["max_input_tokens"]),
+            max_output_tokens=int(row["max_output_tokens"]),
+            max_external_queries=int(row["max_external_queries"]),
+            max_phase_duration_seconds=int(row["max_phase_duration_seconds"]),
+            max_work_duration_seconds=int(row["max_work_duration_seconds"]),
+            max_retry_count=int(row["max_retry_count"]),
+        )
 
     def create_work(self, item: WorkItem) -> CreateWorkResult:
         values = _item_to_values(item)
@@ -295,6 +346,16 @@ class SQLAlchemyWorkRepository:
                 )
                 if updated.rowcount != 1:
                     _raise_worker_lease_required()
+                active_reservation = connection.execute(
+                    select(work_budget_reservations.c.reservation_id)
+                    .where(
+                        work_budget_reservations.c.work_id == item.work_id,
+                        work_budget_reservations.c.status == BudgetReservationStatus.ACTIVE.value,
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if active_reservation is not None:
+                    raise BudgetReservationError("active budget reservations must be finalized before phase commit")
                 connection.execute(insert(work_events).values(**_event_to_values(event)))
         except WorkConflictError:
             raise
@@ -372,6 +433,7 @@ class SQLAlchemyWorkRepository:
                 return None
             item = _row_to_item(row)
             max_retry_count = int(row["max_retry_count"])
+            _forfeit_active_reservations(connection, item=item, now=now)
             if item.phase_attempt <= max_retry_count:
                 recovered = replace(
                     item,
@@ -432,6 +494,7 @@ class SQLAlchemyWorkRepository:
             if row is None:
                 raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
             item = _row_to_item(row)
+            _forfeit_active_reservations(connection, item=item, now=now)
             from agentseek_work.state_machine import transition_work_item
 
             result = transition_work_item(
@@ -450,6 +513,240 @@ class SQLAlchemyWorkRepository:
             _update_snapshot(connection, item=item, updated=cancelled)
             connection.execute(insert(work_events).values(**_event_to_values(result.event)))
             return cancelled
+
+    def reserve_budget(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        worker_id: str,
+        reservation_id: str,
+        idempotency_key: str,
+        amount: BudgetAmount,
+        now: datetime,
+    ) -> BudgetReservation:
+        _require_aware_datetime(now, "now")
+        if amount.is_zero:
+            raise ValueError("budget reservation amount must not be zero")
+        for value, field_name in (
+            (worker_id, "worker_id"),
+            (reservation_id, "reservation_id"),
+            (idempotency_key, "idempotency_key"),
+        ):
+            if not value.strip():
+                raise ValueError(f"{field_name} must not be blank")
+
+        with self.engine.begin() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_items, work_budgets)
+                    .join(work_budgets, work_items.c.budget_id == work_budgets.c.budget_id)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.work_id == work_id,
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
+            item = _row_to_item(row)
+            _require_active_worker(item, worker_id=worker_id, now=now)
+            if now >= item.created_at + timedelta(seconds=int(row["max_work_duration_seconds"])):
+                raise BudgetExceededError("max_work_duration_seconds is exhausted")
+
+            existing = (
+                connection
+                .execute(
+                    select(work_budget_reservations).where(
+                        work_budget_reservations.c.work_id == work_id,
+                        work_budget_reservations.c.idempotency_key == idempotency_key,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                reservation = _row_to_budget_reservation(existing)
+                if (
+                    reservation.reservation_id != reservation_id
+                    or reservation.worker_id != worker_id
+                    or reservation.phase != item.current_phase
+                    or reservation.phase_attempt != item.phase_attempt
+                    or reservation.reserved != amount
+                ):
+                    raise BudgetReservationError("budget reservation idempotency key was reused with different values")
+                return reservation
+
+            usage = _locked_budget_usage(connection, item=item, now=now)
+            _require_budget_capacity(usage=usage, requested=amount, budget_row=row)
+            reservation = BudgetReservation(
+                reservation_id=reservation_id,
+                work_id=work_id,
+                tenant_id=tenant_id,
+                worker_id=worker_id,
+                phase=item.current_phase,
+                phase_attempt=item.phase_attempt,
+                idempotency_key=idempotency_key,
+                status=BudgetReservationStatus.ACTIVE,
+                reserved=amount,
+                actual=BudgetAmount(),
+                created_at=now,
+            )
+            connection.execute(insert(work_budget_reservations).values(**_budget_reservation_values(reservation)))
+            connection.execute(
+                update(work_budget_usage)
+                .where(work_budget_usage.c.work_id == work_id)
+                .values(**_usage_update_values(usage.used, _add_amount(usage.reserved, amount), now))
+            )
+            return reservation
+
+    def settle_budget(
+        self,
+        *,
+        reservation_id: str,
+        tenant_id: str,
+        worker_id: str,
+        actual: BudgetAmount,
+        now: datetime,
+    ) -> BudgetReservation:
+        return self._finalize_budget_reservation(
+            reservation_id=reservation_id,
+            tenant_id=tenant_id,
+            worker_id=worker_id,
+            actual=actual,
+            status=BudgetReservationStatus.SETTLED,
+            now=now,
+        )
+
+    def release_budget(
+        self,
+        *,
+        reservation_id: str,
+        tenant_id: str,
+        worker_id: str,
+        now: datetime,
+    ) -> BudgetReservation:
+        return self._finalize_budget_reservation(
+            reservation_id=reservation_id,
+            tenant_id=tenant_id,
+            worker_id=worker_id,
+            actual=BudgetAmount(),
+            status=BudgetReservationStatus.RELEASED,
+            now=now,
+        )
+
+    def get_budget_usage(self, *, tenant_id: str, work_id: str) -> BudgetUsage:
+        with self.engine.connect() as connection:
+            owned = connection.execute(
+                select(work_items.c.work_id).where(
+                    work_items.c.tenant_id == tenant_id,
+                    work_items.c.work_id == work_id,
+                )
+            ).scalar_one_or_none()
+            if owned is None:
+                raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
+            row = (
+                connection
+                .execute(select(work_budget_usage).where(work_budget_usage.c.work_id == work_id))
+                .mappings()
+                .one_or_none()
+            )
+        return BudgetUsage() if row is None else _row_to_budget_usage(row)
+
+    def get_budget_reservation(
+        self,
+        *,
+        tenant_id: str,
+        reservation_id: str,
+    ) -> BudgetReservation:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_budget_reservations).where(
+                        work_budget_reservations.c.tenant_id == tenant_id,
+                        work_budget_reservations.c.reservation_id == reservation_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise WorkNotFoundError("budget reservation was not found for tenant")
+        return _row_to_budget_reservation(row)
+
+    def _finalize_budget_reservation(
+        self,
+        *,
+        reservation_id: str,
+        tenant_id: str,
+        worker_id: str,
+        actual: BudgetAmount,
+        status: BudgetReservationStatus,
+        now: datetime,
+    ) -> BudgetReservation:
+        _require_aware_datetime(now, "now")
+        with self.engine.begin() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_budget_reservations)
+                    .where(
+                        work_budget_reservations.c.tenant_id == tenant_id,
+                        work_budget_reservations.c.reservation_id == reservation_id,
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError("budget reservation was not found for tenant")
+            reservation = _row_to_budget_reservation(row)
+            if reservation.status is status and reservation.actual == actual:
+                return reservation
+            if reservation.status is not BudgetReservationStatus.ACTIVE:
+                raise BudgetReservationError("budget reservation is already finalized")
+            if worker_id != reservation.worker_id:
+                raise BudgetReservationError("budget reservation is owned by another worker")
+            item_row = (
+                connection
+                .execute(
+                    select(work_items)
+                    .where(
+                        work_items.c.tenant_id == tenant_id,
+                        work_items.c.work_id == reservation.work_id,
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if item_row is None:
+                raise WorkNotFoundError(f"work item {reservation.work_id} was not found for tenant")
+            item = _row_to_item(item_row)
+            _require_active_worker(item, worker_id=worker_id, now=now)
+            if not _amount_within(actual, reservation.reserved):
+                raise BudgetReservationError("actual usage exceeds the reserved budget ceiling")
+            usage = _locked_budget_usage(connection, item=item, now=now)
+            used = _add_amount(usage.used, actual)
+            reserved = _subtract_amount(usage.reserved, reservation.reserved)
+            finalized = replace(reservation, status=status, actual=actual, finalized_at=now)
+            connection.execute(
+                update(work_budget_reservations)
+                .where(work_budget_reservations.c.reservation_id == reservation_id)
+                .values(**_budget_reservation_values(finalized))
+            )
+            connection.execute(
+                update(work_budget_usage)
+                .where(work_budget_usage.c.work_id == reservation.work_id)
+                .values(**_usage_update_values(used, reserved, now))
+            )
+            return finalized
 
     def _get_by_idempotency_key(
         self,
@@ -476,6 +773,217 @@ class SQLAlchemyWorkRepository:
         if _contains_json_error(exc):
             raise NonJsonValueError(message) from exc
         raise WorkConflictError(message) from exc
+
+
+def _locked_budget_usage(
+    connection: Connection,
+    *,
+    item: WorkItem,
+    now: datetime,
+) -> BudgetUsage:
+    row = (
+        connection
+        .execute(select(work_budget_usage).where(work_budget_usage.c.work_id == item.work_id).with_for_update())
+        .mappings()
+        .one_or_none()
+    )
+    if row is not None:
+        return _row_to_budget_usage(row)
+    connection.execute(
+        insert(work_budget_usage).values(
+            work_id=item.work_id,
+            tenant_id=item.tenant_id,
+            **_usage_update_values(BudgetAmount(), BudgetAmount(), now),
+        )
+    )
+    return BudgetUsage()
+
+
+def _forfeit_active_reservations(connection: Connection, *, item: WorkItem, now: datetime) -> None:
+    rows = (
+        connection
+        .execute(
+            select(work_budget_reservations)
+            .where(
+                work_budget_reservations.c.work_id == item.work_id,
+                work_budget_reservations.c.status == BudgetReservationStatus.ACTIVE.value,
+            )
+            .with_for_update()
+        )
+        .mappings()
+        .all()
+    )
+    if not rows:
+        return
+    usage = _locked_budget_usage(connection, item=item, now=now)
+    forfeited = BudgetAmount()
+    for row in rows:
+        reservation = _row_to_budget_reservation(row)
+        forfeited = _add_amount(forfeited, reservation.reserved)
+        connection.execute(
+            update(work_budget_reservations)
+            .where(work_budget_reservations.c.reservation_id == reservation.reservation_id)
+            .values(
+                status=BudgetReservationStatus.FORFEITED.value,
+                actual_model_calls=reservation.reserved.model_calls,
+                actual_input_tokens=reservation.reserved.input_tokens,
+                actual_output_tokens=reservation.reserved.output_tokens,
+                actual_external_queries=reservation.reserved.external_queries,
+                finalized_at=now,
+            )
+        )
+    connection.execute(
+        update(work_budget_usage)
+        .where(work_budget_usage.c.work_id == item.work_id)
+        .values(
+            **_usage_update_values(
+                _add_amount(usage.used, forfeited),
+                _subtract_amount(usage.reserved, forfeited),
+                now,
+            )
+        )
+    )
+
+
+def _require_active_worker(item: WorkItem, *, worker_id: str, now: datetime) -> None:
+    if (
+        item.status is not WorkStatus.RUNNING
+        or item.lease_owner != worker_id
+        or item.lease_expires_at is None
+        or item.lease_expires_at <= now
+    ):
+        _raise_worker_lease_required()
+
+
+def _require_budget_capacity(
+    *,
+    usage: BudgetUsage,
+    requested: BudgetAmount,
+    budget_row: RowMapping | Mapping[str, Any],
+) -> None:
+    allocated = _add_amount(_add_amount(usage.used, usage.reserved), requested)
+    limits = BudgetAmount(
+        model_calls=int(budget_row["max_model_calls"]),
+        input_tokens=int(budget_row["max_input_tokens"]),
+        output_tokens=int(budget_row["max_output_tokens"]),
+        external_queries=int(budget_row["max_external_queries"]),
+    )
+    exceeded = [
+        field_name
+        for field_name in ("model_calls", "input_tokens", "output_tokens", "external_queries")
+        if getattr(allocated, field_name) > getattr(limits, field_name)
+    ]
+    if exceeded:
+        raise BudgetExceededError(f"budget exhausted for: {', '.join(exceeded)}")
+
+
+def _add_amount(left: BudgetAmount, right: BudgetAmount) -> BudgetAmount:
+    return BudgetAmount(
+        model_calls=left.model_calls + right.model_calls,
+        input_tokens=left.input_tokens + right.input_tokens,
+        output_tokens=left.output_tokens + right.output_tokens,
+        external_queries=left.external_queries + right.external_queries,
+    )
+
+
+def _subtract_amount(left: BudgetAmount, right: BudgetAmount) -> BudgetAmount:
+    try:
+        return BudgetAmount(
+            model_calls=left.model_calls - right.model_calls,
+            input_tokens=left.input_tokens - right.input_tokens,
+            output_tokens=left.output_tokens - right.output_tokens,
+            external_queries=left.external_queries - right.external_queries,
+        )
+    except ValueError as exc:
+        raise BudgetReservationError("budget usage counters are inconsistent") from exc
+
+
+def _amount_within(actual: BudgetAmount, ceiling: BudgetAmount) -> bool:
+    return all(
+        getattr(actual, field_name) <= getattr(ceiling, field_name)
+        for field_name in ("model_calls", "input_tokens", "output_tokens", "external_queries")
+    )
+
+
+def _usage_update_values(used: BudgetAmount, reserved: BudgetAmount, now: datetime) -> dict[str, Any]:
+    return {
+        "used_model_calls": used.model_calls,
+        "used_input_tokens": used.input_tokens,
+        "used_output_tokens": used.output_tokens,
+        "used_external_queries": used.external_queries,
+        "reserved_model_calls": reserved.model_calls,
+        "reserved_input_tokens": reserved.input_tokens,
+        "reserved_output_tokens": reserved.output_tokens,
+        "reserved_external_queries": reserved.external_queries,
+        "updated_at": now,
+    }
+
+
+def _row_to_budget_usage(row: RowMapping | Mapping[str, Any]) -> BudgetUsage:
+    return BudgetUsage(
+        used=BudgetAmount(
+            model_calls=int(row["used_model_calls"]),
+            input_tokens=int(row["used_input_tokens"]),
+            output_tokens=int(row["used_output_tokens"]),
+            external_queries=int(row["used_external_queries"]),
+        ),
+        reserved=BudgetAmount(
+            model_calls=int(row["reserved_model_calls"]),
+            input_tokens=int(row["reserved_input_tokens"]),
+            output_tokens=int(row["reserved_output_tokens"]),
+            external_queries=int(row["reserved_external_queries"]),
+        ),
+    )
+
+
+def _budget_reservation_values(reservation: BudgetReservation) -> dict[str, Any]:
+    return {
+        "reservation_id": reservation.reservation_id,
+        "work_id": reservation.work_id,
+        "tenant_id": reservation.tenant_id,
+        "worker_id": reservation.worker_id,
+        "phase": reservation.phase,
+        "phase_attempt": reservation.phase_attempt,
+        "idempotency_key": reservation.idempotency_key,
+        "status": reservation.status.value,
+        "reserved_model_calls": reservation.reserved.model_calls,
+        "reserved_input_tokens": reservation.reserved.input_tokens,
+        "reserved_output_tokens": reservation.reserved.output_tokens,
+        "reserved_external_queries": reservation.reserved.external_queries,
+        "actual_model_calls": reservation.actual.model_calls,
+        "actual_input_tokens": reservation.actual.input_tokens,
+        "actual_output_tokens": reservation.actual.output_tokens,
+        "actual_external_queries": reservation.actual.external_queries,
+        "created_at": reservation.created_at,
+        "finalized_at": reservation.finalized_at,
+    }
+
+
+def _row_to_budget_reservation(row: RowMapping | Mapping[str, Any]) -> BudgetReservation:
+    return BudgetReservation(
+        reservation_id=str(row["reservation_id"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        worker_id=str(row["worker_id"]),
+        phase=str(row["phase"]),
+        phase_attempt=int(row["phase_attempt"]),
+        idempotency_key=str(row["idempotency_key"]),
+        status=BudgetReservationStatus(str(row["status"])),
+        reserved=BudgetAmount(
+            model_calls=int(row["reserved_model_calls"]),
+            input_tokens=int(row["reserved_input_tokens"]),
+            output_tokens=int(row["reserved_output_tokens"]),
+            external_queries=int(row["reserved_external_queries"]),
+        ),
+        actual=BudgetAmount(
+            model_calls=int(row["actual_model_calls"]),
+            input_tokens=int(row["actual_input_tokens"]),
+            output_tokens=int(row["actual_output_tokens"]),
+            external_queries=int(row["actual_external_queries"]),
+        ),
+        created_at=_aware_datetime(row["created_at"]),
+        finalized_at=_optional_datetime(row["finalized_at"]),
+    )
 
 
 def _json_document(value: Any, field_name: str) -> Any:

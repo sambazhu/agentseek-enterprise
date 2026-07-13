@@ -87,15 +87,15 @@ def transition(item: WorkItem, to_status: WorkStatus, *, event_id: str):
 def test_migration_is_idempotent() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
-    assert apply_migrations(engine) == 1
-    assert apply_migrations(engine) == 1
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
 
 
 def test_migration_rejects_newer_database_version() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     apply_migrations(engine)
     with engine.begin() as connection:
-        connection.execute(insert(schema_versions).values(version=2, applied_at=NOW))
+        connection.execute(insert(schema_versions).values(version=LATEST_SCHEMA_VERSION + 1, applied_at=NOW))
 
     with pytest.raises(RuntimeError, match="newer than supported"):
         apply_migrations(engine)
