@@ -56,8 +56,8 @@ Document content is not returned.
 | Input | Type | Constraint |
 | --- | --- | --- |
 | `query` | string | Non-blank. |
-| `mode` | enum | `keyword`, `semantic`, or `hybrid`; default `hybrid`. |
-| `limit` | integer | 1 to 20; default 8. |
+| `search_mode` | enum | `keyword`, `semantic`, or `hybrid`; default `hybrid`. |
+| `top_k` | integer | 1 to 20; default 8. |
 
 Output: ranked excerpts, `document_id`, `chunk_id`, headings, and component scores.
 Hybrid mode combines keyword and semantic rankings with reciprocal rank fusion.
@@ -74,7 +74,7 @@ Output: full text for selected chunks only. Unknown or cross-collection IDs are 
 
 ```text
 knowledge_list_documents (when collection discovery is useful)
--> knowledge_search(mode=hybrid)
+-> knowledge_search(search_mode=hybrid)
 -> knowledge_read_chunks(selected chunk IDs)
 -> identify evidence gaps
 -> request employee permission before Gildata or Tavily

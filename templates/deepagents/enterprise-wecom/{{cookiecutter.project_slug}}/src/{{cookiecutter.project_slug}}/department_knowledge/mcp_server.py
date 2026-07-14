@@ -22,7 +22,7 @@ class KnowledgeRepository(Protocol):
 
     def list_documents(self, *, limit: int = 20) -> Sequence[Any]: ...
 
-    def search(self, query: str, *, mode: SearchMode, limit: int) -> Sequence[Any]: ...
+    def search(self, query: str, *, search_mode: SearchMode, top_k: int) -> Sequence[Any]: ...
 
     def read_chunks(self, chunk_ids: Sequence[str]) -> Sequence[dict[str, Any]]: ...
 
@@ -54,20 +54,21 @@ def build_mcp(repository: KnowledgeRepository | None = None) -> FastMCP:
         name="knowledge_search",
         description=(
             "Search the fixed department knowledge collection. Use hybrid by default; keyword is best for "
-            "exact terms and semantic is best for conceptual questions. Results contain excerpts and chunk IDs."
+            "exact terms and semantic is best for conceptual questions. Set search_mode and top_k when needed. "
+            "Results contain excerpts and chunk IDs."
         ),
         annotations=_READ_ONLY,
     )
     def knowledge_search(
         query: str,
-        mode: SearchMode = SearchMode.HYBRID,
-        limit: int = 8,
+        search_mode: SearchMode = SearchMode.HYBRID,
+        top_k: int = 8,
     ) -> dict[str, Any]:
-        hits = repo.search(query, mode=mode, limit=limit)
+        hits = repo.search(query, search_mode=search_mode, top_k=top_k)
         return {
             "owning_org": repo.settings.owning_org,
             "collection_id": repo.settings.collection_id,
-            "mode": SearchMode(mode).value,
+            "search_mode": SearchMode(search_mode).value,
             "hits": [hit.as_dict() for hit in hits],
         }
 

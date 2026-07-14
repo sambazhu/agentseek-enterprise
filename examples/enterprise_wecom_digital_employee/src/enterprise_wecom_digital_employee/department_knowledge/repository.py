@@ -232,18 +232,18 @@ class DepartmentKnowledgeRepository:
         self,
         query: str,
         *,
-        mode: SearchMode | str = SearchMode.HYBRID,
-        limit: int = 8,
+        search_mode: SearchMode | str = SearchMode.HYBRID,
+        top_k: int = 8,
     ) -> tuple[KnowledgeSearchHit, ...]:
         clean_query = str(query or "").strip()
         if not clean_query:
             raise ValueError("department knowledge query must not be blank")
-        search_mode = SearchMode(mode)
-        bounded = _bounded_limit(limit)
+        selected_mode = SearchMode(search_mode)
+        bounded = _bounded_limit(top_k)
         started_at = event_timer()
-        if search_mode is SearchMode.KEYWORD:
+        if selected_mode is SearchMode.KEYWORD:
             hits = self._search_keyword(clean_query, bounded)
-        elif search_mode is SearchMode.SEMANTIC:
+        elif selected_mode is SearchMode.SEMANTIC:
             hits = self._search_semantic(clean_query, bounded)
         else:
             candidate_limit = min(_MAX_RESULTS, max(12, bounded * 3))
@@ -256,7 +256,7 @@ class DepartmentKnowledgeRepository:
             "department_knowledge_search",
             status="succeeded",
             collection_id=self.settings.collection_id,
-            mode=search_mode.value,
+            mode=selected_mode.value,
             query_chars=len(clean_query),
             hit_count=len(hits),
             duration_ms=elapsed_ms(started_at),

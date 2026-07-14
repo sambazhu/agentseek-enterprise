@@ -35,7 +35,7 @@ def main() -> int:
         )
         imported = repository.upsert_document(document, chunks).as_dict()
 
-    hits = repository.search(args.query, mode=SearchMode(args.mode), limit=args.limit)
+    hits = repository.search(args.query, search_mode=SearchMode(args.mode), top_k=args.limit)
     selected = repository.read_chunks([hits[0].chunk_id]) if hits else ()
     payload = {
         "ok": bool(hits),

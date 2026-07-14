@@ -121,11 +121,16 @@ async def test_mcp_contract_is_read_only_and_does_not_expose_scope_arguments() -
         assert tool.annotations.readOnlyHint is True
         assert "tenant" not in str(tool.parameters).lower()
         assert "collection" not in str(tool.parameters).lower()
+    search_properties = tools["knowledge_search"].parameters["properties"]
+    assert set(search_properties) == {"query", "search_mode", "top_k"}
 
-    result = await mcp.call_tool("knowledge_search", {"query": "证券行业", "mode": "hybrid"})
+    result = await mcp.call_tool(
+        "knowledge_search",
+        {"query": "证券行业", "search_mode": "hybrid", "top_k": 6},
+    )
     assert result.structured_content is not None
     assert result.structured_content["collection_id"] == "strategic-development"
-    assert repository.searches == [("证券行业", SearchMode.HYBRID, 8)]
+    assert repository.searches == [("证券行业", SearchMode.HYBRID, 6)]
 
 
 @pytest.mark.skipif(
@@ -166,10 +171,10 @@ def test_real_postgres_keyword_semantic_hybrid_and_collection_isolation() -> Non
     chunks = chunk_document(document, max_chars=100, overlap_chars=10)
     repository.upsert_document(document, chunks)
 
-    assert repository.search("数据治理", mode="keyword")[0].document_id == document.document_id
-    assert repository.search("行业能力建设", mode="semantic")[0].document_id == document.document_id
-    assert repository.search("证券行业", mode="hybrid")[0].document_id == document.document_id
-    assert other.search("证券行业", mode="hybrid") == ()
+    assert repository.search("数据治理", search_mode="keyword")[0].document_id == document.document_id
+    assert repository.search("行业能力建设", search_mode="semantic")[0].document_id == document.document_id
+    assert repository.search("证券行业", search_mode="hybrid")[0].document_id == document.document_id
+    assert other.search("证券行业", search_mode="hybrid") == ()
     assert repository.read_chunks([chunks[0].chunk_id])[0]["content"] == document.text
     _delete_test_documents(settings)
 
@@ -189,10 +194,10 @@ class _FakeRepository:
         self,
         query: str,
         *,
-        mode: SearchMode,
-        limit: int,
+        search_mode: SearchMode,
+        top_k: int,
     ) -> tuple[KnowledgeSearchHit, ...]:
-        self.searches.append((query, SearchMode(mode), limit))
+        self.searches.append((query, SearchMode(search_mode), top_k))
         return (_hit("chunk-a", keyword=1.0),)
 
     def read_chunks(self, chunk_ids: Sequence[str]) -> tuple[dict[str, Any], ...]:
