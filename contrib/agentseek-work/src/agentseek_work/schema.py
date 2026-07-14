@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from agentseek_work.models import ActorType, BudgetReservationStatus, WorkStatus
+from agentseek_work.models import ActorType, BudgetReservationStatus, WorkContractStatus, WorkStatus
 
 metadata = MetaData()
 json_document = JSON().with_variant(JSONB(), "postgresql")
@@ -29,6 +29,7 @@ def _sql_values(values: list[str]) -> str:
 work_status_values = _sql_values([status.value for status in WorkStatus])
 actor_type_values = _sql_values([actor_type.value for actor_type in ActorType])
 budget_reservation_status_values = _sql_values([status.value for status in BudgetReservationStatus])
+work_contract_status_values = _sql_values([status.value for status in WorkContractStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -110,6 +111,42 @@ work_items = Table(
 Index("ix_work_items_tenant_status", work_items.c.tenant_id, work_items.c.status)
 Index("ix_work_items_next_poll", work_items.c.next_poll_at)
 Index("ix_work_items_lease_expiry", work_items.c.lease_expires_at)
+
+work_contracts = Table(
+    "enterprise_work_contracts",
+    metadata,
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("contract_type", String(128), primary_key=True),
+    Column("contract_version", Integer, primary_key=True),
+    Column("tenant_id", String(128), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("payload", json_document, nullable=False),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("confirmed_by", String(128)),
+    Column("confirmed_at", DateTime(timezone=True)),
+    Column("superseded_at", DateTime(timezone=True)),
+    CheckConstraint("contract_version > 0", name="ck_work_contract_version"),
+    CheckConstraint(f"status IN ({work_contract_status_values})", name="ck_work_contract_status"),
+    CheckConstraint(
+        "(confirmed_by IS NULL AND confirmed_at IS NULL) OR "
+        "(confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+        name="ck_work_contract_confirmation_pair",
+    ),
+    CheckConstraint(
+        "(status = 'provisional' AND confirmed_at IS NULL AND superseded_at IS NULL) OR "
+        "(status = 'confirmed' AND confirmed_at IS NOT NULL AND superseded_at IS NULL) OR "
+        "(status = 'superseded' AND superseded_at IS NOT NULL)",
+        name="ck_work_contract_lifecycle",
+    ),
+)
+
+Index("ix_work_contracts_tenant_work", work_contracts.c.tenant_id, work_contracts.c.work_id)
 
 work_budget_usage = Table(
     "enterprise_work_budget_usage",

@@ -4,15 +4,24 @@ from datetime import UTC, datetime, timedelta
 import agentseek_work.repository as repository_module
 import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
-from agentseek_work.models import ActorType, PackSnapshot, WorkBudget, WorkItem, WorkStatus
+from agentseek_work.models import (
+    ActorType,
+    PackSnapshot,
+    WorkBudget,
+    WorkContractSnapshot,
+    WorkContractStatus,
+    WorkItem,
+    WorkStatus,
+)
 from agentseek_work.repository import (
     ActiveWorkConflictError,
     NonJsonValueError,
     SQLAlchemyWorkRepository,
     WorkConflictError,
+    WorkContractConflictError,
     WorkNotFoundError,
 )
-from agentseek_work.schema import schema_versions
+from agentseek_work.schema import schema_versions, work_contracts
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
 from sqlalchemy import Connection, create_engine, insert, inspect
 from sqlalchemy.exc import IntegrityError
@@ -85,6 +94,24 @@ def make_pack_snapshot() -> PackSnapshot:
         content_artifact_id="pack-content://sha256/content",
         asset_version_refs=(),
         created_at=NOW,
+    )
+
+
+def make_contract(
+    *,
+    version: int = 1,
+    title: str = "2025年中国证券行业发展研究报告",
+    created_at: datetime = NOW,
+) -> WorkContractSnapshot:
+    return WorkContractSnapshot(
+        work_id="work_001",
+        tenant_id="tenant_001",
+        contract_type="report-brief",
+        contract_version=version,
+        status=WorkContractStatus.PROVISIONAL,
+        payload={"title": title},
+        created_by="employee_001",
+        created_at=created_at,
     )
 
 
@@ -195,6 +222,76 @@ def test_revision_five_fails_closed_when_active_scopes_are_duplicated() -> None:
         apply_migrations(engine)
     indexes = {index["name"] for index in inspect(engine).get_indexes("enterprise_work_items")}
     assert "uq_work_items_active_playbook" not in indexes
+
+
+def test_revision_six_creates_current_contract_unique_index() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    indexes = {index["name"]: index for index in inspect(engine).get_indexes(work_contracts.name)}
+
+    assert indexes["uq_work_contracts_current_type"]["unique"] == 1
+    base_values = {
+        "work_id": "work_1",
+        "tenant_id": "tenant",
+        "contract_type": "report-brief",
+        "payload": {"title": "report"},
+        "created_by": "requester",
+        "created_at": NOW,
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            insert(work_contracts).values(
+                **base_values,
+                contract_version=1,
+                status=WorkContractStatus.PROVISIONAL.value,
+            )
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            insert(work_contracts).values(
+                **base_values,
+                contract_version=2,
+                status=WorkContractStatus.PROVISIONAL.value,
+            )
+        )
+
+
+def test_revision_six_fails_closed_when_current_contracts_are_duplicated() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        )
+        _create_legacy_work_items_table(connection)
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_contracts ("
+            "work_id VARCHAR(128) NOT NULL, "
+            "tenant_id VARCHAR(128) NOT NULL, "
+            "contract_type VARCHAR(128) NOT NULL, "
+            "contract_version INTEGER NOT NULL, "
+            "status VARCHAR(32) NOT NULL, "
+            "payload JSON NOT NULL, "
+            "created_by VARCHAR(128) NOT NULL, "
+            "created_at DATETIME NOT NULL, "
+            "confirmed_by VARCHAR(128), "
+            "confirmed_at DATETIME, "
+            "superseded_at DATETIME, "
+            "PRIMARY KEY (work_id, contract_type, contract_version)"
+            ")"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO enterprise_work_contracts "
+            "(work_id, tenant_id, contract_type, contract_version, status, payload, created_by, created_at) VALUES "
+            "('work_1', 'tenant', 'report-brief', 1, 'provisional', '{}', 'requester', '2026-07-14'), "
+            "('work_1', 'tenant', 'report-brief', 2, 'provisional', '{}', 'requester', '2026-07-14')"
+        )
+        connection.execute(insert(schema_versions).values(version=5, applied_at=NOW))
+
+    with pytest.raises(RuntimeError, match="multiple current versions"):
+        apply_migrations(engine)
+    indexes = {index["name"] for index in inspect(engine).get_indexes(work_contracts.name)}
+    assert "uq_work_contracts_current_type" not in indexes
 
 
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
@@ -331,6 +428,120 @@ def test_tenant_scope_hides_other_tenant_work(repository: SQLAlchemyWorkReposito
         repository.get_work(tenant_id="tenant_other", work_id="work_001")
     with pytest.raises(WorkNotFoundError):
         repository.list_events(tenant_id="tenant_other", work_id="work_001")
+
+
+def test_work_contract_create_confirm_and_revise_round_trip(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    first = make_contract()
+
+    assert repository.create_work_contract(first) == first
+    assert repository.create_work_contract(first) == first
+    confirmed = repository.confirm_work_contract(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+        expected_contract_version=1,
+        confirmed_by=first.created_by,
+        confirmed_at=NOW + timedelta(minutes=1),
+    )
+    revised = make_contract(
+        version=2,
+        title="2026年中国证券行业发展研究报告",
+        created_at=NOW + timedelta(minutes=2),
+    )
+
+    assert confirmed.status is WorkContractStatus.CONFIRMED
+    assert repository.confirm_work_contract(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+        expected_contract_version=1,
+        confirmed_by=first.created_by,
+        confirmed_at=NOW + timedelta(minutes=3),
+    ) == confirmed
+    assert repository.revise_work_contract(revised) == revised
+    assert repository.get_current_work_contract(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+    ) == revised
+    history = repository.list_work_contracts(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+    )
+    assert [entry.status for entry in history] == [
+        WorkContractStatus.SUPERSEDED,
+        WorkContractStatus.PROVISIONAL,
+    ]
+    assert history[0].confirmed_by == first.created_by
+
+
+def test_work_contract_confirmation_is_requester_scoped_and_version_checked(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    repository.create_work_contract(make_contract())
+
+    with pytest.raises(WorkContractConflictError, match="only the WorkItem requester"):
+        repository.confirm_work_contract(
+            tenant_id="tenant_001",
+            work_id="work_001",
+            contract_type="report-brief",
+            expected_contract_version=1,
+            confirmed_by="employee_other",
+            confirmed_at=NOW + timedelta(minutes=1),
+        )
+    with pytest.raises(WorkContractConflictError, match="version mismatch"):
+        repository.confirm_work_contract(
+            tenant_id="tenant_001",
+            work_id="work_001",
+            contract_type="report-brief",
+            expected_contract_version=2,
+            confirmed_by="employee_001",
+            confirmed_at=NOW + timedelta(minutes=1),
+        )
+
+
+def test_work_contract_failed_revision_rolls_back_current_version(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    first = make_contract()
+    repository.create_work_contract(first)
+
+    with pytest.raises(WorkContractConflictError, match="next version"):
+        repository.revise_work_contract(
+            make_contract(
+                version=3,
+                title="skipped version",
+                created_at=NOW + timedelta(minutes=1),
+            )
+        )
+
+    assert repository.get_current_work_contract(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+    ) == first
+    assert repository.list_work_contracts(
+        tenant_id=first.tenant_id,
+        work_id=first.work_id,
+        contract_type=first.contract_type,
+    ) == (first,)
+
+
+def test_work_contract_rejects_cross_tenant_and_non_requester_binding(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+
+    with pytest.raises(WorkNotFoundError):
+        repository.create_work_contract(replace(make_contract(), tenant_id="tenant_other"))
+    with pytest.raises(WorkContractConflictError, match="creator must be the requester"):
+        repository.create_work_contract(replace(make_contract(), created_by="employee_other"))
 
 
 def test_brief_must_round_trip_through_json(repository: SQLAlchemyWorkRepository) -> None:

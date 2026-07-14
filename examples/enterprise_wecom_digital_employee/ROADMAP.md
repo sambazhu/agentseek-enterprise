@@ -537,11 +537,27 @@ v0.1.0 的产品中心不再是 sandbox。它是企业工作任务运行层：
 industry-report pack 在 M4 建立 contract/model eval 基线，并在 M6 纳入 RC/GA 回归。
 `smart-office` 是未来 cookiecutter 第一方可选 pack，不随 v0.1.0 发布，首版不拆独立仓库。
 
+### M2 报告合同与知识优先研究
+
+M2 按四个小切片推进，避免把澄清、检索、外部授权和写作一次性耦合：
+
+1. **M2-01**：轻量、渐进式 `ReportBrief`；覆盖期可推断；默认交付 SLA 为 50 分钟；
+   通用 work ledger 保存 provisional/confirmed/superseded 版本。
+2. **M2-02**：Profile 增加 `knowledge_refs`；部门知识库经 MCP 接入；
+   本地 PostgreSQL 以 keyword + pgvector hybrid 模拟相同合同。
+3. **M2-03**：按批准的报告模板形成检索计划；先 list/glob，再 keyword/grep，
+   再 semantic 补充，最后只读取入选片段并形成 SourceRecord 与 coverage。
+4. **M2-04**：部门知识不足时向员工展示缺口，由员工选择 Gildata/公开搜索、
+   上传材料或保留缺口继续生成。
+
+正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
+`draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。
+
 ### 发布分段
 
 ```text
 v0.1.0-alpha1  Profile、DigitalEmployeePack、WorkItem、WorkEvent、状态机和恢复
-v0.1.0-alpha2  ReportBrief、材料、证据和研究
+v0.1.0-alpha2  渐进式 ReportBrief、部门知识库、材料、证据和研究
 v0.1.0-beta1   提纲、初稿、质量门和 Markdown
 v0.1.0-rc1     短连接延迟回复、DOCX、批准、交付和故障恢复
 v0.1.0-ga      一个限定行业报告主题端到端通过

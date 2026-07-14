@@ -18,6 +18,8 @@ from agentseek_work.models import (
     BudgetUsage,
     PackSnapshot,
     WorkBudget,
+    WorkContractSnapshot,
+    WorkContractStatus,
     WorkEvent,
     WorkItem,
     WorkStatus,
@@ -27,6 +29,7 @@ from agentseek_work.schema import (
     work_budget_reservations,
     work_budget_usage,
     work_budgets,
+    work_contracts,
     work_events,
     work_items,
 )
@@ -54,6 +57,10 @@ class ActiveWorkConflictError(WorkConflictError):
             "an active WorkItem already exists for this tenant, requester, "
             "digital employee, and playbook"
         )
+
+
+class WorkContractConflictError(WorkConflictError):
+    """Raised when a versioned WorkItem contract violates its lifecycle contract."""
 
 
 class NonJsonValueError(WorkRepositoryError):
@@ -280,6 +287,130 @@ class SQLAlchemyWorkRepository:
                 digital_employee_id=digital_employee_id,
                 playbook_id=playbook_id,
             )
+
+    def create_work_contract(self, contract: WorkContractSnapshot) -> WorkContractSnapshot:
+        """Create the first provisional contract for a WorkItem, idempotently."""
+
+        if contract.contract_version != 1:
+            raise ValueError("the first contract_version must be 1")
+        if contract.status is not WorkContractStatus.PROVISIONAL:
+            raise ValueError("the first WorkItem contract must be provisional")
+        try:
+            with self.engine.begin() as connection:
+                return _create_work_contract(connection, contract)
+        except WorkContractConflictError:
+            raise
+        except IntegrityError as exc:
+            raise WorkContractConflictError("WorkItem contract creation failed") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "WorkItem contract creation failed")
+
+    def get_current_work_contract(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        contract_type: str,
+    ) -> WorkContractSnapshot | None:
+        with self.engine.connect() as connection:
+            return _find_current_contract(
+                connection,
+                tenant_id=tenant_id,
+                work_id=work_id,
+                contract_type=contract_type,
+            )
+
+    def list_work_contracts(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        contract_type: str,
+    ) -> tuple[WorkContractSnapshot, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_contracts)
+                    .where(
+                        work_contracts.c.tenant_id == tenant_id,
+                        work_contracts.c.work_id == work_id,
+                        work_contracts.c.contract_type == contract_type,
+                    )
+                    .order_by(work_contracts.c.contract_version)
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_row_to_contract(row) for row in rows)
+
+    def confirm_work_contract(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+        contract_type: str,
+        expected_contract_version: int,
+        confirmed_by: str,
+        confirmed_at: datetime,
+    ) -> WorkContractSnapshot:
+        _require_aware_datetime(confirmed_at, "confirmed_at")
+        with self.engine.begin() as connection:
+            requester_id = _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            if confirmed_by != requester_id:
+                raise WorkContractConflictError("only the WorkItem requester can confirm its contract")
+            current = _find_current_contract(
+                connection,
+                tenant_id=tenant_id,
+                work_id=work_id,
+                contract_type=contract_type,
+                for_update=True,
+            )
+            if current is None:
+                raise WorkNotFoundError("current WorkItem contract was not found for tenant")
+            if current.contract_version != expected_contract_version:
+                raise WorkContractConflictError("WorkItem contract version mismatch")
+            if current.status is WorkContractStatus.CONFIRMED:
+                if current.confirmed_by == confirmed_by:
+                    return current
+                raise WorkContractConflictError("WorkItem contract was confirmed by another actor")
+            if current.status is not WorkContractStatus.PROVISIONAL:
+                raise WorkContractConflictError("only a provisional WorkItem contract can be confirmed")
+            confirmed = replace(
+                current,
+                status=WorkContractStatus.CONFIRMED,
+                confirmed_by=confirmed_by,
+                confirmed_at=confirmed_at,
+            )
+            updated = connection.execute(
+                update(work_contracts)
+                .where(
+                    work_contracts.c.work_id == work_id,
+                    work_contracts.c.contract_type == contract_type,
+                    work_contracts.c.contract_version == expected_contract_version,
+                    work_contracts.c.status == WorkContractStatus.PROVISIONAL.value,
+                )
+                .values(**_contract_lifecycle_values(confirmed))
+            )
+            if updated.rowcount != 1:
+                raise WorkContractConflictError("WorkItem contract confirmation lost a concurrent update")
+            return confirmed
+
+    def revise_work_contract(self, contract: WorkContractSnapshot) -> WorkContractSnapshot:
+        """Supersede the current contract and append its next provisional version atomically."""
+
+        if contract.status is not WorkContractStatus.PROVISIONAL:
+            raise ValueError("a revised WorkItem contract must start provisional")
+        try:
+            with self.engine.begin() as connection:
+                return _revise_work_contract(connection, contract)
+        except (WorkContractConflictError, WorkNotFoundError):
+            raise
+        except IntegrityError as exc:
+            raise WorkContractConflictError("WorkItem contract revision failed") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "WorkItem contract revision failed")
 
     def commit_transition(
         self,
@@ -924,6 +1055,135 @@ def _find_active_work(
     return _row_to_item(row) if row is not None else None
 
 
+def _require_owned_work(connection: Connection, *, tenant_id: str, work_id: str) -> str:
+    requester_id = connection.execute(
+        select(work_items.c.requester_id).where(
+            work_items.c.tenant_id == tenant_id,
+            work_items.c.work_id == work_id,
+        )
+    ).scalar_one_or_none()
+    if requester_id is None:
+        raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
+    return str(requester_id)
+
+
+def _create_work_contract(
+    connection: Connection,
+    contract: WorkContractSnapshot,
+) -> WorkContractSnapshot:
+    _require_contract_work_binding(connection, contract)
+    existing = _get_contract_version(connection, contract)
+    if existing is not None:
+        if existing == contract:
+            return existing
+        raise WorkContractConflictError("WorkItem contract version already exists with different values")
+    if _find_current_contract(
+        connection,
+        tenant_id=contract.tenant_id,
+        work_id=contract.work_id,
+        contract_type=contract.contract_type,
+        for_update=True,
+    ) is not None:
+        raise WorkContractConflictError("a current WorkItem contract already exists for this type")
+    connection.execute(insert(work_contracts).values(**_contract_values(contract)))
+    return contract
+
+
+def _revise_work_contract(
+    connection: Connection,
+    contract: WorkContractSnapshot,
+) -> WorkContractSnapshot:
+    _require_contract_work_binding(connection, contract)
+    existing = _get_contract_version(connection, contract)
+    if existing is not None:
+        if existing == contract:
+            return existing
+        raise WorkContractConflictError("WorkItem contract version already exists with different values")
+    current = _find_current_contract(
+        connection,
+        tenant_id=contract.tenant_id,
+        work_id=contract.work_id,
+        contract_type=contract.contract_type,
+        for_update=True,
+    )
+    if current is None:
+        raise WorkNotFoundError("current WorkItem contract was not found for tenant")
+    if contract.contract_version != current.contract_version + 1:
+        raise WorkContractConflictError("revised WorkItem contract must use the next version")
+    latest_timestamp = current.confirmed_at or current.created_at
+    if contract.created_at < latest_timestamp:
+        raise WorkContractConflictError("revised WorkItem contract predates its current version")
+    superseded = replace(
+        current,
+        status=WorkContractStatus.SUPERSEDED,
+        superseded_at=contract.created_at,
+    )
+    updated = connection.execute(
+        update(work_contracts)
+        .where(
+            work_contracts.c.work_id == current.work_id,
+            work_contracts.c.contract_type == current.contract_type,
+            work_contracts.c.contract_version == current.contract_version,
+            work_contracts.c.status == current.status.value,
+        )
+        .values(**_contract_lifecycle_values(superseded))
+    )
+    if updated.rowcount != 1:
+        raise WorkContractConflictError("WorkItem contract revision lost a concurrent update")
+    connection.execute(insert(work_contracts).values(**_contract_values(contract)))
+    return contract
+
+
+def _require_contract_work_binding(connection: Connection, contract: WorkContractSnapshot) -> None:
+    requester_id = _require_owned_work(
+        connection,
+        tenant_id=contract.tenant_id,
+        work_id=contract.work_id,
+    )
+    if contract.created_by != requester_id:
+        raise WorkContractConflictError("WorkItem contract creator must be the requester")
+
+
+def _get_contract_version(
+    connection: Connection,
+    contract: WorkContractSnapshot,
+) -> WorkContractSnapshot | None:
+    row = (
+        connection
+        .execute(
+            select(work_contracts).where(
+                work_contracts.c.tenant_id == contract.tenant_id,
+                work_contracts.c.work_id == contract.work_id,
+                work_contracts.c.contract_type == contract.contract_type,
+                work_contracts.c.contract_version == contract.contract_version,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return _row_to_contract(row) if row is not None else None
+
+
+def _find_current_contract(
+    connection: Connection,
+    *,
+    tenant_id: str,
+    work_id: str,
+    contract_type: str,
+    for_update: bool = False,
+) -> WorkContractSnapshot | None:
+    query = select(work_contracts).where(
+        work_contracts.c.tenant_id == tenant_id,
+        work_contracts.c.work_id == work_id,
+        work_contracts.c.contract_type == contract_type,
+        work_contracts.c.status != WorkContractStatus.SUPERSEDED.value,
+    )
+    if for_update:
+        query = query.with_for_update()
+    row = connection.execute(query).mappings().one_or_none()
+    return _row_to_contract(row) if row is not None else None
+
+
 def _locked_budget_usage(
     connection: Connection,
     *,
@@ -1184,6 +1444,47 @@ def _row_to_pack_snapshot(row: RowMapping | Mapping[str, Any]) -> PackSnapshot:
         content_artifact_id=str(row["content_artifact_id"]),
         asset_version_refs=tuple(str(value) for value in row["asset_version_refs"]),
         created_at=_aware_datetime(row["created_at"]),
+    )
+
+
+def _contract_values(contract: WorkContractSnapshot) -> dict[str, Any]:
+    return {
+        "work_id": contract.work_id,
+        "contract_type": contract.contract_type,
+        "contract_version": contract.contract_version,
+        "tenant_id": contract.tenant_id,
+        "status": contract.status.value,
+        "payload": _json_document(dict(contract.payload), "contract payload"),
+        "created_by": contract.created_by,
+        "created_at": contract.created_at,
+        "confirmed_by": contract.confirmed_by,
+        "confirmed_at": contract.confirmed_at,
+        "superseded_at": contract.superseded_at,
+    }
+
+
+def _contract_lifecycle_values(contract: WorkContractSnapshot) -> dict[str, Any]:
+    return {
+        "status": contract.status.value,
+        "confirmed_by": contract.confirmed_by,
+        "confirmed_at": contract.confirmed_at,
+        "superseded_at": contract.superseded_at,
+    }
+
+
+def _row_to_contract(row: RowMapping | Mapping[str, Any]) -> WorkContractSnapshot:
+    return WorkContractSnapshot(
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        contract_type=str(row["contract_type"]),
+        contract_version=int(row["contract_version"]),
+        status=WorkContractStatus(str(row["status"])),
+        payload=dict(row["payload"]),
+        created_by=str(row["created_by"]),
+        created_at=_aware_datetime(row["created_at"]),
+        confirmed_by=_optional_text(row["confirmed_by"]),
+        confirmed_at=_optional_datetime(row["confirmed_at"]),
+        superseded_at=_optional_datetime(row["superseded_at"]),
     )
 
 

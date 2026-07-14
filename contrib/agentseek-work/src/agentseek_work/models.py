@@ -35,6 +35,12 @@ class BudgetReservationStatus(StrEnum):
     FORFEITED = "forfeited"
 
 
+class WorkContractStatus(StrEnum):
+    PROVISIONAL = "provisional"
+    CONFIRMED = "confirmed"
+    SUPERSEDED = "superseded"
+
+
 TERMINAL_WORK_STATUSES = frozenset({
     WorkStatus.SUCCEEDED,
     WorkStatus.FAILED,
@@ -181,6 +187,57 @@ class PackSnapshot:
             raise ValueError("asset_version_refs must not contain duplicates")
         for asset_ref in self.asset_version_refs:
             _require_text(asset_ref, "asset_version_refs")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkContractSnapshot:
+    work_id: str
+    tenant_id: str
+    contract_type: str
+    contract_version: int
+    status: WorkContractStatus
+    payload: Mapping[str, Any]
+    created_by: str
+    created_at: datetime
+    confirmed_by: str | None = None
+    confirmed_at: datetime | None = None
+    superseded_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("work_id", "tenant_id", "contract_type", "created_by"):
+            _require_text(getattr(self, field_name), field_name)
+        if self.contract_version <= 0:
+            raise ValueError("contract_version must be greater than zero")
+        if not isinstance(self.status, WorkContractStatus):
+            raise TypeError("status must be a WorkContractStatus")
+        _require_aware(self.created_at, "created_at")
+        for field_name in ("confirmed_at", "superseded_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_aware(value, field_name)
+                if value < self.created_at:
+                    raise ValueError(f"{field_name} must not be earlier than created_at")
+        if self.confirmed_by is not None:
+            _require_text(self.confirmed_by, "confirmed_by")
+        if (self.confirmed_by is None) != (self.confirmed_at is None):
+            raise ValueError("confirmed_by and confirmed_at must be set together")
+        _validate_work_contract_lifecycle(self)
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+
+    @property
+    def is_current(self) -> bool:
+        return self.status is not WorkContractStatus.SUPERSEDED
+
+
+def _validate_work_contract_lifecycle(contract: WorkContractSnapshot) -> None:
+    if contract.status is WorkContractStatus.PROVISIONAL:
+        if contract.confirmed_at is not None or contract.superseded_at is not None:
+            raise ValueError("provisional contract cannot be confirmed or superseded")
+    elif contract.status is WorkContractStatus.CONFIRMED:
+        if contract.confirmed_at is None or contract.superseded_at is not None:
+            raise ValueError("confirmed contract requires confirmation and cannot be superseded")
+    elif contract.superseded_at is None:
+        raise ValueError("superseded contract requires superseded_at")
 
 
 @dataclass(frozen=True, slots=True)

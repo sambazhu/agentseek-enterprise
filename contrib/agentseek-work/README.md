@@ -2,7 +2,7 @@
 
 `agentseek-work` provides reusable enterprise work-ledger primitives for AgentSeek.
 
-Implemented M1 slices contain:
+Implemented M1 and M2-01 slices contain:
 
 - immutable `WorkItem`, `WorkEvent`, and `WorkBudget` contracts;
 - a deterministic, version-checked WorkItem state machine;
@@ -21,10 +21,14 @@ Implemented M1 slices contain:
 - immutable, content-addressed `PackSnapshot` metadata and WorkItem binding validation;
 - deterministic `DirectTurn`/`WorkItem` routing from server-owned tool contracts;
 - an opt-in Bub message-key/state-enrichment hook with an explicit template binding boundary.
+- generic, immutable `WorkContractSnapshot` versions with provisional, confirmed,
+  and superseded lifecycle states;
+- requester-only, expected-version contract confirmation and atomic contract revision;
+- one current version per WorkItem contract type, enforced by a partial unique index.
 
 The repository uses JSONB for `brief` and identifier snapshots on PostgreSQL.
 SQLite is used only for portable transaction-semantics tests. A deployment must
-apply schema revision 4 to PostgreSQL before enabling runtime composition.
+apply schema revision 6 to PostgreSQL before enabling M2 contract persistence.
 
 `PhaseWorker` reserves the phase's declared maximum resource use before the
 playbook can call a model or external service. It settles actual aggregate use
@@ -37,8 +41,9 @@ version)` implementation through `WorkPlaybookRegistry`. `agentseek-work` does
 not import the enterprise WeCom template or report-writing modules.
 
 It does not contain WeCom protocol handling, employee identity lookup, report-writing rules,
-file parsing, MCP configuration, or DOCX rendering. It does not yet provide approval
-decisions, outbox delivery, Profile loading, pack content storage, a production scheduler
+file parsing, MCP configuration, or DOCX rendering. Contract confirmation is not the later
+general approval ledger. The package does not yet provide approval decisions, outbox delivery,
+Profile loading, pack content storage, a production scheduler
 channel, or a concrete report playbook. Pack content loading, Profile authorization,
 Profile-scoped Skill materialization, and WorkItem factory policy belong to the template;
 this package persists generic ledger/snapshot metadata, validates bindings, and enforces

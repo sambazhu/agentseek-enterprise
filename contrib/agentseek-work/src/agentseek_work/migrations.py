@@ -5,11 +5,12 @@ from datetime import UTC, datetime
 from sqlalchemy import Connection, Engine, func, insert, inspect, select
 
 from agentseek_work.models import TERMINAL_WORK_STATUSES
-from agentseek_work.schema import metadata, schema_versions, work_items
+from agentseek_work.schema import metadata, schema_versions, work_contracts, work_items
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
+_CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
 
 
 def apply_migrations(engine: Engine) -> int:
@@ -45,6 +46,8 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_four(connection)
     elif version == 5:
         _apply_revision_five(connection)
+    elif version == 6:
+        _apply_revision_six(connection)
 
 
 def _apply_revision_four(connection: Connection) -> None:
@@ -98,3 +101,46 @@ def _apply_revision_five(connection: Connection) -> None:
         f"ON {work_items.name} (tenant_id, requester_id, digital_employee_id, playbook_id) "
         "WHERE status NOT IN ('succeeded', 'failed', 'cancelled')"
     )
+
+
+def _apply_revision_six(connection: Connection) -> None:
+    if not inspect(connection).has_table(work_contracts.name):
+        raise RuntimeError("cannot apply work schema revision 6; enterprise_work_contracts is missing")
+    existing = {str(column["name"]) for column in inspect(connection).get_columns(work_contracts.name)}
+    required = {
+        "work_id",
+        "tenant_id",
+        "contract_type",
+        "contract_version",
+        "status",
+        "payload",
+        "created_by",
+        "created_at",
+        "confirmed_by",
+        "confirmed_at",
+        "superseded_at",
+    }
+    missing = sorted(required - existing)
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"cannot apply work schema revision 6; enterprise_work_contracts is missing: {joined}")
+    duplicate_contracts = (
+        select(work_contracts.c.work_id, work_contracts.c.contract_type)
+        .where(work_contracts.c.status != "superseded")
+        .group_by(work_contracts.c.work_id, work_contracts.c.contract_type)
+        .having(func.count() > 1)
+        .subquery()
+    )
+    duplicate_count = connection.execute(select(func.count()).select_from(duplicate_contracts)).scalar_one()
+    if duplicate_count:
+        raise RuntimeError(
+            "cannot apply work schema revision 6; "
+            f"found {duplicate_count} WorkItem contract type(s) with multiple current versions"
+        )
+    indexes = {str(index["name"]) for index in inspect(connection).get_indexes(work_contracts.name)}
+    if _CURRENT_CONTRACT_INDEX not in indexes:
+        connection.exec_driver_sql(
+            f"CREATE UNIQUE INDEX {_CURRENT_CONTRACT_INDEX} "
+            f"ON {work_contracts.name} (work_id, contract_type) "
+            "WHERE status <> 'superseded'"
+        )

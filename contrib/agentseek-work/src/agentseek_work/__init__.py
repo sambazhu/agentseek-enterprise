@@ -7,6 +7,8 @@ from agentseek_work.models import (
     BudgetUsage,
     PackSnapshot,
     WorkBudget,
+    WorkContractSnapshot,
+    WorkContractStatus,
     WorkEvent,
     WorkItem,
     WorkStatus,
@@ -27,6 +29,7 @@ from agentseek_work.repository import (
     NonJsonValueError,
     SQLAlchemyWorkRepository,
     WorkConflictError,
+    WorkContractConflictError,
     WorkNotFoundError,
 )
 from agentseek_work.routing import (
@@ -79,6 +82,9 @@ __all__ = [
     "TransitionResult",
     "WorkBudget",
     "WorkConflictError",
+    "WorkContractConflictError",
+    "WorkContractSnapshot",
+    "WorkContractStatus",
     "WorkEvent",
     "WorkItem",
     "WorkMode",

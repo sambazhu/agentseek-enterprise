@@ -20,7 +20,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:
         Use only when the employee explicitly asks to create, write, prepare, track,
         or audit a complete formal industry report. This server-side tool is fixed
         to work_mode=required. It cannot run as a DirectTurn and does not start
-        research or invent a ReportBrief.
+        research or invent a confirmed ReportBrief.
         """
 
         try:
@@ -39,7 +39,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:
             f"{verb}正式报告任务：work_id={result.item.work_id}，"
             f"status={result.item.status.value}，phase={result.item.current_phase}。"
             "任务已固定数字员工、PackSnapshot、Playbook、Skill digest、运行版本和角色映射。"
-            "M1 阶段尚未实现 ReportBrief 与研究执行，请勿声称报告已经开始编写或已经完成。"
+            "下一步需要形成并确认轻量 ReportBrief；研究尚未启动，请勿声称报告已经开始编写或完成。"
         )
 
     @tool("get_current_work_status")

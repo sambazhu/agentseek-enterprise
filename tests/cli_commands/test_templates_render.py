@@ -105,13 +105,16 @@ def test_template_renders_without_unrendered_jinja(
         assert "pyyaml>=6.0" in dependencies
         pack_manifest = generated / "digital_employees" / "industry-report" / "pack.yaml"
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
+        report_brief = generated / "src" / generated.name / "report_brief.py"
         work_composition = generated / "src" / generated.name / "work_composition.py"
         work_tools = generated / "src" / generated.name / "work_tools.py"
         assert pack_manifest.is_file()
         assert pack_loader.is_file()
+        assert report_brief.is_file()
         assert work_composition.is_file()
         assert work_tools.is_file()
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
+        assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in work_composition.read_text(encoding="utf-8")
         env_example = (generated / ".env.example").read_text(encoding="utf-8")
         assert "AGENTSEEK_WORK_ENABLED=false" in env_example

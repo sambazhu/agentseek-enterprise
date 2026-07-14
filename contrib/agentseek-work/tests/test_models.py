@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
-from agentseek_work.models import PackSnapshot, WorkBudget, WorkItem, WorkStatus
+from agentseek_work.models import (
+    PackSnapshot,
+    WorkBudget,
+    WorkContractSnapshot,
+    WorkContractStatus,
+    WorkItem,
+    WorkStatus,
+)
 
 NOW = datetime(2026, 7, 12, tzinfo=UTC)
 
@@ -80,3 +87,48 @@ def test_pack_snapshot_is_immutable_and_rejects_duplicate_assets() -> None:
             asset_version_refs=("asset@1", "asset@1"),
             created_at=NOW,
         )
+
+
+def test_work_contract_copies_payload_and_enforces_lifecycle() -> None:
+    payload = {"title": "before"}
+    contract = WorkContractSnapshot(
+        work_id="work_001",
+        tenant_id="tenant_001",
+        contract_type="report-brief",
+        contract_version=1,
+        status=WorkContractStatus.PROVISIONAL,
+        payload=payload,
+        created_by="employee_001",
+        created_at=NOW,
+    )
+    payload["title"] = "after"
+
+    assert contract.payload["title"] == "before"
+    assert contract.is_current
+    with pytest.raises(TypeError):
+        cast(Any, contract.payload)["title"] = "blocked"
+    with pytest.raises(ValueError, match="requires confirmation"):
+        replace(contract, status=WorkContractStatus.CONFIRMED)
+    with pytest.raises(ValueError, match="requires superseded_at"):
+        replace(contract, status=WorkContractStatus.SUPERSEDED)
+
+
+def test_work_contract_confirmation_fields_are_paired_and_aware() -> None:
+    contract = WorkContractSnapshot(
+        work_id="work_001",
+        tenant_id="tenant_001",
+        contract_type="report-brief",
+        contract_version=1,
+        status=WorkContractStatus.CONFIRMED,
+        payload={"title": "report"},
+        created_by="employee_001",
+        created_at=NOW,
+        confirmed_by="employee_001",
+        confirmed_at=NOW,
+    )
+
+    assert contract.status is WorkContractStatus.CONFIRMED
+    with pytest.raises(ValueError, match="set together"):
+        replace(contract, confirmed_by=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replace(contract, confirmed_at=datetime(2026, 7, 12))
