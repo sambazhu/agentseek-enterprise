@@ -550,6 +550,10 @@ M2 按四个小切片推进，避免把澄清、检索、外部授权和写作�
 4. **M2-04**：部门知识不足时向员工展示缺口，由员工选择 Gildata/公开搜索、
    上传材料或保留缺口继续生成。
 
+当前状态：M2-01 已通过 Mac mini 活体验证；M2-02 已完成 Profile contract、只读
+MCP、本地 `pg_trgm + pgvector` 模拟器和管理员 Word 导入，等待 Mac mini 真实数据库
+与企微活体复核。M2-03/M2-04 尚未开始。
+
 正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
 `draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。
 

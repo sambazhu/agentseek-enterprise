@@ -10,6 +10,9 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - MCP policy and audit around the generated `call_mcp_tool` adapter;
 - production semantic memory through ContextSeek + PostgreSQL + pgvector with
   bge-m3 ONNX embeddings;
+- versioned digital-employee Profile references plus a read-only Strategic
+  Development Department knowledge MCP simulator with keyword, semantic, and
+  hybrid retrieval;
 - inbound WeCom AI Bot file/image/video/mixed media intake through
   `agentseek-files`, with AES decrypt, HMAC-scoped storage, and
   `[CurrentFiles]` prompt context.
@@ -34,6 +37,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 ```text
 {{ cookiecutter.project_slug }}/
   .agents/mcp.json
+  .agents/mcp.department-knowledge.example.json
   .agentseek/lifecycle.toml
   .env.example
   AGENTS.md
@@ -42,6 +46,8 @@ This template scaffolds a WeCom-facing enterprise digital employee:
   launchd/
     com.local.{{ cookiecutter.project_slug }}.plist
   scripts/
+    import_department_knowledge.py
+    probe_department_knowledge.py
     prod_check.py
     run_gateway.sh
   skills/
@@ -52,6 +58,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
     agent.py
     settings.py
     tools.py
+    department_knowledge/
   vendor/dameng/
 ```
 

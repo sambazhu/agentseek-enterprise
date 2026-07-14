@@ -132,8 +132,8 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.0.0"
-    assert first.item.digital_employee_profile_version == "1.0.0"
+    assert first.item.skill_set_version == "1.1.0"
+    assert first.item.digital_employee_profile_version == "1.1.0"
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests
     assert first.item.input_file_ids == ("file_001",)

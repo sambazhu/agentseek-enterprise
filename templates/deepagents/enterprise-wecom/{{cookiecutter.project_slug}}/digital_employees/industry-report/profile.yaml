@@ -10,18 +10,36 @@ responsibilities:
   - 报告版本修改和质量检查
   - 研究底稿与引用归档
 pack_id: industry-report
-pack_version: 1.0.0
+pack_version: 1.1.0
 supported_playbooks:
   - securities-industry-report@1
 skill_refs:
   - report-intake@1.0.0
 asset_refs:
   - strategic-report-docx@1.0.0
+knowledge_refs:
+  - id: strategic-development-department-knowledge
+    provider: mcp
+    server: department-knowledge
+    collection: strategic-development
+    owning_org: 战略发展部
+    contract_version: 1
+    retrieval_modes:
+      - keyword
+      - semantic
+      - hybrid
+    default_mode: hybrid
+    tools:
+      - knowledge_list_documents
+      - knowledge_search
+      - knowledge_read_chunks
 tool_grants:
   - analyze_file
+  - department-knowledge-read
   - gildata-read
 data_scopes:
   - requester-authorized-files
+  - strategic-development-department-knowledge
   - gildata-licensed-data
   - authorized-public-sources
 requester_scope:
@@ -31,4 +49,4 @@ escalation_policy:
   budget_exhausted: waiting_approval
   policy_denied: failed
 service_status: enabled
-profile_version: 1.0.0
+profile_version: 1.1.0

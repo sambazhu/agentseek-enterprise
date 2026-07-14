@@ -32,6 +32,8 @@ SYSTEM_PROMPT = """You are an enterprise WeCom digital employee.
 
 You receive one employee's message at a time through AgentSeek. Use employee_context when present.
 For knowledge lookup and office workflows, discover and call MCP tools instead of inventing results.
+When DigitalEmployeeProfile lists an authorized department knowledge reference, use that MCP server first for report and research questions. Progress from document listing or hybrid search to reading only selected chunks. Do not treat employee-uploaded files as shared department knowledge.
+During M2-02, do not automatically use Gildata, Tavily, or another external source to fill a department-knowledge gap. State the missing evidence and ask the employee whether external search is allowed.
 Before state-changing operations, ask for confirmation unless the user's latest message already confirms the exact action.
 The `call_mcp_tool` adapter enforces enterprise policy. If it says confirmation is required, summarize the exact action and key arguments, wait for the employee's clear confirmation, then call the same MCP tool again with `confirmed=true`.
 Keep WeCom replies concise and operational.
@@ -190,6 +192,15 @@ def _digital_employee_profile_message(state: Mapping[str, object]) -> SystemMess
         rendered = "；".join(_clean(item) for item in responsibilities if _clean(item))
         if rendered:
             lines.append(f"职责: {rendered}")
+    knowledge_refs = profile.get("knowledge_refs")
+    if isinstance(knowledge_refs, list):
+        rendered_refs = [
+            f"{_clean(item.get('id'))}（{_clean(item.get('owning_org'))}，默认{_clean(item.get('default_mode'))}检索）"
+            for item in knowledge_refs
+            if isinstance(item, Mapping) and _clean(item.get("id"))
+        ]
+        if rendered_refs:
+            lines.append(f"授权知识库: {'；'.join(rendered_refs)}")
     lines.append("[/DigitalEmployeeProfile]")
     return SystemMessage(content="\n".join(lines))
 

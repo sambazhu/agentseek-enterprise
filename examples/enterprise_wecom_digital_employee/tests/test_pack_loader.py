@@ -49,11 +49,19 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.0.0"
+    assert loaded.pack_version == "1.1.0"
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.0.0",)
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
+    assert loaded.profile.profile_version == "1.1.0"
+    assert len(loaded.profile.knowledge_refs) == 1
+    knowledge = loaded.profile.knowledge_refs[0]
+    assert knowledge.server == "department-knowledge"
+    assert knowledge.collection == "strategic-development"
+    assert knowledge.owning_org == "战略发展部"
+    assert knowledge.retrieval_modes == ("keyword", "semantic", "hybrid")
+    assert knowledge.default_mode == "hybrid"
     assert loaded.skill_digests == ("sha256:e6438c47f651af37c7a78d357f1d92819a25a21e1601be5f7e6b73ce053f42a5",)
     assert loaded.playbooks[0].entrypoint.endswith("reports.playbook:build_playbook")
 
@@ -119,6 +127,48 @@ def test_loader_rejects_undeclared_profile_refs_and_entrypoint_escape(tmp_path: 
         lambda document: document["skill_refs"].append("undeclared@1.0.0"),
     )
     with pytest.raises(PackLoadError, match="undeclared references"):
+        loader(pack_root).load()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("provider", "filesystem", "provider must be mcp"),
+        ("owning_org", "信息技术部", "owning_org must match"),
+        ("contract_version", 2, "contract_version must be 1"),
+        ("retrieval_modes", ["keyword", "external"], "unsupported retrieval mode"),
+        ("default_mode", "semantic", "default_mode must be enabled"),
+    ],
+)
+def test_loader_rejects_invalid_knowledge_reference(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    expected: str,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+
+    def mutate(document: dict) -> None:
+        reference = document["knowledge_refs"][0]
+        reference[field] = value
+        if field == "default_mode":
+            reference["retrieval_modes"] = ["keyword"]
+
+    rewrite_yaml(pack_root / "profile.yaml", mutate)
+
+    with pytest.raises(PackLoadError, match=expected):
+        loader(pack_root).load()
+
+
+def test_loader_rejects_write_capability_in_knowledge_contract(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+
+    def mutate(document: dict) -> None:
+        document["knowledge_refs"][0]["tools"].append("knowledge_publish_document")
+
+    rewrite_yaml(pack_root / "profile.yaml", mutate)
+
+    with pytest.raises(PackLoadError, match="read-only contract"):
         loader(pack_root).load()
 
     pack_root = copy_pack(tmp_path / "entrypoint-case")

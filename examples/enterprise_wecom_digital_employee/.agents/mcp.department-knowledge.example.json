@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "department-knowledge": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--offline",
+        "python",
+        "-m",
+        "enterprise_wecom_digital_employee.department_knowledge.mcp_server"
+      ]
+    }
+  }
+}

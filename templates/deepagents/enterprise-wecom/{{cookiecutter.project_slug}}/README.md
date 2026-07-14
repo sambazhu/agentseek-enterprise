@@ -59,6 +59,39 @@ environment. The gateway creates the semantic table on first startup. Point
 `AGENTSEEK_CTX_BGE_M3_TOKENIZER_PATH` at an exported bge-m3 ONNX model
 directory. This path uses onnxruntime and `tokenizers`, not torch.
 
+### Strategic Development Department Knowledge
+
+M2-02 adds a local read-only MCP simulator for the industry-report digital
+employee. It uses PostgreSQL `pgvector` for semantic retrieval and `pg_trgm`
+for keyword retrieval. It is separate from employee ContextSeek memory.
+
+Install both extensions in the target database, then set the
+`AGENTSEEK_DEPARTMENT_KNOWLEDGE_*` variables from `.env.example`. The simulator
+reuses the ContextSeek bge-m3 model paths when its dedicated model paths are
+empty.
+
+Merge the `department-knowledge` entry from
+`.agents/mcp.department-knowledge.example.json` into the deployment's existing
+`.agents/mcp.json` or `mcp.local.json`. Keep the existing Gildata and Tavily
+servers; do not replace the whole file.
+
+Place approved Word samples in an administrator-controlled directory outside
+the WeCom upload runtime, then import them:
+
+```bash
+uv run --env-file .env python scripts/import_department_knowledge.py \
+  /path/to/approved-strategy-documents
+```
+
+Supported import formats are `.docx`, `.md`, and `.txt`. Import is deterministic:
+re-importing a source filename in the same collection updates its chunks. Employee
+uploads remain request-scoped files and are never promoted automatically.
+
+The MCP contract exposes `knowledge_list_documents`, `knowledge_search`, and
+`knowledge_read_chunks`. For report work, query this department source first.
+If evidence remains missing, explain the gap and ask the employee before using
+Gildata or Tavily.
+
 ## Run
 
 ```bash

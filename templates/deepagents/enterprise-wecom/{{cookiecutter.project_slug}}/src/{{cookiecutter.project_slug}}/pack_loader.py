@@ -43,6 +43,19 @@ class AssetSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeRefSpec:
+    knowledge_id: str
+    provider: str
+    server: str
+    collection: str
+    owning_org: str
+    contract_version: int
+    retrieval_modes: tuple[str, ...]
+    default_mode: str
+    tools: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DigitalEmployeeProfile:
     digital_employee_id: str
     tenant_id: str
@@ -55,6 +68,7 @@ class DigitalEmployeeProfile:
     supported_playbooks: tuple[str, ...]
     skill_refs: tuple[str, ...]
     asset_refs: tuple[str, ...]
+    knowledge_refs: tuple[KnowledgeRefSpec, ...]
     tool_grants: tuple[str, ...]
     data_scopes: tuple[str, ...]
     requester_scope: tuple[str, ...]
@@ -224,11 +238,12 @@ class RestrictedPackLoader:
         pack_version: str,
     ) -> DigitalEmployeeProfile:
         profile = _yaml_mapping(self._local_file(path).read_bytes(), path)
+        owning_org = _required_text(profile, "owning_org")
         loaded = DigitalEmployeeProfile(
             digital_employee_id=_required_text(profile, "digital_employee_id"),
             tenant_id=_required_text(profile, "tenant_id"),
             name=_required_text(profile, "name"),
-            owning_org=_required_text(profile, "owning_org"),
+            owning_org=owning_org,
             job_role=_required_text(profile, "job_role"),
             responsibilities=_text_sequence(profile.get("responsibilities"), "responsibilities"),
             pack_id=_required_text(profile, "pack_id"),
@@ -236,6 +251,7 @@ class RestrictedPackLoader:
             supported_playbooks=_text_sequence(profile.get("supported_playbooks"), "supported_playbooks"),
             skill_refs=_text_sequence(profile.get("skill_refs"), "skill_refs"),
             asset_refs=_text_sequence(profile.get("asset_refs"), "asset_refs"),
+            knowledge_refs=_knowledge_refs(profile.get("knowledge_refs"), owning_org=owning_org),
             tool_grants=_text_sequence(profile.get("tool_grants"), "tool_grants"),
             data_scopes=_text_sequence(profile.get("data_scopes"), "data_scopes"),
             requester_scope=_text_sequence(profile.get("requester_scope"), "requester_scope"),
@@ -507,6 +523,51 @@ def _mapping_sequence(value: Any, label: str) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list):
         raise PackLoadError(f"{label} must be a list")
     return tuple(_require_mapping(item, label) for item in value)
+
+
+def _knowledge_refs(value: Any, *, owning_org: str) -> tuple[KnowledgeRefSpec, ...]:
+    entries = _mapping_sequence(value, "knowledge_refs")
+    references: list[KnowledgeRefSpec] = []
+    allowed_modes = {"keyword", "semantic", "hybrid"}
+    contract_tools = {
+        "knowledge_list_documents",
+        "knowledge_search",
+        "knowledge_read_chunks",
+    }
+    for entry in entries:
+        provider = _required_text(entry, "provider")
+        if provider != "mcp":
+            raise PackLoadError("knowledge_refs provider must be mcp")
+        reference_org = _required_text(entry, "owning_org")
+        if reference_org != owning_org:
+            raise PackLoadError("knowledge_refs owning_org must match the DigitalEmployeeProfile")
+        retrieval_modes = _text_sequence(entry.get("retrieval_modes"), "retrieval_modes")
+        if not set(retrieval_modes).issubset(allowed_modes):
+            raise PackLoadError("knowledge_refs contains an unsupported retrieval mode")
+        default_mode = _required_text(entry, "default_mode")
+        if default_mode not in retrieval_modes:
+            raise PackLoadError("knowledge_refs default_mode must be enabled in retrieval_modes")
+        contract_version = _required_int(entry, "contract_version")
+        if contract_version != 1:
+            raise PackLoadError("knowledge_refs contract_version must be 1")
+        tools = _text_sequence(entry.get("tools"), "knowledge_refs tools")
+        if set(tools) != contract_tools or len(tools) != len(contract_tools):
+            raise PackLoadError("knowledge_refs contract version 1 tools do not match the read-only contract")
+        references.append(
+            KnowledgeRefSpec(
+                knowledge_id=_required_text(entry, "id"),
+                provider=provider,
+                server=_required_text(entry, "server"),
+                collection=_required_text(entry, "collection"),
+                owning_org=reference_org,
+                contract_version=contract_version,
+                retrieval_modes=retrieval_modes,
+                default_mode=default_mode,
+                tools=tools,
+            )
+        )
+    _require_unique((reference.knowledge_id for reference in references), "knowledge reference id")
+    return tuple(references)
 
 
 def _text_sequence(value: Any, label: str) -> tuple[str, ...]:

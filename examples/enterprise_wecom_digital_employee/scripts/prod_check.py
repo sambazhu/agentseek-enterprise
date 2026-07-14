@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     check_identity(env, project_root, report)
     check_memory(env, project_root, report)
     check_contextseek(env, project_root, report)
+    check_department_knowledge(env, project_root, report)
     check_files(env, project_root, report)
     check_mcp(env, project_root, report)
     check_tracing(env, report)
@@ -227,6 +228,29 @@ def check_files(env: dict[str, str], project_root: Path, report: CheckReport) ->
         report.ok("inbound file extractor is local")
     else:
         report.warn(f"AGENTSEEK_FILES_EXTRACTOR={extractor!r} is not a verified extractor")
+
+
+def check_department_knowledge(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
+    url = env.get("AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL", "").strip()
+    if not url:
+        report.warn("department knowledge MCP simulator is not configured")
+        return
+    report.ok("department knowledge PostgreSQL URL is set")
+    warn_if_placeholder_password(url, report, "department knowledge")
+    if env.get("AGENTSEEK_DEPARTMENT_KNOWLEDGE_OWNING_ORG", "").strip() == "战略发展部":
+        report.ok("department knowledge owning organization is 战略发展部")
+    else:
+        report.fail("AGENTSEEK_DEPARTMENT_KNOWLEDGE_OWNING_ORG must be 战略发展部")
+    if env.get("AGENTSEEK_DEPARTMENT_KNOWLEDGE_DIMS", "1024").strip() == "1024":
+        report.ok("department knowledge bge-m3 dimensions are 1024")
+    else:
+        report.fail("AGENTSEEK_DEPARTMENT_KNOWLEDGE_DIMS must be 1024")
+    model_key = "AGENTSEEK_DEPARTMENT_KNOWLEDGE_ONNX_MODEL_PATH"
+    tokenizer_key = "AGENTSEEK_DEPARTMENT_KNOWLEDGE_TOKENIZER_PATH"
+    if env.get(model_key, "").strip():
+        check_existing_path(env, project_root, report, model_key, file_expected=True)
+    if env.get(tokenizer_key, "").strip():
+        check_existing_path(env, project_root, report, tokenizer_key, file_expected=True)
 
 
 def check_mcp(env: dict[str, str], project_root: Path, report: CheckReport) -> None:

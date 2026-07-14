@@ -108,17 +108,30 @@ def test_template_renders_without_unrendered_jinja(
         report_brief = generated / "src" / generated.name / "report_brief.py"
         work_composition = generated / "src" / generated.name / "work_composition.py"
         work_tools = generated / "src" / generated.name / "work_tools.py"
+        knowledge_server = generated / "src" / generated.name / "department_knowledge" / "mcp_server.py"
+        knowledge_import = generated / "scripts" / "import_department_knowledge.py"
+        knowledge_probe = generated / "scripts" / "probe_department_knowledge.py"
+        knowledge_config = generated / ".agents" / "mcp.department-knowledge.example.json"
         assert pack_manifest.is_file()
         assert pack_loader.is_file()
         assert report_brief.is_file()
         assert work_composition.is_file()
         assert work_tools.is_file()
+        assert knowledge_server.is_file()
+        assert knowledge_import.is_file()
+        assert knowledge_probe.is_file()
+        assert knowledge_config.is_file()
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
         assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in work_composition.read_text(encoding="utf-8")
+        assert "{{" not in knowledge_server.read_text(encoding="utf-8")
+        assert "{{" not in knowledge_import.read_text(encoding="utf-8")
+        assert "{{" not in knowledge_probe.read_text(encoding="utf-8")
+        assert "{{" not in knowledge_config.read_text(encoding="utf-8")
         env_example = (generated / ".env.example").read_text(encoding="utf-8")
         assert "AGENTSEEK_WORK_ENABLED=false" in env_example
         assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example
+        assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
 
     lifecycle = generated / ".agentseek" / "lifecycle.toml"
     assert lifecycle.is_file(), f"missing .agentseek/lifecycle.toml in {generated}"

@@ -427,6 +427,17 @@ def _profile_summary(profile: DigitalEmployeeProfile) -> dict[str, object]:
         "supported_playbooks": list(profile.supported_playbooks),
         "skill_refs": list(profile.skill_refs),
         "asset_refs": list(profile.asset_refs),
+        "knowledge_refs": [
+            {
+                "id": reference.knowledge_id,
+                "server": reference.server,
+                "collection": reference.collection,
+                "owning_org": reference.owning_org,
+                "default_mode": reference.default_mode,
+                "tools": list(reference.tools),
+            }
+            for reference in profile.knowledge_refs
+        ],
         "profile_version": profile.profile_version,
     }
 
@@ -435,6 +446,20 @@ def _permissions_digest(profile: DigitalEmployeeProfile) -> str:
     payload = {
         "tool_grants": profile.tool_grants,
         "data_scopes": profile.data_scopes,
+        "knowledge_refs": [
+            {
+                "id": reference.knowledge_id,
+                "provider": reference.provider,
+                "server": reference.server,
+                "collection": reference.collection,
+                "owning_org": reference.owning_org,
+                "contract_version": reference.contract_version,
+                "retrieval_modes": reference.retrieval_modes,
+                "default_mode": reference.default_mode,
+                "tools": reference.tools,
+            }
+            for reference in profile.knowledge_refs
+        ],
         "requester_scope": profile.requester_scope,
         "escalation_policy": dict(profile.escalation_policy),
     }

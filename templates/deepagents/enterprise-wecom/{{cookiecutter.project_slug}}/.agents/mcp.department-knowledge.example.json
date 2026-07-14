@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "department-knowledge": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--offline",
+        "python",
+        "-m",
+        "{{ cookiecutter.project_slug }}.department_knowledge.mcp_server"
+      ]
+    }
+  }
+}
