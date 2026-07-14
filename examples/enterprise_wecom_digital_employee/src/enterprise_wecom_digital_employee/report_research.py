@@ -43,7 +43,9 @@ class ResearchQuestion:
     prompt: str
     search_mode: str
     top_k: int
-    minimum_score: float
+    minimum_fused_score: float
+    minimum_keyword_score: float
+    minimum_semantic_score: float
 
     def __post_init__(self) -> None:
         _require_text(self.question_id, "question_id")
@@ -52,8 +54,13 @@ class ResearchQuestion:
             raise ValueError("search_mode is unsupported")
         if not 1 <= self.top_k <= 20:
             raise ValueError("top_k must be between 1 and 20")
-        if not 0.0 <= self.minimum_score <= 1.0:
-            raise ValueError("minimum_score must be between 0 and 1")
+        for field_name in (
+            "minimum_fused_score",
+            "minimum_keyword_score",
+            "minimum_semantic_score",
+        ):
+            if not 0.0 <= getattr(self, field_name) <= 1.0:
+                raise ValueError(f"{field_name} must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +110,9 @@ class ReportResearchTemplate:
                             "prompt": question.prompt,
                             "search_mode": question.search_mode,
                             "top_k": question.top_k,
-                            "minimum_score": question.minimum_score,
+                            "minimum_fused_score": question.minimum_fused_score,
+                            "minimum_keyword_score": question.minimum_keyword_score,
+                            "minimum_semantic_score": question.minimum_semantic_score,
                         }
                         for question in section.questions
                     ],
@@ -138,6 +147,8 @@ class KnowledgeHit:
     chunk_id: str
     title: str
     score: float
+    keyword_score: float | None
+    semantic_score: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +239,9 @@ def load_research_template(path: Path) -> ReportResearchTemplate:
                 prompt=_text(question, "prompt"),
                 search_mode=_text(question, "search_mode"),
                 top_k=int(question.get("top_k", 4)),
-                minimum_score=float(question.get("minimum_score", 0.0)),
+                minimum_fused_score=float(question.get("minimum_fused_score", 0.02)),
+                minimum_keyword_score=float(question.get("minimum_keyword_score", 0.08)),
+                minimum_semantic_score=float(question.get("minimum_semantic_score", 0.7)),
             ))
         sections.append(ResearchSection(
             section_id=_text(section, "section_id"),
@@ -324,7 +337,7 @@ async def _search_plan(
                 {"query": query, "search_mode": question.search_mode, "top_k": question.top_k},
                 False,
             )
-            hits_by_question[question.question_id] = _parse_hits(raw, minimum_score=question.minimum_score)
+            hits_by_question[question.question_id] = _parse_hits(raw, question=question)
     return hits_by_question, query_by_question
 
 
@@ -411,6 +424,8 @@ def _persist_sources(
                     "document_id": hit.document_id,
                     "chunk_id": chunk_id,
                     "score": hit.score,
+                    "keyword_score": hit.keyword_score,
+                    "semantic_score": hit.semantic_score,
                     "content_hash": content_hash,
                 }),
                 confidentiality_level="internal",
@@ -471,21 +486,53 @@ def _coverage(plan: ReportResearchPlan, sources: Sequence[SourceRecord]) -> Rese
     )
 
 
-def _parse_hits(raw: str, *, minimum_score: float) -> tuple[KnowledgeHit, ...]:
+def _parse_hits(raw: str, *, question: ResearchQuestion) -> tuple[KnowledgeHit, ...]:
     payload = _json_mapping(raw, "knowledge_search")
     hits: list[KnowledgeHit] = []
     for raw_hit in _sequence(payload.get("hits", []), "hits"):
         hit = _mapping(raw_hit, "hit")
         score = float(hit.get("score", 0.0))
-        if score < minimum_score:
+        keyword_score = _optional_score(hit, "keyword_score")
+        semantic_score = _optional_score(hit, "semantic_score")
+        if not _passes_relevance_gate(
+            question,
+            score=score,
+            keyword_score=keyword_score,
+            semantic_score=semantic_score,
+        ):
             continue
         hits.append(KnowledgeHit(
             document_id=_text(hit, "document_id"),
             chunk_id=_text(hit, "chunk_id"),
             title=_text(hit, "title"),
             score=score,
+            keyword_score=keyword_score,
+            semantic_score=semantic_score,
         ))
     return tuple(hits)
+
+
+def _passes_relevance_gate(
+    question: ResearchQuestion,
+    *,
+    score: float,
+    keyword_score: float | None,
+    semantic_score: float | None,
+) -> bool:
+    if question.search_mode == "keyword":
+        return (keyword_score if keyword_score is not None else score) >= question.minimum_keyword_score
+    if question.search_mode == "semantic":
+        return (semantic_score if semantic_score is not None else score) >= question.minimum_semantic_score
+    return any((
+        score >= question.minimum_fused_score,
+        keyword_score is not None and keyword_score >= question.minimum_keyword_score,
+        semantic_score is not None and semantic_score >= question.minimum_semantic_score,
+    ))
+
+
+def _optional_score(value: Mapping[str, Any], field_name: str) -> float | None:
+    raw = value.get(field_name)
+    return float(raw) if raw is not None else None
 
 
 def _parse_chunks(raw: str) -> dict[str, Mapping[str, Any]]:

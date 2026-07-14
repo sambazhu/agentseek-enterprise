@@ -61,6 +61,9 @@ Document content is not returned.
 
 Output: ranked excerpts, `document_id`, `chunk_id`, headings, and component scores.
 Hybrid mode combines keyword and semantic rankings with reciprocal rank fusion.
+The hybrid `score` is an RRF rank score rather than a calibrated confidence value.
+Report research therefore applies separate fused, keyword, and semantic relevance
+thresholds from its pack-pinned research manifest.
 
 ### `knowledge_read_chunks`
 

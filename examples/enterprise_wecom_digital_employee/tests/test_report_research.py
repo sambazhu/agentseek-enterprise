@@ -46,6 +46,12 @@ def test_research_template_has_stable_unique_sections_and_questions() -> None:
     assert template.report_asset_ref == "strategic-report-docx@1.0.0"
     assert len(template.sections) == 5
     assert len({section.section_id for section in template.sections}) == 5
+    assert all(question.minimum_fused_score == 0.02 for section in template.sections for question in section.questions)
+    assert all(
+        question.minimum_semantic_score == 0.7
+        for section in template.sections
+        for question in section.questions
+    )
     assert template.digest.startswith("sha256:")
 
 
@@ -102,7 +108,6 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
                 }]
             }, ensure_ascii=False)
         query = str(arguments["query"])
-        hits = []
         if "目标、重点任务和实施路径" in query:
             hits = [{
                 "document_id": "doc-digital",
@@ -110,7 +115,20 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
                 "title": "证券行业数字化规划",
                 "heading": "总体目标",
                 "excerpt": "提升客户服务、经营管理和风险控制能力。",
-                "score": 0.765,
+                "score": 0.032258,
+                "keyword_score": None,
+                "semantic_score": 0.843804,
+            }]
+        else:
+            hits = [{
+                "document_id": "doc-unrelated",
+                "chunk_id": "chunk-unrelated",
+                "title": "无关材料",
+                "heading": "其他",
+                "excerpt": "与当前研究问题没有充分关联。",
+                "score": 0.015,
+                "keyword_score": None,
+                "semantic_score": 0.664,
             }]
         return json.dumps({"hits": hits}, ensure_ascii=False)
 
@@ -146,6 +164,15 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
     assert {server for server, _, _, _ in calls} == {"department-knowledge"}
     assert {tool for _, tool, _, _ in calls} == {"knowledge_search", "knowledge_read_chunks"}
     assert all(not confirmed for _, _, _, confirmed in calls)
+    read_arguments = [
+        arguments
+        for _, tool_name, arguments, _ in calls
+        if tool_name == "knowledge_read_chunks"
+    ]
+    assert read_arguments == [
+        {"chunk_ids": ["chunk-digital"]},
+        {"chunk_ids": ["chunk-digital"]},
+    ]
     search_queries = [
         str(arguments["query"])
         for _, tool_name, arguments, _ in calls

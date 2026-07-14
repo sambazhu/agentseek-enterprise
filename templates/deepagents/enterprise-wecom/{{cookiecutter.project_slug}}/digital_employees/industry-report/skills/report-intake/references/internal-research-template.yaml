@@ -10,7 +10,9 @@ sections:
         prompt: 证券行业当前核心趋势、主要变化和重大不确定性是什么？
         search_mode: hybrid
         top_k: 4
-        minimum_score: 0.05
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.08
+        minimum_semantic_score: 0.70
   - section_id: industry-overview
     title: 行业发展概况
     questions:
@@ -18,7 +20,9 @@ sections:
         prompt: 证券行业数字化转型的目标、重点任务和实施路径是什么？
         search_mode: hybrid
         top_k: 4
-        minimum_score: 0.05
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.08
+        minimum_semantic_score: 0.70
   - section_id: operating-benchmark
     title: 证券公司经营差异
     questions:
@@ -26,7 +30,9 @@ sections:
         prompt: 证券公司的收入利润、ROE、资本效率和业务结构有哪些可比目标？
         search_mode: hybrid
         top_k: 4
-        minimum_score: 0.05
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.08
+        minimum_semantic_score: 0.70
   - section_id: business-line-benchmark
     title: 五矿证券业务线对标
     questions:
@@ -34,7 +40,9 @@ sections:
         prompt: 财富、投行、自营权益、自营固收、资管五条业务线应如何对标分析？
         search_mode: hybrid
         top_k: 4
-        minimum_score: 0.05
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.08
+        minimum_semantic_score: 0.70
   - section_id: action-recommendations
     title: 借鉴点与行动建议
     questions:
@@ -42,4 +50,6 @@ sections:
         prompt: 战略行动建议的优先级、适用条件、依赖、风险和验证指标是什么？
         search_mode: hybrid
         top_k: 4
-        minimum_score: 0.05
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.08
+        minimum_semantic_score: 0.70
