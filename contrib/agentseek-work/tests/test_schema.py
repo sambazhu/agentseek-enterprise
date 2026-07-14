@@ -5,6 +5,7 @@ from agentseek_work.schema import (
     work_contracts,
     work_events,
     work_items,
+    work_sources,
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
@@ -68,3 +69,15 @@ def test_postgresql_work_contract_ddl_is_versioned_and_lifecycle_checked() -> No
     assert "CONSTRAINT ck_work_contract_status CHECK" in ddl
     assert "CONSTRAINT ck_work_contract_confirmation_pair CHECK" in ddl
     assert "CONSTRAINT ck_work_contract_lifecycle CHECK" in ddl
+
+
+def test_postgresql_work_source_ddl_is_tenant_scoped_and_provenance_checked() -> None:
+    ddl = str(CreateTable(work_sources).compile(dialect=postgresql.dialect()))
+
+    assert "source_id VARCHAR(160) NOT NULL" in ddl
+    assert "allowed_uses JSONB NOT NULL" in ddl
+    assert "metadata JSONB NOT NULL" in ddl
+    assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl
+    assert "CONSTRAINT ck_work_source_type CHECK" in ddl
+    assert "CONSTRAINT ck_work_source_snapshot_status CHECK" in ddl
+    assert "CONSTRAINT ck_work_source_excerpt_status CHECK" in ddl

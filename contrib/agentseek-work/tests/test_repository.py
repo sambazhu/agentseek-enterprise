@@ -6,7 +6,11 @@ import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 from agentseek_work.models import (
     ActorType,
+    ExcerptStatus,
     PackSnapshot,
+    SnapshotStatus,
+    SourceRecord,
+    SourceType,
     WorkBudget,
     WorkContractSnapshot,
     WorkContractStatus,
@@ -21,7 +25,7 @@ from agentseek_work.repository import (
     WorkContractConflictError,
     WorkNotFoundError,
 )
-from agentseek_work.schema import schema_versions, work_contracts
+from agentseek_work.schema import schema_versions, work_contracts, work_sources
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
 from sqlalchemy import Connection, create_engine, insert, inspect
 from sqlalchemy.exc import IntegrityError
@@ -112,6 +116,31 @@ def make_contract(
         payload={"title": title},
         created_by="employee_001",
         created_at=created_at,
+    )
+
+
+def make_source(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> SourceRecord:
+    return SourceRecord(
+        source_id="source_sha256_abc",
+        work_id=work_id,
+        tenant_id=tenant_id,
+        source_type=SourceType.DEPARTMENT_KNOWLEDGE,
+        title="证券行业规划",
+        publisher="战略发展部",
+        retrieved_at=NOW,
+        locator="mcp://department-knowledge/doc-1#chunk-1",
+        uri_digest="sha256:uri",
+        content_hash="sha256:content",
+        result_digest="sha256:result",
+        confidentiality_level="internal",
+        authority_level="approved_internal",
+        allowed_uses=("research", "citation"),
+        snapshot_policy="reference_only",
+        snapshot_status=SnapshotStatus.REFERENCED,
+        retrieval_query_digest="sha256:query",
+        excerpt_status=ExcerptStatus.STORED,
+        license_terms_ref="internal-policy://department-knowledge/v1",
+        metadata={"section_ids": ["industry-overview"]},
     )
 
 
@@ -294,6 +323,28 @@ def test_revision_six_fails_closed_when_current_contracts_are_duplicated() -> No
     assert "uq_work_contracts_current_type" not in indexes
 
 
+def test_revision_seven_creates_source_ledger_and_fails_closed_on_partial_table() -> None:
+    clean = create_engine("sqlite+pysqlite:///:memory:")
+    assert apply_migrations(clean) == LATEST_SCHEMA_VERSION
+    columns = {column["name"] for column in inspect(clean).get_columns(work_sources.name)}
+    assert {"source_id", "work_id", "tenant_id", "result_digest", "metadata"} <= columns
+
+    partial = create_engine("sqlite+pysqlite:///:memory:")
+    with partial.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_schema_versions (version INTEGER PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        )
+        _create_legacy_work_items_table(connection)
+        connection.exec_driver_sql(
+            "CREATE TABLE enterprise_work_sources ("
+            "source_id VARCHAR(160) PRIMARY KEY, work_id VARCHAR(128), tenant_id VARCHAR(128))"
+        )
+        connection.execute(insert(schema_versions).values(version=6, applied_at=NOW))
+
+    with pytest.raises(RuntimeError, match=r"revision 7.*is missing"):
+        apply_migrations(partial)
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -302,6 +353,24 @@ def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository
     assert first.created
     assert not replay.created
     assert replay.item.work_id == original.work_id
+
+
+def test_source_record_round_trip_is_idempotent_tenant_scoped_and_immutable(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    source = make_source()
+
+    assert repository.put_source_record(source) == source
+    assert repository.put_source_record(source) == source
+    assert repository.get_source_record(tenant_id=source.tenant_id, source_id=source.source_id) == source
+    assert repository.list_source_records(tenant_id=source.tenant_id, work_id=source.work_id) == (source,)
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_source_record(replace(source, title="changed"))
+    with pytest.raises(WorkNotFoundError):
+        repository.get_source_record(tenant_id="tenant_other", source_id=source.source_id)
+    with pytest.raises(WorkNotFoundError):
+        repository.put_source_record(replace(source, source_id="source_other", tenant_id="tenant_other"))
 
 
 def test_different_request_is_rejected_when_same_playbook_scope_is_active(

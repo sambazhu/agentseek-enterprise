@@ -16,7 +16,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from agentseek_work.models import ActorType, BudgetReservationStatus, WorkContractStatus, WorkStatus
+from agentseek_work.models import (
+    ActorType,
+    BudgetReservationStatus,
+    ExcerptStatus,
+    SnapshotStatus,
+    SourceType,
+    WorkContractStatus,
+    WorkStatus,
+)
 
 metadata = MetaData()
 json_document = JSON().with_variant(JSONB(), "postgresql")
@@ -30,6 +38,9 @@ work_status_values = _sql_values([status.value for status in WorkStatus])
 actor_type_values = _sql_values([actor_type.value for actor_type in ActorType])
 budget_reservation_status_values = _sql_values([status.value for status in BudgetReservationStatus])
 work_contract_status_values = _sql_values([status.value for status in WorkContractStatus])
+source_type_values = _sql_values([source_type.value for source_type in SourceType])
+snapshot_status_values = _sql_values([status.value for status in SnapshotStatus])
+excerpt_status_values = _sql_values([status.value for status in ExcerptStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -147,6 +158,45 @@ work_contracts = Table(
 )
 
 Index("ix_work_contracts_tenant_work", work_contracts.c.tenant_id, work_contracts.c.work_id)
+
+work_sources = Table(
+    "enterprise_work_sources",
+    metadata,
+    Column("source_id", String(160), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column("source_type", String(48), nullable=False),
+    Column("title", String(1024), nullable=False),
+    Column("publisher", String(512), nullable=False),
+    Column("published_at", DateTime(timezone=True)),
+    Column("retrieved_at", DateTime(timezone=True), nullable=False),
+    Column("locator", String(2048)),
+    Column("uri_digest", String(160), nullable=False),
+    Column("file_id", String(256)),
+    Column("confidentiality_level", String(32), nullable=False),
+    Column("authority_level", String(64), nullable=False),
+    Column("allowed_uses", json_document, nullable=False),
+    Column("content_hash", String(160), nullable=False),
+    Column("result_digest", String(160), nullable=False),
+    Column("snapshot_policy", String(64), nullable=False),
+    Column("snapshot_status", String(32), nullable=False),
+    Column("snapshot_artifact_id", String(256)),
+    Column("license_restriction", String(1024)),
+    Column("retrieval_query_digest", String(160), nullable=False),
+    Column("license_terms_ref", String(512)),
+    Column("excerpt_status", String(32), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    CheckConstraint(f"source_type IN ({source_type_values})", name="ck_work_source_type"),
+    CheckConstraint(f"snapshot_status IN ({snapshot_status_values})", name="ck_work_source_snapshot_status"),
+    CheckConstraint(f"excerpt_status IN ({excerpt_status_values})", name="ck_work_source_excerpt_status"),
+)
+
+Index("ix_work_sources_tenant_work", work_sources.c.tenant_id, work_sources.c.work_id)
 
 work_budget_usage = Table(
     "enterprise_work_budget_usage",

@@ -90,7 +90,14 @@ uploads remain request-scoped files and are never promoted automatically.
 The MCP contract exposes `knowledge_list_documents`, `knowledge_search`, and
 `knowledge_read_chunks`. For report work, query this department source first.
 If evidence remains missing, explain the gap and ask the employee before using
-Gildata or Tavily.
+external MCP tools.
+
+M2-03 adds a template-driven formal path. Create a WorkItem, save a lightweight
+ReportBrief, show its exact version to the requester, and confirm it only after an
+explicit reply. `run_internal_report_research` then executes the Pack-pinned
+section questions against `department-knowledge`, stores provenance-only
+SourceRecords in the work ledger, and returns section coverage and unresolved
+gaps. It does not write report prose or call Tavily/Gildata.
 
 ## Run
 

@@ -4,7 +4,11 @@ from typing import Any, cast
 
 import pytest
 from agentseek_work.models import (
+    ExcerptStatus,
     PackSnapshot,
+    SnapshotStatus,
+    SourceRecord,
+    SourceType,
     WorkBudget,
     WorkContractSnapshot,
     WorkContractStatus,
@@ -132,3 +136,38 @@ def test_work_contract_confirmation_fields_are_paired_and_aware() -> None:
         replace(contract, confirmed_by=None)
     with pytest.raises(ValueError, match="timezone-aware"):
         replace(contract, confirmed_at=datetime(2026, 7, 12))
+
+
+def test_source_record_is_immutable_and_validates_provenance() -> None:
+    metadata = {"section_ids": ["industry-overview"]}
+    source = SourceRecord(
+        source_id="source_sha256_abc",
+        work_id="work_001",
+        tenant_id="tenant_001",
+        source_type=SourceType.DEPARTMENT_KNOWLEDGE,
+        title="证券行业规划",
+        publisher="战略发展部",
+        retrieved_at=NOW,
+        locator="mcp://department-knowledge/doc-1#chunk-1",
+        uri_digest="sha256:uri",
+        content_hash="sha256:content",
+        result_digest="sha256:result",
+        confidentiality_level="internal",
+        authority_level="approved_internal",
+        allowed_uses=("research", "citation"),
+        snapshot_policy="reference_only",
+        snapshot_status=SnapshotStatus.REFERENCED,
+        retrieval_query_digest="sha256:query",
+        excerpt_status=ExcerptStatus.STORED,
+        license_terms_ref="internal-policy://department-knowledge/v1",
+        metadata=metadata,
+    )
+    metadata["section_ids"] = []
+
+    assert source.metadata["section_ids"] == ["industry-overview"]
+    with pytest.raises(TypeError):
+        cast(Any, source.metadata)["changed"] = True
+    with pytest.raises(ValueError, match="duplicates"):
+        replace(source, allowed_uses=("research", "research"))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replace(source, retrieved_at=datetime(2026, 7, 12))

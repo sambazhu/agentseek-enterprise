@@ -25,10 +25,12 @@ Implemented M1 and M2-01 slices contain:
   and superseded lifecycle states;
 - requester-only, expected-version contract confirmation and atomic contract revision;
 - one current version per WorkItem contract type, enforced by a partial unique index.
+- immutable, tenant-scoped `SourceRecord` provenance with locator/query/result
+  digests, license and snapshot status, plus idempotent repository operations.
 
 The repository uses JSONB for `brief` and identifier snapshots on PostgreSQL.
 SQLite is used only for portable transaction-semantics tests. A deployment must
-apply schema revision 6 to PostgreSQL before enabling M2 contract persistence.
+apply schema revision 7 to PostgreSQL before enabling M2 source persistence.
 
 `PhaseWorker` reserves the phase's declared maximum resource use before the
 playbook can call a model or external service. It settles actual aggregate use

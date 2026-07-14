@@ -22,6 +22,8 @@ from agentseek_work import (
     ToolContract,
     ToolContractRegistry,
     WorkBudget,
+    WorkContractSnapshot,
+    WorkContractStatus,
     WorkItem,
     WorkMode,
     WorkNotFoundError,
@@ -40,6 +42,7 @@ from {{ cookiecutter.project_slug }}.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
+from {{ cookiecutter.project_slug }}.report_brief import REPORT_BRIEF_CONTRACT_TYPE, ReportBrief
 from {{ cookiecutter.project_slug }}.settings import PACKAGE_DIR, PROJECT_ROOT, ProjectSettings, get_settings
 
 _SCOPED_KEY_RE = re.compile(r"^(?:hmac|sha256)-[a-f0-9]{64}$")
@@ -242,6 +245,67 @@ class IndustryReportWorkComposition:
             requester_id=str(enterprise["user_key"]),
             digital_employee_id=self.profile.digital_employee_id,
             playbook_id=self.playbook_id,
+        )
+
+    def save_report_brief(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        brief: ReportBrief,
+    ) -> WorkContractSnapshot:
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可绑定 ReportBrief 的进行中报告任务。")
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+        )
+        if current is not None and dict(current.payload) == brief.to_payload():
+            return current
+        version = 1 if current is None else current.contract_version + 1
+        candidate = brief.to_contract(
+            work_id=item.work_id,
+            tenant_id=item.tenant_id,
+            contract_version=version,
+            created_by=item.requester_id,
+            created_at=self._factory.clock(),
+        )
+        if current is None:
+            return self.repository.create_work_contract(candidate)
+        return self.repository.revise_work_contract(candidate)
+
+    def confirm_report_brief(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+    ) -> WorkContractSnapshot:
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可确认 ReportBrief 的进行中报告任务。")
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+        )
+        if current is None:
+            raise WorkCompositionError("当前任务尚未形成 ReportBrief。")
+        brief = ReportBrief.from_contract(current)
+        if not brief.is_confirmable:
+            raise WorkCompositionError("ReportBrief 仍缺少目标受众，不能确认。")
+        if current.contract_version != expected_version:
+            raise WorkCompositionError("ReportBrief 版本不匹配，请重新展示当前版本后再确认。")
+        if current.status is WorkContractStatus.CONFIRMED:
+            return current
+        return self.repository.confirm_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+            expected_contract_version=expected_version,
+            confirmed_by=item.requester_id,
+            confirmed_at=self._factory.clock(),
         )
 
     def _authorization_status(self, state: Mapping[str, object]) -> str:

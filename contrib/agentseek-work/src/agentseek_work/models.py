@@ -41,6 +41,27 @@ class WorkContractStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class SourceType(StrEnum):
+    DEPARTMENT_KNOWLEDGE = "department_knowledge"
+    EMPLOYEE_FILE = "employee_file"
+    ENTERPRISE_MCP = "enterprise_mcp"
+    GILDATA = "gildata"
+    PUBLIC_WEB = "public_web"
+
+
+class SnapshotStatus(StrEnum):
+    STORED = "stored"
+    REFERENCED = "referenced"
+    PROHIBITED = "prohibited"
+    FAILED = "failed"
+
+
+class ExcerptStatus(StrEnum):
+    STORED = "stored"
+    PROHIBITED = "prohibited"
+    NOT_REQUESTED = "not_requested"
+
+
 TERMINAL_WORK_STATUSES = frozenset({
     WorkStatus.SUCCEEDED,
     WorkStatus.FAILED,
@@ -56,6 +77,15 @@ def _require_text(value: str, field_name: str) -> None:
 def _require_aware(value: datetime, field_name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
+
+
+def _require_unique_nonblank(values: tuple[str, ...], field_name: str) -> None:
+    if not values:
+        raise ValueError(f"{field_name} must not be empty")
+    if any(not value.strip() for value in values):
+        raise ValueError(f"{field_name} must not contain blank values")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{field_name} must not contain duplicates")
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +257,74 @@ class WorkContractSnapshot:
     @property
     def is_current(self) -> bool:
         return self.status is not WorkContractStatus.SUPERSEDED
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecord:
+    """Immutable, tenant-scoped provenance for a source selected by one WorkItem."""
+
+    source_id: str
+    work_id: str
+    tenant_id: str
+    source_type: SourceType
+    title: str
+    publisher: str
+    retrieved_at: datetime
+    uri_digest: str
+    content_hash: str
+    result_digest: str
+    confidentiality_level: str
+    authority_level: str
+    allowed_uses: tuple[str, ...]
+    snapshot_policy: str
+    snapshot_status: SnapshotStatus
+    retrieval_query_digest: str
+    excerpt_status: ExcerptStatus
+    locator: str | None = None
+    published_at: datetime | None = None
+    file_id: str | None = None
+    snapshot_artifact_id: str | None = None
+    license_restriction: str | None = None
+    license_terms_ref: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "source_id",
+            "work_id",
+            "tenant_id",
+            "title",
+            "publisher",
+            "uri_digest",
+            "content_hash",
+            "result_digest",
+            "confidentiality_level",
+            "authority_level",
+            "snapshot_policy",
+            "retrieval_query_digest",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        if not isinstance(self.source_type, SourceType):
+            raise TypeError("source_type must be a SourceType")
+        if not isinstance(self.snapshot_status, SnapshotStatus):
+            raise TypeError("snapshot_status must be a SnapshotStatus")
+        if not isinstance(self.excerpt_status, ExcerptStatus):
+            raise TypeError("excerpt_status must be an ExcerptStatus")
+        _require_aware(self.retrieved_at, "retrieved_at")
+        if self.published_at is not None:
+            _require_aware(self.published_at, "published_at")
+        for field_name in (
+            "locator",
+            "file_id",
+            "snapshot_artifact_id",
+            "license_restriction",
+            "license_terms_ref",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_text(value, field_name)
+        _require_unique_nonblank(self.allowed_uses, "allowed_uses")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 
 def _validate_work_contract_lifecycle(contract: WorkContractSnapshot) -> None:

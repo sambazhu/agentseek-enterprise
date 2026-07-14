@@ -80,6 +80,22 @@ knowledge_list_documents (when collection discovery is useful)
 -> request employee permission before Gildata or Tavily
 ```
 
+## M2-03 Report Research Integration
+
+The approved DOCX asset has a versioned YAML companion under the report-intake
+Skill. It defines stable section and question IDs. A formal research run requires:
+
+1. a requester-scoped WorkItem;
+2. a current `report-brief` contract in `confirmed` state;
+3. `run_internal_report_research`, which calls only this MCP server;
+4. immutable `SourceRecord` rows in the work ledger; and
+5. deterministic per-question and per-section coverage/gap output.
+
+`SourceRecord` stores provenance, digests, license/snapshot status and stable MCP
+locators. It does not copy department chunk content into the work ledger. Excerpts
+and Claim/Evidence binding belong to M3. A gap remains a gap in M2-03; Tavily and
+Gildata are never called automatically.
+
 ## Storage Tables
 
 | Table | Purpose |

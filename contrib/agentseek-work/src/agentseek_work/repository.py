@@ -16,7 +16,11 @@ from agentseek_work.models import (
     BudgetReservation,
     BudgetReservationStatus,
     BudgetUsage,
+    ExcerptStatus,
     PackSnapshot,
+    SnapshotStatus,
+    SourceRecord,
+    SourceType,
     WorkBudget,
     WorkContractSnapshot,
     WorkContractStatus,
@@ -32,6 +36,7 @@ from agentseek_work.schema import (
     work_contracts,
     work_events,
     work_items,
+    work_sources,
 )
 from agentseek_work.state_machine import OptimisticConcurrencyError, TransitionResult
 
@@ -411,6 +416,73 @@ class SQLAlchemyWorkRepository:
             raise WorkContractConflictError("WorkItem contract revision failed") from exc
         except StatementError as exc:
             self._raise_write_error(exc, "WorkItem contract revision failed")
+
+    def put_source_record(self, source: SourceRecord) -> SourceRecord:
+        """Register immutable source provenance for a tenant-owned WorkItem, idempotently."""
+
+        values = _source_values(source)
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(connection, tenant_id=source.tenant_id, work_id=source.work_id)
+                existing = (
+                    connection
+                    .execute(
+                        select(work_sources).where(
+                            work_sources.c.tenant_id == source.tenant_id,
+                            work_sources.c.source_id == source.source_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    stored = _row_to_source(existing)
+                    if stored != source:
+                        _raise_source_record_conflict(source.source_id)
+                    return stored
+                connection.execute(insert(work_sources).values(**values))
+                return source
+        except WorkConflictError:
+            raise
+        except IntegrityError as exc:
+            raise WorkConflictError("source record conflicts with an existing immutable record") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "source record creation failed")
+
+    def get_source_record(self, *, tenant_id: str, source_id: str) -> SourceRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_sources).where(
+                        work_sources.c.tenant_id == tenant_id,
+                        work_sources.c.source_id == source_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise WorkNotFoundError(f"source record {source_id} was not found for tenant")
+        return _row_to_source(row)
+
+    def list_source_records(self, *, tenant_id: str, work_id: str) -> tuple[SourceRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_sources)
+                    .where(
+                        work_sources.c.tenant_id == tenant_id,
+                        work_sources.c.work_id == work_id,
+                    )
+                    .order_by(work_sources.c.retrieved_at, work_sources.c.source_id)
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_row_to_source(row) for row in rows)
 
     def commit_transition(
         self,
@@ -1027,6 +1099,10 @@ def _terminal_status_values() -> tuple[str, ...]:
     return tuple(status.value for status in TERMINAL_WORK_STATUSES)
 
 
+def _raise_source_record_conflict(source_id: str) -> NoReturn:
+    raise WorkConflictError(f"source record {source_id} already exists with different values")
+
+
 def _find_active_work(
     connection: Connection,
     *,
@@ -1485,6 +1561,64 @@ def _row_to_contract(row: RowMapping | Mapping[str, Any]) -> WorkContractSnapsho
         confirmed_by=_optional_text(row["confirmed_by"]),
         confirmed_at=_optional_datetime(row["confirmed_at"]),
         superseded_at=_optional_datetime(row["superseded_at"]),
+    )
+
+
+def _source_values(source: SourceRecord) -> dict[str, Any]:
+    return {
+        "source_id": source.source_id,
+        "work_id": source.work_id,
+        "tenant_id": source.tenant_id,
+        "source_type": source.source_type.value,
+        "title": source.title,
+        "publisher": source.publisher,
+        "published_at": source.published_at,
+        "retrieved_at": source.retrieved_at,
+        "locator": source.locator,
+        "uri_digest": source.uri_digest,
+        "file_id": source.file_id,
+        "confidentiality_level": source.confidentiality_level,
+        "authority_level": source.authority_level,
+        "allowed_uses": _json_document(list(source.allowed_uses), "source allowed_uses"),
+        "content_hash": source.content_hash,
+        "result_digest": source.result_digest,
+        "snapshot_policy": source.snapshot_policy,
+        "snapshot_status": source.snapshot_status.value,
+        "snapshot_artifact_id": source.snapshot_artifact_id,
+        "license_restriction": source.license_restriction,
+        "retrieval_query_digest": source.retrieval_query_digest,
+        "license_terms_ref": source.license_terms_ref,
+        "excerpt_status": source.excerpt_status.value,
+        "metadata": _json_document(dict(source.metadata), "source metadata"),
+    }
+
+
+def _row_to_source(row: RowMapping | Mapping[str, Any]) -> SourceRecord:
+    return SourceRecord(
+        source_id=str(row["source_id"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        source_type=SourceType(str(row["source_type"])),
+        title=str(row["title"]),
+        publisher=str(row["publisher"]),
+        published_at=_optional_datetime(row["published_at"]),
+        retrieved_at=_aware_datetime(row["retrieved_at"]),
+        locator=_optional_text(row["locator"]),
+        uri_digest=str(row["uri_digest"]),
+        file_id=_optional_text(row["file_id"]),
+        confidentiality_level=str(row["confidentiality_level"]),
+        authority_level=str(row["authority_level"]),
+        allowed_uses=tuple(str(value) for value in row["allowed_uses"]),
+        content_hash=str(row["content_hash"]),
+        result_digest=str(row["result_digest"]),
+        snapshot_policy=str(row["snapshot_policy"]),
+        snapshot_status=SnapshotStatus(str(row["snapshot_status"])),
+        snapshot_artifact_id=_optional_text(row["snapshot_artifact_id"]),
+        license_restriction=_optional_text(row["license_restriction"]),
+        retrieval_query_digest=str(row["retrieval_query_digest"]),
+        license_terms_ref=_optional_text(row["license_terms_ref"]),
+        excerpt_status=ExcerptStatus(str(row["excerpt_status"])),
+        metadata=dict(row["metadata"]),
     )
 
 

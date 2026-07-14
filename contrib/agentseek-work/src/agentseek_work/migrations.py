@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from sqlalchemy import Connection, Engine, func, insert, inspect, select
 
 from agentseek_work.models import TERMINAL_WORK_STATUSES
-from agentseek_work.schema import metadata, schema_versions, work_contracts, work_items
+from agentseek_work.schema import metadata, schema_versions, work_contracts, work_items, work_sources
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
 _CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
@@ -48,6 +48,8 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_five(connection)
     elif version == 6:
         _apply_revision_six(connection)
+    elif version == 7:
+        _apply_revision_seven(connection)
 
 
 def _apply_revision_four(connection: Connection) -> None:
@@ -144,3 +146,39 @@ def _apply_revision_six(connection: Connection) -> None:
             f"ON {work_contracts.name} (work_id, contract_type) "
             "WHERE status <> 'superseded'"
         )
+
+
+def _apply_revision_seven(connection: Connection) -> None:
+    if not inspect(connection).has_table(work_sources.name):
+        raise RuntimeError("cannot apply work schema revision 7; enterprise_work_sources is missing")
+    existing = {str(column["name"]) for column in inspect(connection).get_columns(work_sources.name)}
+    required = {
+        "source_id",
+        "work_id",
+        "tenant_id",
+        "source_type",
+        "title",
+        "publisher",
+        "published_at",
+        "retrieved_at",
+        "locator",
+        "uri_digest",
+        "file_id",
+        "confidentiality_level",
+        "authority_level",
+        "allowed_uses",
+        "content_hash",
+        "result_digest",
+        "snapshot_policy",
+        "snapshot_status",
+        "snapshot_artifact_id",
+        "license_restriction",
+        "retrieval_query_digest",
+        "license_terms_ref",
+        "excerpt_status",
+        "metadata",
+    }
+    missing = sorted(required - existing)
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"cannot apply work schema revision 7; enterprise_work_sources is missing: {joined}")
