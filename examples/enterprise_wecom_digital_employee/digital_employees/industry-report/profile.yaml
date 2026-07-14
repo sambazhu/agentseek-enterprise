@@ -10,7 +10,7 @@ responsibilities:
   - 报告版本修改和质量检查
   - 研究底稿与引用归档
 pack_id: industry-report
-pack_version: 1.1.0
+pack_version: 1.1.1
 supported_playbooks:
   - securities-industry-report@1
 skill_refs:
