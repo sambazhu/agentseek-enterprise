@@ -7,6 +7,7 @@ from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     CoveragePeriodSource,
     ReportBrief,
+    explicitly_confirms_report_brief,
 )
 
 NOW = datetime(2026, 7, 14, tzinfo=UTC)
@@ -106,3 +107,32 @@ def test_report_brief_parser_fails_closed_on_wrong_contract_or_schema() -> None:
         ReportBrief.from_contract(wrong_type)
     with pytest.raises(ValueError, match="unsupported report brief schema_version"):
         ReportBrief.from_contract(wrong_schema)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "确认 ReportBrief v3，按这个版本开始。",
+        "我同意 Report Brief version 3。",
+        "批准报告简报第3版。",
+    ],
+)
+def test_report_brief_confirmation_requires_explicit_exact_version(message: str) -> None:
+    assert explicitly_confirms_report_brief(message, expected_version=3)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "请立即启动内部知识检索。",
+        "请按新的 ReportBrief 启动内部知识检索。",
+        "确认 ReportBrief。",
+        "确认 ReportBrief v2。",
+        "不要确认 ReportBrief v3。",
+        "请确认 ReportBrief v3。",
+        "是否确认 ReportBrief v3？",
+        "确认 ReportBrief v2 和 ReportBrief v3。",
+    ],
+)
+def test_report_brief_confirmation_rejects_implicit_negated_or_ambiguous_messages(message: str) -> None:
+    assert not explicitly_confirms_report_brief(message, expected_version=3)

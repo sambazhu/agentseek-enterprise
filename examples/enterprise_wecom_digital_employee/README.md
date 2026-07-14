@@ -127,7 +127,9 @@ external MCP tools.
 
 M2-03 adds a template-driven formal path. Create a WorkItem, save a lightweight
 ReportBrief, show its exact version to the requester, and confirm it only after an
-explicit reply. `run_internal_report_research` then executes the Pack-pinned
+explicit reply. The confirmation tool enforces that requirement server-side against
+the latest human message and exact version; prompt wording alone cannot promote a
+provisional brief. `run_internal_report_research` then executes the Pack-pinned
 section questions against `department-knowledge`, stores provenance-only
 SourceRecords in the work ledger, and returns section coverage and unresolved
 gaps. It does not write report prose or call Tavily/Gildata.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from agentseek_work import ActiveWorkConflictError
 from langchain_core.tools import BaseTool, tool
@@ -122,6 +123,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 runtime.state,
                 runtime.context,
                 expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
             )
         except (ValueError, WorkCompositionError) as exc:
             return str(exc)
@@ -162,3 +164,38 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         confirm_report_brief,
         run_internal_report_research,
     ]
+
+
+def _latest_user_message_text(runtime: ToolRuntime) -> str:
+    state = runtime.state
+    if not isinstance(state, Mapping):
+        return ""
+    messages = state.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return ""
+    for message in reversed(messages):
+        if isinstance(message, Mapping):
+            role = str(message.get("role") or message.get("type") or "").lower()
+            content = message.get("content", "")
+        else:
+            role = str(getattr(message, "type", "") or getattr(message, "role", "")).lower()
+            content = getattr(message, "content", "")
+        if role in {"human", "user"}:
+            return _message_content_text(content)
+    return ""
+
+
+def _message_content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, Mapping):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return " ".join(parts)
+    return str(content or "")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,18 @@ REPORT_BRIEF_CONTRACT_TYPE = "report-brief"
 _DEFAULT_COVERAGE_PERIOD = "截至请求时间的最新可得数据"
 _ALLOWED_OUTPUT_FORMATS = frozenset({"markdown", "docx", "pdf"})
 _ALLOWED_CONFIDENTIALITY_LEVELS = frozenset({"public", "internal", "confidential", "restricted"})
+_CONFIRM_INTENT_RE = re.compile(r"(?:我\s*)?(?:确认|同意|批准|认可)|\b(?:confirm|approve|accept)\b", re.IGNORECASE)
+_NEGATED_CONFIRM_RE = re.compile(
+    r"(?:不|未|尚未|暂不|不要|不能|无法|拒绝)\s*(?:确认|同意|批准|认可)"
+    r"|\b(?:do\s+not|don't|not)\s+(?:confirm|approve|accept)\b",
+    re.IGNORECASE,
+)
+_REQUEST_CONFIRM_RE = re.compile(r"请\s*(?:确认|同意|批准|认可)")
+_QUESTION_CONFIRM_RE = re.compile(r"(?:是否|要不要|能否|可否).*(?:确认|同意|批准|认可)|(?:吗|么)[？?]?\s*$")
+_REPORT_BRIEF_VERSION_PATTERNS = (
+    re.compile(r"report\s*brief\s*(?:version|版本)?\s*[vV]?\s*(\d+)", re.IGNORECASE),
+    re.compile(r"(?:报告简报|报告需求|报告需求简报)\s*(?:version|版本|第)?\s*[vV]?\s*(\d+)\s*版?"),
+)
 
 
 class CoveragePeriodSource(StrEnum):
@@ -104,6 +117,24 @@ class ReportBrief:
             delivery_sla_minutes=_required_int(payload, "delivery_sla_minutes"),
             confidentiality_level=_required_text(payload, "confidentiality_level"),
         )
+
+
+def explicitly_confirms_report_brief(message: str, *, expected_version: int) -> bool:
+    """Return whether one employee message explicitly confirms exactly one Brief version."""
+
+    text = str(message or "").strip()
+    if expected_version <= 0 or not text:
+        return False
+    if not _CONFIRM_INTENT_RE.search(text):
+        return False
+    if _NEGATED_CONFIRM_RE.search(text) or _REQUEST_CONFIRM_RE.search(text) or _QUESTION_CONFIRM_RE.search(text):
+        return False
+    versions = {
+        int(match.group(1))
+        for pattern in _REPORT_BRIEF_VERSION_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    return versions == {expected_version}
 
 
 def _require_unique_nonblank(values: tuple[str, ...], field_name: str) -> None:

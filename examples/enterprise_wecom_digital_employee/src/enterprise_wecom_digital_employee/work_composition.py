@@ -42,7 +42,11 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
-from enterprise_wecom_digital_employee.report_brief import REPORT_BRIEF_CONTRACT_TYPE, ReportBrief
+from enterprise_wecom_digital_employee.report_brief import (
+    REPORT_BRIEF_CONTRACT_TYPE,
+    ReportBrief,
+    explicitly_confirms_report_brief,
+)
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, ProjectSettings, get_settings
 
 _SCOPED_KEY_RE = re.compile(r"^(?:hmac|sha256)-[a-f0-9]{64}$")
@@ -285,6 +289,7 @@ class IndustryReportWorkComposition:
         runtime_context: object | None,
         *,
         expected_version: int,
+        latest_user_message: str,
     ) -> WorkContractSnapshot:
         item = self.current_work(state, runtime_context)
         if item is None:
@@ -303,6 +308,10 @@ class IndustryReportWorkComposition:
             raise WorkCompositionError("ReportBrief 版本不匹配，请重新展示当前版本后再确认。")
         if current.status is WorkContractStatus.CONFIRMED:
             return current
+        if not explicitly_confirms_report_brief(latest_user_message, expected_version=expected_version):
+            raise WorkCompositionError(
+                f"员工最新消息未显式确认 ReportBrief v{expected_version}，不能确认或启动正式研究。"
+            )
         return self.repository.confirm_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,

@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +25,8 @@ from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
     WorkCompositionError,
 )
+from enterprise_wecom_digital_employee.work_tools import _latest_user_message_text
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import create_engine
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -69,6 +72,17 @@ def test_research_plan_requires_confirmed_report_brief() -> None:
         build_research_plan(provisional, load_research_template(TEMPLATE_PATH))
 
 
+def test_confirmation_guard_reads_latest_human_message_from_tool_runtime_state() -> None:
+    runtime = SimpleNamespace(state={
+        "messages": [
+            HumanMessage(content="确认 ReportBrief v3，按这个版本开始。"),
+            AIMessage(content="", tool_calls=[]),
+        ]
+    })
+
+    assert _latest_user_message_text(runtime) == "确认 ReportBrief v3，按这个版本开始。"
+
+
 def test_report_brief_revision_requires_exact_reconfirmation(tmp_path: Path) -> None:
     composition, state = _confirmed_composition(tmp_path)
     revised = composition.save_report_brief(
@@ -84,8 +98,32 @@ def test_report_brief_revision_requires_exact_reconfirmation(tmp_path: Path) -> 
     assert revised.contract_version == 2
     assert revised.status is WorkContractStatus.PROVISIONAL
     with pytest.raises(WorkCompositionError, match="版本不匹配"):
-        composition.confirm_report_brief(state, None, expected_version=1)
-    confirmed = composition.confirm_report_brief(state, None, expected_version=2)
+        composition.confirm_report_brief(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="确认 ReportBrief v1。",
+        )
+    with pytest.raises(WorkCompositionError, match="未显式确认"):
+        composition.confirm_report_brief(
+            state,
+            None,
+            expected_version=2,
+            latest_user_message="请立即启动内部知识检索。",
+        )
+    current = composition.repository.get_current_work_contract(
+        tenant_id=revised.tenant_id,
+        work_id=revised.work_id,
+        contract_type=revised.contract_type,
+    )
+    assert current is not None
+    assert current.status is WorkContractStatus.PROVISIONAL
+    confirmed = composition.confirm_report_brief(
+        state,
+        None,
+        expected_version=2,
+        latest_user_message="确认 ReportBrief v2。",
+    )
     assert confirmed.status is WorkContractStatus.CONFIRMED
 
 
@@ -227,6 +265,7 @@ def _confirmed_composition(tmp_path: Path) -> tuple[IndustryReportWorkCompositio
         state,
         None,
         expected_version=contract.contract_version,
+        latest_user_message=f"确认 ReportBrief v{contract.contract_version}，按这个版本开始。",
     )
     assert confirmed.status is WorkContractStatus.CONFIRMED
     return composition, state
