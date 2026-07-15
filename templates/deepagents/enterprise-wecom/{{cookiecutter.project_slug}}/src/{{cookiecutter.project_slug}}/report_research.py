@@ -43,6 +43,7 @@ class CoverageStatus(StrEnum):
 class ResearchQuestion:
     question_id: str
     prompt: str
+    query_strategy: str
     search_mode: str
     top_k: int
     minimum_fused_score: float
@@ -52,6 +53,8 @@ class ResearchQuestion:
     def __post_init__(self) -> None:
         _require_text(self.question_id, "question_id")
         _require_text(self.prompt, "prompt")
+        if self.query_strategy not in {"full_context", "report_topic"}:
+            raise ValueError("query_strategy is unsupported")
         if self.search_mode not in {"keyword", "semantic", "hybrid"}:
             raise ValueError("search_mode is unsupported")
         if not 1 <= self.top_k <= 20:
@@ -110,6 +113,7 @@ class ReportResearchTemplate:
                         {
                             "question_id": question.question_id,
                             "prompt": question.prompt,
+                            "query_strategy": question.query_strategy,
                             "search_mode": question.search_mode,
                             "top_k": question.top_k,
                             "minimum_fused_score": question.minimum_fused_score,
@@ -239,6 +243,7 @@ def load_research_template(path: Path) -> ReportResearchTemplate:
             questions.append(ResearchQuestion(
                 question_id=_text(question, "question_id"),
                 prompt=_text(question, "prompt"),
+                query_strategy=str(question.get("query_strategy", "full_context")),
                 search_mode=_text(question, "search_mode"),
                 top_k=int(question.get("top_k", 4)),
                 minimum_fused_score=float(question.get("minimum_fused_score", 0.02)),
@@ -352,6 +357,8 @@ def research_question_map(plan: ReportResearchPlan) -> dict[str, ResearchQuestio
 
 
 def build_research_query(plan: ReportResearchPlan, question: ResearchQuestion) -> str:
+    if question.query_strategy == "report_topic":
+        return plan.report_title
     return (
         f"报告主题：{plan.report_title}；报告覆盖期：{plan.coverage_period}；"
         f"研究问题：{question.prompt}"

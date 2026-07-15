@@ -1,13 +1,22 @@
 schema_version: 1
 template_id: neutral-industry-report-internal-research
-template_version: 1.0.0
+template_version: 1.1.0
 report_asset_ref: strategic-report-docx@1.0.0
 sections:
   - section_id: executive-summary
     title: 执行摘要
     questions:
+      - question_id: executive-summary.topic-specific-evidence
+        prompt: 内部知识库是否包含本报告主题直接点名的机构、政策、事件、时间和量化数据？
+        query_strategy: report_topic
+        search_mode: keyword
+        top_k: 4
+        minimum_fused_score: 0.02
+        minimum_keyword_score: 0.35
+        minimum_semantic_score: 0.70
       - question_id: executive-summary.core-trends
         prompt: 证券行业当前核心趋势、主要变化和重大不确定性是什么？
+        query_strategy: full_context
         search_mode: hybrid
         top_k: 4
         minimum_fused_score: 0.02
@@ -18,6 +27,7 @@ sections:
     questions:
       - question_id: industry-overview.digital-transformation
         prompt: 证券行业数字化转型的目标、重点任务和实施路径是什么？
+        query_strategy: full_context
         search_mode: hybrid
         top_k: 4
         minimum_fused_score: 0.02
@@ -28,6 +38,7 @@ sections:
     questions:
       - question_id: operating-benchmark.roe-and-structure
         prompt: 证券公司的收入利润、ROE、资本效率和业务结构有哪些可比目标？
+        query_strategy: full_context
         search_mode: hybrid
         top_k: 4
         minimum_fused_score: 0.02
@@ -38,6 +49,7 @@ sections:
     questions:
       - question_id: business-line-benchmark.five-lines
         prompt: 财富、投行、自营权益、自营固收、资管五条业务线应如何对标分析？
+        query_strategy: full_context
         search_mode: hybrid
         top_k: 4
         minimum_fused_score: 0.02
@@ -48,6 +60,7 @@ sections:
     questions:
       - question_id: action-recommendations.priorities
         prompt: 战略行动建议的优先级、适用条件、依赖、风险和验证指标是什么？
+        query_strategy: full_context
         search_mode: hybrid
         top_k: 4
         minimum_fused_score: 0.02

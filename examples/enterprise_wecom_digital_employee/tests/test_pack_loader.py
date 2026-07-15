@@ -49,7 +49,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.1.1"
+    assert loaded.pack_version == "1.2.0"
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.0.0",)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,9 @@ from enterprise_wecom_digital_employee.pack_loader import (
 from enterprise_wecom_digital_employee.report_brief import ReportBrief
 from enterprise_wecom_digital_employee.report_research import (
     CoverageStatus,
+    ResearchCoverage,
     build_research_plan,
+    build_research_query,
     load_current_research_result,
     load_research_template,
     run_internal_research,
@@ -62,8 +65,10 @@ def test_research_template_has_stable_unique_sections_and_questions() -> None:
     template = load_research_template(TEMPLATE_PATH)
 
     assert template.template_id == "neutral-industry-report-internal-research"
+    assert template.template_version == "1.1.0"
     assert template.report_asset_ref == "strategic-report-docx@1.0.0"
     assert len(template.sections) == 5
+    assert sum(len(section.questions) for section in template.sections) == 6
     assert len({section.section_id for section in template.sections}) == 5
     assert all(question.minimum_fused_score == 0.02 for section in template.sections for question in section.questions)
     assert all(
@@ -72,6 +77,35 @@ def test_research_template_has_stable_unique_sections_and_questions() -> None:
         for question in section.questions
     )
     assert template.digest.startswith("sha256:")
+
+
+def test_topic_specific_question_searches_only_the_report_title() -> None:
+    template = load_research_template(TEMPLATE_PATH)
+    topic_question = template.sections[0].questions[0]
+    brief = ReportBrief(
+        title="2026年美联储货币政策变化及其对国内证券行业影响",
+        target_audience=("公司管理层",),
+    )
+    contract = brief.to_contract(
+        work_id="work_001",
+        tenant_id="tenant_001",
+        contract_version=1,
+        created_by="employee_001",
+        created_at=NOW,
+    )
+    contract = replace(
+        contract,
+        status=WorkContractStatus.CONFIRMED,
+        confirmed_by="employee_001",
+        confirmed_at=NOW,
+    )
+    plan = build_research_plan(contract, template)
+
+    assert topic_question.question_id == "executive-summary.topic-specific-evidence"
+    assert topic_question.query_strategy == "report_topic"
+    assert topic_question.search_mode == "keyword"
+    assert topic_question.minimum_keyword_score == 0.35
+    assert build_research_query(plan, topic_question) == brief.title
 
 
 def test_research_plan_requires_confirmed_report_brief() -> None:
@@ -205,10 +239,10 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
 
     assert first.plan.report_brief_version == 1
     assert first.coverage.covered_questions == 1
-    assert first.coverage.total_questions == 5
-    assert first.coverage.ratio == 0.2
+    assert first.coverage.total_questions == 6
+    assert first.coverage.ratio == 0.1667
     assert first.coverage.sections[1].status is CoverageStatus.COVERED
-    assert len(first.coverage.gaps) == 4
+    assert len(first.coverage.gaps) == 5
     assert len(first.sources) == 1
     assert replay.sources == first.sources
     assert len(composition.repository.list_source_records(
@@ -232,8 +266,12 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
         for _, tool_name, arguments, _ in calls
         if tool_name == "knowledge_search"
     ]
-    assert all("证券行业数字化转型报告" in query for query in search_queries)
-    assert all("2025年至2026年上半年" in query for query in search_queries)
+    topic_queries = [query for query in search_queries if query == "证券行业数字化转型报告"]
+    contextual_queries = [query for query in search_queries if query != "证券行业数字化转型报告"]
+    assert len(topic_queries) == 2
+    assert len(contextual_queries) == 10
+    assert all("证券行业数字化转型报告" in query for query in contextual_queries)
+    assert all("2025年至2026年上半年" in query for query in contextual_queries)
     assert first.as_dict()["external_search_used"] is False
 
 
@@ -286,6 +324,42 @@ def test_gap_external_provider_calls_are_fixed_server_side() -> None:
     )
 
 
+def test_no_gap_options_never_offer_report_generation(tmp_path: Path) -> None:
+    composition, state = _confirmed_composition(tmp_path)
+    result = load_current_research_result(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+    )
+    sections = tuple(
+        replace(
+            section,
+            status=CoverageStatus.COVERED,
+            questions=tuple(
+                replace(question, status=CoverageStatus.COVERED)
+                for question in section.questions
+            ),
+        )
+        for section in result.coverage.sections
+    )
+    complete = replace(
+        result,
+        coverage=ResearchCoverage(
+            covered_questions=6,
+            total_questions=6,
+            ratio=1.0,
+            sections=sections,
+        ),
+    )
+
+    options = gap_options(complete)
+
+    assert options["choices"] == []
+    assert options["report_generation_available"] is False
+    assert "不得提供或生成报告正文" in options["next_step"]
+
+
 @pytest.mark.anyio
 async def test_external_gap_search_requires_choice_persists_sources_and_replays_idempotently(
     tmp_path: Path,
@@ -300,6 +374,7 @@ async def test_external_gap_search_requires_choice_persists_sources_and_replays_
     )
     options = gap_options(before)
     assert before.coverage.gaps == (
+        "executive-summary.topic-specific-evidence",
         "executive-summary.core-trends",
         "operating-benchmark.roe-and-structure",
         "business-line-benchmark.five-lines",
@@ -338,12 +413,12 @@ async def test_external_gap_search_requires_choice_persists_sources_and_replays_
     )
 
     external_calls = [call for call in calls if call[0] != "department-knowledge"]
-    assert len(external_calls) == 4
+    assert len(external_calls) == 5
     assert all(call[:2] == ("tavily-search", "tavily_search") for call in external_calls)
     assert all(call[2]["max_results"] == 3 for call in external_calls)
     assert all(call[2]["search_depth"] == "basic" for call in external_calls)
     assert all(call[3] is True for call in external_calls)
-    assert len(first.sources) == 4
+    assert len(first.sources) == 5
     assert replay.sources == first.sources
     assert all(source.source_type is SourceType.PUBLIC_WEB for source in first.sources)
     assert all(source.metadata["raw_result_stored"] is False for source in first.sources)

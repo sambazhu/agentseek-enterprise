@@ -111,6 +111,15 @@ ReportBrief version. The choice is stored as a confirmed, versioned
 as provenance-only SourceRecords without storing the raw provider response;
 Evidence, Claims, and report prose remain M3/M4 work.
 
+Pack `1.2.0` makes the report topic itself a first-class evidence question. Its
+`report_topic` query strategy searches the exact ReportBrief title before the
+five reusable industry questions, so generic securities-methodology documents
+cannot silently count as direct support for a named institution, policy, event,
+period, or figure. The M2 delivery boundary also applies a deterministic output
+guard after the agent run: bare confirmation and attempted report prose are
+replaced with a fail-closed operational reply and a redacted
+`report_output_guard` event. `choices=[]` never advertises report generation.
+
 ## Run
 
 ```bash

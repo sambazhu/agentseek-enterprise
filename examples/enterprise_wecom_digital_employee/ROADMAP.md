@@ -554,8 +554,10 @@ M2 按四个小切片推进，避免把澄清、检索、外部授权和写作�
 M2-03 已实现随 PackSnapshot 固定的模板检索 manifest、已确认 ReportBrief
 守卫、内部知识编排、schema revision 7 SourceRecord 账本和确定性
 coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权和
-可审计的 Gildata/Tavily SourceRecord 登记。M2-04 代码与模板已完成
-本地回归，等待 Mac mini PostgreSQL 与企微活体验证。
+可审计的 Gildata/Tavily SourceRecord 登记。首次活体验证发现固定行业问题会
+掩盖报告主题证据缺口，以及模型可绕过工具直接输出报告正文。修复版 Pack 1.2.0
+新增 `report_topic` 直接证据问题，并在 parse-output 交付边界增加 M2 正文守卫和
+审计事件；等待 Mac mini PostgreSQL 与企微活体复验后关闭 M2-04。
 
 正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
 `draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。

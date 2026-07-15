@@ -107,6 +107,7 @@ def test_template_renders_without_unrendered_jinja(
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
         report_brief = generated / "src" / generated.name / "report_brief.py"
         report_research = generated / "src" / generated.name / "report_research.py"
+        report_output_guard = generated / "src" / generated.name / "report_output_guard.py"
         external_research = generated / "src" / generated.name / "external_research.py"
         research_gap_decision = generated / "src" / generated.name / "research_gap_decision.py"
         work_composition = generated / "src" / generated.name / "work_composition.py"
@@ -128,6 +129,7 @@ def test_template_renders_without_unrendered_jinja(
         assert pack_loader.is_file()
         assert report_brief.is_file()
         assert report_research.is_file()
+        assert report_output_guard.is_file()
         assert external_research.is_file()
         assert research_gap_decision.is_file()
         assert work_composition.is_file()
@@ -140,6 +142,7 @@ def test_template_renders_without_unrendered_jinja(
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
         assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
+        assert "{{" not in report_output_guard.read_text(encoding="utf-8")
         assert "{{" not in external_research.read_text(encoding="utf-8")
         assert "{{" not in research_gap_decision.read_text(encoding="utf-8")
         assert "{{" not in work_composition.read_text(encoding="utf-8")

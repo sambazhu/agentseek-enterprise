@@ -19,6 +19,7 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import DeepAgentState
 from langchain_core.messages import SystemMessage
 
+from {{ cookiecutter.project_slug }}.report_output_guard import enforce_m2_output_guard
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT, get_settings
 from {{ cookiecutter.project_slug }}.tools import (
     call_mcp_tool,
@@ -50,7 +51,7 @@ Keep memory layers separate. When the employee asks about explicit durable prefe
 
 The virtual filesystem exposes only trusted deployment instructions and skills. Do not probe host paths or try alternative paths for .env, credentials, source code, or runtime files. When asked for them, state that they are intentionally unavailable and do not attempt to retrieve them.
 
-Complete formal reports are durable WorkItems. When the employee explicitly asks to create, write, prepare, track, or audit a complete formal securities-industry report, call create_industry_report_work. Never claim that a report task exists unless the tool returns a work_id. Form and save a lightweight ReportBrief, show its exact version to the employee, and call confirm_report_brief only after the latest employee message explicitly confirms that version. Only a confirmed ReportBrief may start run_internal_report_research. That research tool is internal-knowledge-only: present its coverage and gaps, and never auto-fill gaps with Gildata, Tavily, or report prose. Use get_report_research_gaps for the deterministic gap summary and resolve_report_research_gaps for the employee's explicit version-bound choice. External retrieval in M2 registers SourceRecords only; it does not create Evidence, Claims, or report prose. Use get_current_work_status for ledger-backed status questions.
+Complete formal reports are durable WorkItems. When the employee explicitly asks to create, write, prepare, track, or audit a complete formal securities-industry report, call create_industry_report_work. Never claim that a report task exists unless the tool returns a work_id. Form and save a lightweight ReportBrief, show its exact version to the employee, and call confirm_report_brief only after the latest employee message explicitly confirms that version. Only a confirmed ReportBrief may start run_internal_report_research. That research tool is internal-knowledge-only: present its coverage and gaps, and never auto-fill gaps with Gildata, Tavily, or report prose. Use get_report_research_gaps for the deterministic gap summary and resolve_report_research_gaps for the employee's explicit version-bound choice. External retrieval in M2 registers SourceRecords only; it does not create Evidence, Claims, or report prose. M2 has no report writer: even when internal coverage has no gaps, never offer or generate a report body, Markdown report, unsupported figures, or DOCX. A generic confirmation such as "confirm" or "确认" authorizes nothing. Use get_current_work_status for ledger-backed status questions.
 """
 
 _STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
@@ -141,7 +142,7 @@ def build_spec():
     return RunnableSpec(
         runnable=base_spec.runnable,
         build_input=build_input,
-        parse_output=base_spec.parse_output,
+        parse_output=lambda result: enforce_m2_output_guard(result, base_spec.parse_output(result)),
         build_config=lambda context: _work_observability_config(base_spec.build_config(context), context.state),
         stream_output=base_spec.stream_output,
     )

@@ -183,6 +183,12 @@ def gap_options(result: InternalResearchResult) -> dict[str, Any]:
         "research_plan_digest": result.plan.digest,
         "coverage": result.as_dict()["coverage"],
         "choices": choices,
+        "report_generation_available": False,
+        "next_step": (
+            "请展示一条精确的版本绑定缺口选项。"
+            if choices
+            else "内部研究已覆盖当前模板问题；M2 未启用报告写作，不得提供或生成报告正文。"
+        ),
     }
 
 
