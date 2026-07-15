@@ -7,8 +7,20 @@ from agentseek_work import ActiveWorkConflictError
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
+from {{ cookiecutter.project_slug }}.external_research import (
+    gap_options,
+)
+from {{ cookiecutter.project_slug }}.external_research import (
+    resolve_research_gaps as _resolve_research_gaps,
+)
 from {{ cookiecutter.project_slug }}.report_brief import CoveragePeriodSource, ReportBrief
-from {{ cookiecutter.project_slug }}.report_research import run_internal_research as _run_internal_research
+from {{ cookiecutter.project_slug }}.report_research import (
+    load_current_research_result as _load_current_research_result,
+)
+from {{ cookiecutter.project_slug }}.report_research import (
+    run_internal_research as _run_internal_research,
+)
+from {{ cookiecutter.project_slug }}.research_gap_decision import ResearchGapAction
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT
 from {{ cookiecutter.project_slug }}.tools import call_mcp_tool
 from {{ cookiecutter.project_slug }}.work_composition import (
@@ -157,12 +169,61 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return str(exc)
         return json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
 
+    @tool("get_report_research_gaps")
+    def get_report_research_gaps(runtime: ToolRuntime) -> str:
+        """Show deterministic internal-knowledge coverage gaps and exact employee choices.
+
+        This is read-only. Present the returned confirmation phrase for one option
+        verbatim. Do not infer authorization and do not call an external MCP yourself.
+        """
+
+        try:
+            result = _load_current_research_result(
+                composition=composition,
+                state=runtime.state,
+                runtime_context=runtime.context,
+                template_path=_RESEARCH_TEMPLATE,
+            )
+        except (RuntimeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return json.dumps(gap_options(result), ensure_ascii=False, indent=2, sort_keys=True)
+
+    @tool("resolve_report_research_gaps")
+    async def resolve_report_research_gaps(action: ResearchGapAction, runtime: ToolRuntime) -> str:
+        """Apply one explicitly selected action to the current ReportBrief gaps.
+
+        The latest employee message must name the exact ReportBrief version and
+        exactly one action: Gildata, Tavily public search, upload materials, or
+        continue with gaps. The server verifies that message, persists a confirmed
+        decision contract, and only then may execute the selected external MCP.
+        Never call this tool based on an earlier turn or a generic "confirm".
+        """
+
+        async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
+            return await call_mcp_tool(server, tool_name, arguments, confirmed)
+
+        try:
+            result = await _resolve_research_gaps(
+                composition=composition,
+                state=runtime.state,
+                runtime_context=runtime.context,
+                template_path=_RESEARCH_TEMPLATE,
+                action=action,
+                latest_user_message=_latest_user_message_text(runtime),
+                invoke_mcp=invoke,
+            )
+        except (RuntimeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+
     return [
         create_industry_report_work,
         get_current_work_status,
         save_report_brief,
         confirm_report_brief,
         run_internal_report_research,
+        get_report_research_gaps,
+        resolve_report_research_gaps,
     ]
 
 

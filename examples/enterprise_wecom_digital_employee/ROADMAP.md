@@ -550,10 +550,12 @@ M2 按四个小切片推进，避免把澄清、检索、外部授权和写作�
 4. **M2-04**：部门知识不足时向员工展示缺口，由员工选择 Gildata/公开搜索、
    上传材料或保留缺口继续生成。
 
-当前状态：M2-01、M2-02 已通过 Mac mini PostgreSQL 与企微活体验证。M2-03 已实现
-随 PackSnapshot 固定的模板检索 manifest、已确认 ReportBrief 守卫、内部知识编排、
-schema revision 7 SourceRecord 账本和确定性 coverage/gap，等待 Mac mini 真实数据库与
-企微活体复核。M2-04 尚未开始。
+当前状态：M2-01、M2-02、M2-03 已通过 Mac mini PostgreSQL 与企微活体验证。
+M2-03 已实现随 PackSnapshot 固定的模板检索 manifest、已确认 ReportBrief
+守卫、内部知识编排、schema revision 7 SourceRecord 账本和确定性
+coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权和
+可审计的 Gildata/Tavily SourceRecord 登记。M2-04 代码与模板已完成
+本地回归，等待 Mac mini PostgreSQL 与企微活体验证。
 
 正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
 `draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。

@@ -133,6 +133,16 @@ provisional brief. `run_internal_report_research` then executes the Pack-pinned
 section questions against `department-knowledge`, stores provenance-only
 SourceRecords in the work ledger, and returns section coverage and unresolved
 gaps. It does not write report prose or call Tavily/Gildata.
+
+M2-04 closes the knowledge-gap decision loop. `get_report_research_gaps`
+rebuilds current internal coverage from immutable SourceRecords and returns four
+version-bound choices: Gildata, Tavily public search, upload request-scoped
+materials, or continue with visible gaps. `resolve_report_research_gaps` accepts
+only an unambiguous choice in the latest employee message for the exact
+ReportBrief version. The choice is stored as a confirmed, versioned
+`report-research-gap-decision` WorkContract. Gildata/Tavily results are registered
+as provenance-only SourceRecords without storing the raw provider response;
+Evidence, Claims, and report prose remain M3/M4 work.
 See `DEPARTMENT_KNOWLEDGE_MCP.md` for the replacement contract.
 
 When running this example from the AgentSeek repository root, keep the root

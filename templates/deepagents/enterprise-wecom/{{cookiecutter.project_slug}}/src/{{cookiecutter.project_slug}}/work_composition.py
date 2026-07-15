@@ -22,6 +22,7 @@ from agentseek_work import (
     ToolContract,
     ToolContractRegistry,
     WorkBudget,
+    WorkContractConflictError,
     WorkContractSnapshot,
     WorkContractStatus,
     WorkItem,
@@ -46,6 +47,11 @@ from {{ cookiecutter.project_slug }}.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     ReportBrief,
     explicitly_confirms_report_brief,
+)
+from {{ cookiecutter.project_slug }}.research_gap_decision import (
+    RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    ResearchGapDecision,
+    explicitly_selects_gap_action,
 )
 from {{ cookiecutter.project_slug }}.settings import PACKAGE_DIR, PROJECT_ROOT, ProjectSettings, get_settings
 
@@ -317,6 +323,84 @@ class IndustryReportWorkComposition:
             confirmed_at=self._factory.clock(),
         )
 
+    def confirm_research_gap_decision(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        decision: ResearchGapDecision,
+        latest_user_message: str,
+    ) -> WorkContractSnapshot:
+        """Persist one version-bound, explicit gap-resolution choice and confirm it."""
+
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可登记研究缺口决策的进行中报告任务。")
+        if not explicitly_selects_gap_action(
+            latest_user_message,
+            expected_version=decision.report_brief_version,
+            expected_action=decision.action,
+        ):
+            raise WorkCompositionError(
+                f"员工最新消息未对 ReportBrief v{decision.report_brief_version} "
+                f"明确选择 {decision.action.value}，不执行研究升级。"
+            )
+
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+        )
+        if current is not None and _same_gap_decision(current, decision):
+            candidate = current
+        else:
+            version = 1 if current is None else current.contract_version + 1
+            candidate = decision.to_contract(
+                work_id=item.work_id,
+                tenant_id=item.tenant_id,
+                contract_version=version,
+                created_by=item.requester_id,
+                created_at=self._factory.clock(),
+            )
+            try:
+                candidate = (
+                    self.repository.create_work_contract(candidate)
+                    if current is None
+                    else self.repository.revise_work_contract(candidate)
+                )
+            except WorkContractConflictError:
+                candidate = self.repository.get_current_work_contract(
+                    tenant_id=item.tenant_id,
+                    work_id=item.work_id,
+                    contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+                )
+                if candidate is None or not _same_gap_decision(candidate, decision):
+                    raise
+        if candidate.status is WorkContractStatus.CONFIRMED:
+            return candidate
+        try:
+            return self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+                expected_contract_version=candidate.contract_version,
+                confirmed_by=item.requester_id,
+                confirmed_at=self._factory.clock(),
+            )
+        except WorkContractConflictError:
+            latest = self.repository.get_current_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+            )
+            if (
+                latest is not None
+                and latest.status is WorkContractStatus.CONFIRMED
+                and _same_gap_decision(latest, decision)
+            ):
+                return latest
+            raise
+
     def _authorization_status(self, state: Mapping[str, object]) -> str:
         if self.profile.service_status != "enabled":
             return "disabled"
@@ -410,6 +494,20 @@ def _verify_registered_snapshot(candidate, stored) -> None:
     fields = ("pack_id", "pack_version", "manifest_digest", "content_artifact_id", "asset_version_refs")
     if any(getattr(candidate, field) != getattr(stored, field) for field in fields):
         raise WorkCompositionError("已登记 PackSnapshot 与当前角色包内容不一致。")
+
+
+def _same_gap_decision(contract: WorkContractSnapshot, decision: ResearchGapDecision) -> bool:
+    try:
+        stored = ResearchGapDecision.from_contract(contract)
+    except (TypeError, ValueError):
+        return False
+    return (
+        stored.report_brief_version == decision.report_brief_version
+        and stored.research_plan_digest == decision.research_plan_digest
+        and stored.gap_digest == decision.gap_digest
+        and stored.gap_question_ids == decision.gap_question_ids
+        and stored.action is decision.action
+    )
 
 
 def _enterprise_context(source: object) -> Mapping[str, object] | None:

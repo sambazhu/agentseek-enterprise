@@ -107,6 +107,8 @@ def test_template_renders_without_unrendered_jinja(
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
         report_brief = generated / "src" / generated.name / "report_brief.py"
         report_research = generated / "src" / generated.name / "report_research.py"
+        external_research = generated / "src" / generated.name / "external_research.py"
+        research_gap_decision = generated / "src" / generated.name / "research_gap_decision.py"
         work_composition = generated / "src" / generated.name / "work_composition.py"
         work_tools = generated / "src" / generated.name / "work_tools.py"
         knowledge_server = generated / "src" / generated.name / "department_knowledge" / "mcp_server.py"
@@ -126,6 +128,8 @@ def test_template_renders_without_unrendered_jinja(
         assert pack_loader.is_file()
         assert report_brief.is_file()
         assert report_research.is_file()
+        assert external_research.is_file()
+        assert research_gap_decision.is_file()
         assert work_composition.is_file()
         assert work_tools.is_file()
         assert knowledge_server.is_file()
@@ -136,6 +140,8 @@ def test_template_renders_without_unrendered_jinja(
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
         assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
+        assert "{{" not in external_research.read_text(encoding="utf-8")
+        assert "{{" not in research_gap_decision.read_text(encoding="utf-8")
         assert "{{" not in work_composition.read_text(encoding="utf-8")
         assert "{{" not in knowledge_server.read_text(encoding="utf-8")
         assert "{{" not in knowledge_import.read_text(encoding="utf-8")

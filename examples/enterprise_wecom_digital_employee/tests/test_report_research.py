@@ -8,7 +8,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from agentseek_work import SQLAlchemyWorkRepository, WorkContractStatus, apply_migrations
+from agentseek_work import (
+    SourceType,
+    SQLAlchemyWorkRepository,
+    WorkContractStatus,
+    apply_migrations,
+)
+from enterprise_wecom_digital_employee.external_research import (
+    _external_call,
+    gap_options,
+    resolve_research_gaps,
+)
 from enterprise_wecom_digital_employee.pack_loader import (
     FilesystemPackSnapshotStore,
     RestrictedPackLoader,
@@ -18,8 +28,14 @@ from enterprise_wecom_digital_employee.report_brief import ReportBrief
 from enterprise_wecom_digital_employee.report_research import (
     CoverageStatus,
     build_research_plan,
+    load_current_research_result,
     load_research_template,
     run_internal_research,
+)
+from enterprise_wecom_digital_employee.research_gap_decision import (
+    RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    ResearchGapAction,
+    explicitly_selects_gap_action,
 )
 from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
@@ -219,6 +235,232 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
     assert all("证券行业数字化转型报告" in query for query in search_queries)
     assert all("2025年至2026年上半年" in query for query in search_queries)
     assert first.as_dict()["external_search_used"] is False
+
+
+@pytest.mark.parametrize(
+    ("message", "action"),
+    [
+        ("允许 ReportBrief v4 使用 Gildata 补充检索", ResearchGapAction.GILDATA),
+        ("允许 ReportBrief v4 使用 Tavily 公开搜索", ResearchGapAction.PUBLIC_WEB),
+        ("为 ReportBrief v4 上传补充材料", ResearchGapAction.UPLOAD_MATERIALS),
+        ("ReportBrief v4 保留缺口继续生成", ResearchGapAction.CONTINUE_WITH_GAPS),
+    ],
+)
+def test_gap_choice_requires_exact_version_and_one_action(
+    message: str,
+    action: ResearchGapAction,
+) -> None:
+    assert explicitly_selects_gap_action(message, expected_version=4, expected_action=action)
+    assert not explicitly_selects_gap_action(message, expected_version=3, expected_action=action)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "允许使用 Tavily 公开搜索",
+        "允许 ReportBrief v4 使用 Gildata 或 Tavily 补充检索",
+        "不要允许 ReportBrief v4 使用 Tavily 公开搜索",
+        "ReportBrief v4 不使用 Tavily 公开搜索",
+        "ReportBrief v4 是否使用 Tavily 公开搜索？",
+        "确认",
+    ],
+)
+def test_gap_choice_rejects_missing_version_ambiguity_negation_or_question(message: str) -> None:
+    assert not explicitly_selects_gap_action(
+        message,
+        expected_version=4,
+        expected_action=ResearchGapAction.PUBLIC_WEB,
+    )
+
+
+def test_gap_external_provider_calls_are_fixed_server_side() -> None:
+    assert _external_call(ResearchGapAction.GILDATA, "query") == (
+        "gildata_datamap-data",
+        "FinGeneralQuery",
+        {"query": "query"},
+    )
+    assert _external_call(ResearchGapAction.PUBLIC_WEB, "query") == (
+        "tavily-search",
+        "tavily_search",
+        {"query": "query", "max_results": 3, "search_depth": "basic"},
+    )
+
+
+@pytest.mark.anyio
+async def test_external_gap_search_requires_choice_persists_sources_and_replays_idempotently(
+    tmp_path: Path,
+) -> None:
+    composition, state = _confirmed_composition(tmp_path)
+    await _seed_one_internal_source(composition, state)
+    before = load_current_research_result(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+    )
+    options = gap_options(before)
+    assert before.coverage.gaps == (
+        "executive-summary.core-trends",
+        "operating-benchmark.roe-and-structure",
+        "business-line-benchmark.five-lines",
+        "action-recommendations.priorities",
+    )
+    assert options["choices"][1]["confirmation"] == "允许 ReportBrief v1 使用 Tavily 公开搜索"
+
+    calls: list[tuple[str, str, dict[str, Any], bool]] = []
+
+    async def invoke(server: str, tool_name: str, arguments: dict[str, Any], confirmed: bool) -> str:
+        calls.append((server, tool_name, arguments, confirmed))
+        if server == "department-knowledge":
+            return _internal_mcp_response(tool_name, arguments)
+        return json.dumps({"results": [{"title": "public result", "url": "https://example.test"}]})
+
+    latest = "允许 ReportBrief v1 使用 Tavily 公开搜索"
+    first = await resolve_research_gaps(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        action=ResearchGapAction.PUBLIC_WEB,
+        latest_user_message=latest,
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+    replay = await resolve_research_gaps(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        action=ResearchGapAction.PUBLIC_WEB,
+        latest_user_message=latest,
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+
+    external_calls = [call for call in calls if call[0] != "department-knowledge"]
+    assert len(external_calls) == 4
+    assert all(call[:2] == ("tavily-search", "tavily_search") for call in external_calls)
+    assert all(call[2]["max_results"] == 3 for call in external_calls)
+    assert all(call[2]["search_depth"] == "basic" for call in external_calls)
+    assert all(call[3] is True for call in external_calls)
+    assert len(first.sources) == 4
+    assert replay.sources == first.sources
+    assert all(source.source_type is SourceType.PUBLIC_WEB for source in first.sources)
+    assert all(source.metadata["raw_result_stored"] is False for source in first.sources)
+    assert all("example.test" not in json.dumps(dict(source.metadata)) for source in first.sources)
+    decision = composition.repository.get_current_work_contract(
+        tenant_id="tenant-test",
+        work_id="work_live_001",
+        contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    )
+    assert decision is not None
+    assert decision.status is WorkContractStatus.CONFIRMED
+    assert decision.confirmed_by == f"hmac-{'2' * 64}"
+
+
+@pytest.mark.anyio
+async def test_upload_choice_records_decision_without_external_mcp(tmp_path: Path) -> None:
+    composition, state = _confirmed_composition(tmp_path)
+    await _seed_one_internal_source(composition, state)
+    calls: list[tuple[str, str, dict[str, Any], bool]] = []
+
+    async def invoke(server: str, tool_name: str, arguments: dict[str, Any], confirmed: bool) -> str:
+        calls.append((server, tool_name, arguments, confirmed))
+        if server == "department-knowledge":
+            return _internal_mcp_response(tool_name, arguments)
+        return "unexpected external call"
+
+    result = await resolve_research_gaps(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        action=ResearchGapAction.UPLOAD_MATERIALS,
+        latest_user_message="为 ReportBrief v1 上传补充材料",
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+
+    assert calls
+    assert {call[0] for call in calls} == {"department-knowledge"}
+    assert result.sources == ()
+    assert result.as_dict()["external_search_used"] is False
+    assert "request-scoped" in result.as_dict()["next_step"]
+
+
+@pytest.mark.anyio
+async def test_implicit_gap_request_fails_closed_without_contract_or_mcp(tmp_path: Path) -> None:
+    composition, state = _confirmed_composition(tmp_path)
+    await _seed_one_internal_source(composition, state)
+    calls: list[tuple[str, str, dict[str, Any], bool]] = []
+
+    async def invoke(server: str, tool_name: str, arguments: dict[str, Any], confirmed: bool) -> str:
+        calls.append((server, tool_name, arguments, confirmed))
+        if server == "department-knowledge":
+            return _internal_mcp_response(tool_name, arguments)
+        return "unexpected external call"
+
+    with pytest.raises(WorkCompositionError, match="未对 ReportBrief v1 明确选择"):
+        await resolve_research_gaps(
+            composition=composition,
+            state=state,
+            runtime_context=None,
+            template_path=TEMPLATE_PATH,
+            action=ResearchGapAction.PUBLIC_WEB,
+            latest_user_message="请立即用外部搜索补齐缺口",
+            invoke_mcp=invoke,
+            clock=lambda: NOW,
+        )
+    assert calls
+    assert {call[0] for call in calls} == {"department-knowledge"}
+    assert composition.repository.get_current_work_contract(
+        tenant_id="tenant-test",
+        work_id="work_live_001",
+        contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    ) is None
+
+
+async def _seed_one_internal_source(
+    composition: IndustryReportWorkComposition,
+    state: dict[str, Any],
+) -> None:
+    async def invoke(server: str, tool_name: str, arguments: dict[str, Any], confirmed: bool) -> str:
+        del server, confirmed
+        return _internal_mcp_response(tool_name, arguments)
+
+    await run_internal_research(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+
+
+def _internal_mcp_response(tool_name: str, arguments: dict[str, Any]) -> str:
+    if tool_name == "knowledge_read_chunks":
+        return json.dumps({
+            "chunks": [{
+                "chunk_id": "chunk-digital",
+                "document_id": "doc-digital",
+                "title": "证券行业数字化规划",
+                "content": "数字化转型以客户服务、经营管理和风险控制能力提升为目标。",
+            }]
+        }, ensure_ascii=False)
+    query = str(arguments["query"])
+    hits = (
+        [{
+            "document_id": "doc-digital",
+            "chunk_id": "chunk-digital",
+            "title": "证券行业数字化规划",
+            "score": 0.032258,
+            "semantic_score": 0.843804,
+        }]
+        if "目标、重点任务和实施路径" in query
+        else []
+    )
+    return json.dumps({"hits": hits}, ensure_ascii=False)
 
 
 def _confirmed_composition(tmp_path: Path) -> tuple[IndustryReportWorkComposition, dict[str, Any]]:

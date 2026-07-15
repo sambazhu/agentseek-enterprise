@@ -15,7 +15,9 @@ from agentseek_work import (
     SnapshotStatus,
     SourceRecord,
     SourceType,
+    WorkContractSnapshot,
     WorkContractStatus,
+    WorkItem,
     WorkNotFoundError,
 )
 
@@ -280,17 +282,12 @@ async def run_internal_research(
     invoke_mcp: MCPInvoker,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> InternalResearchResult:
-    item = composition.current_work(state, runtime_context)
-    if item is None:
-        raise WorkCompositionError("当前员工没有可执行内部研究的进行中报告任务。")
-    contract = composition.repository.get_current_work_contract(
-        tenant_id=item.tenant_id,
-        work_id=item.work_id,
-        contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+    item, contract, plan = _current_research_plan(
+        composition=composition,
+        state=state,
+        runtime_context=runtime_context,
+        template_path=template_path,
     )
-    if contract is None or contract.status is not WorkContractStatus.CONFIRMED:
-        raise WorkCompositionError("请先形成并确认 ReportBrief，再启动内部知识检索。")
-    plan = build_research_plan(contract, load_research_template(template_path))
 
     hits_by_question, query_by_question = await _search_plan(plan, invoke_mcp)
     selected_chunk_ids, chunks_by_id = await _read_selected_chunks(hits_by_question, invoke_mcp)
@@ -318,6 +315,69 @@ async def run_internal_research(
     return InternalResearchResult(plan=plan, sources=tuple(sources), coverage=coverage)
 
 
+def load_current_research_result(
+    *,
+    composition: IndustryReportWorkComposition,
+    state: Mapping[str, object],
+    runtime_context: object | None,
+    template_path: Path,
+) -> InternalResearchResult:
+    """Rebuild current internal coverage from immutable SourceRecords without MCP calls."""
+
+    item, _, plan = _current_research_plan(
+        composition=composition,
+        state=state,
+        runtime_context=runtime_context,
+        template_path=template_path,
+    )
+    sources = tuple(
+        source
+        for source in composition.repository.list_source_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        )
+        if source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+        and source.metadata.get("report_brief_version") == plan.report_brief_version
+        and source.metadata.get("research_plan_digest") == plan.digest
+    )
+    return InternalResearchResult(plan=plan, sources=sources, coverage=_coverage(plan, sources))
+
+
+def research_question_map(plan: ReportResearchPlan) -> dict[str, ResearchQuestion]:
+    return {
+        question.question_id: question
+        for section in plan.template.sections
+        for question in section.questions
+    }
+
+
+def build_research_query(plan: ReportResearchPlan, question: ResearchQuestion) -> str:
+    return (
+        f"报告主题：{plan.report_title}；报告覆盖期：{plan.coverage_period}；"
+        f"研究问题：{question.prompt}"
+    )
+
+
+def _current_research_plan(
+    *,
+    composition: IndustryReportWorkComposition,
+    state: Mapping[str, object],
+    runtime_context: object | None,
+    template_path: Path,
+) -> tuple[WorkItem, WorkContractSnapshot, ReportResearchPlan]:
+    item = composition.current_work(state, runtime_context)
+    if item is None:
+        raise WorkCompositionError("当前员工没有可执行内部研究的进行中报告任务。")
+    contract = composition.repository.get_current_work_contract(
+        tenant_id=item.tenant_id,
+        work_id=item.work_id,
+        contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+    )
+    if contract is None or contract.status is not WorkContractStatus.CONFIRMED:
+        raise WorkCompositionError("请先形成并确认 ReportBrief，再启动内部知识检索。")
+    return item, contract, build_research_plan(contract, load_research_template(template_path))
+
+
 async def _search_plan(
     plan: ReportResearchPlan,
     invoke_mcp: MCPInvoker,
@@ -326,10 +386,7 @@ async def _search_plan(
     query_by_question: dict[str, str] = {}
     for section in plan.template.sections:
         for question in section.questions:
-            query = (
-                f"报告主题：{plan.report_title}；报告覆盖期：{plan.coverage_period}；"
-                f"研究问题：{question.prompt}"
-            )
+            query = build_research_query(plan, question)
             query_by_question[question.question_id] = query
             raw = await invoke_mcp(
                 "department-knowledge",
