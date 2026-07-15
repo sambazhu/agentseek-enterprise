@@ -432,13 +432,20 @@ model, stream, queue, and graceful-shutdown limits with:
 ```env
 AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS=180
 AGENTSEEK_WECOM_TURN_TIMEOUT_SECONDS=195
-AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE=32
+AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE=3
+AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS=240
 AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
 Keep the WeCom timeout slightly above the LangChain timeout. A timed-out model
 turn is cancelled and receives a terminal stream response so the next queued
-message can continue.
+message can continue. The queue limit counts pending messages, not the active
+turn: the default permits one active turn plus three waiting messages. Each
+accepted waiting stream immediately displays its queue position; further
+messages are rejected before they reach the agent. A pending message that does
+not start within the queue-wait timeout is finished as expired. Employees can
+send `查看消息队列` or `查看排队状态` for an immediate status response that does
+not enter the model queue.
 
 ### Enterprise Observability
 

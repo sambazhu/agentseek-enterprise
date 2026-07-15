@@ -63,10 +63,17 @@ class WeComSettings(BaseSettings):
         ),
     )
     session_queue_maxsize: int = Field(
-        default=32,
+        default=3,
         validation_alias=AliasChoices(
             "BUB_WECOM_SESSION_QUEUE_MAXSIZE",
             "AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE",
+        ),
+    )
+    queue_wait_timeout_seconds: float = Field(
+        default=240.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS",
+            "AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS",
         ),
     )
     shutdown_timeout_seconds: float = Field(

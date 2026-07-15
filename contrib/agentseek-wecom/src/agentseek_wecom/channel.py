@@ -27,6 +27,7 @@ from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
+_QUEUE_STATUS_COMMANDS = frozenset({"查看消息队列", "查看排队状态"})
 
 
 class MediaClient(Protocol):
@@ -80,6 +81,16 @@ class StreamReply:
         self.updated_at = time.time()
 
 
+@dataclass(slots=True)
+class QueuedTurn:
+    message: ChannelMessage
+    enqueued_at: float
+    pending_counted: bool = False
+    started: bool = False
+    expired: bool = False
+    expiry_handle: asyncio.TimerHandle | None = None
+
+
 class WeComChannel(Channel):
     name = "wecom"
 
@@ -110,8 +121,11 @@ class WeComChannel(Channel):
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
-        self._session_queues: dict[str, asyncio.Queue[ChannelMessage]] = {}
+        self._session_queues: dict[str, asyncio.Queue[QueuedTurn]] = {}
         self._session_workers: dict[str, asyncio.Task[None]] = {}
+        self._active_turn_started_at: dict[str, float] = {}
+        self._pending_turn_counts: dict[str, int] = {}
+        self._queue_expiry_handles: set[asyncio.TimerHandle] = set()
         self.app = self._build_app()
 
     @property
@@ -170,8 +184,13 @@ class WeComChannel(Channel):
             if pending:
                 logger.warning("wecom.dispatch graceful shutdown timed out after cancellation")
         self._dispatch_tasks.clear()
+        for handle in self._queue_expiry_handles:
+            handle.cancel()
+        self._queue_expiry_handles.clear()
         self._session_workers.clear()
         self._session_queues.clear()
+        self._active_turn_started_at.clear()
+        self._pending_turn_counts.clear()
 
     async def send(self, message: ChannelMessage) -> None:
         stream = await self._stream_for_outbound(message)
@@ -517,6 +536,17 @@ class WeComChannel(Channel):
             msgtype=data.get("msgtype"),
             content_chars=len(content),
         )
+        if content.strip() in _QUEUE_STATUS_COMMANDS:
+            stream.update(content=self._queue_status_content(session_id), finish=True)
+            _emit_enterprise_event(
+                "wecom_turn_queue_status",
+                status="succeeded",
+                stream_id=stream.stream_id,
+                session_id=session_id,
+                active=self._session_worker_running(session_id),
+                pending_count=self._pending_turn_counts.get(session_id, 0),
+            )
+            return await self._stream_response(stream.stream_id)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -627,53 +657,164 @@ class WeComChannel(Channel):
         )
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
+        session_id = message.session_id
         queue = self._session_queues.get(message.session_id)
         if queue is None:
-            queue = asyncio.Queue(maxsize=max(1, self.settings.session_queue_maxsize))
-            self._session_queues[message.session_id] = queue
-        try:
-            queue.put_nowait(message)
-        except asyncio.QueueFull:
-            self._finish_message_stream(
-                message,
-                content="当前消息过多，请稍后重试。",
-                event="wecom_turn_queue_rejected",
-                status="rejected",
+            queue = asyncio.Queue()
+            self._session_queues[session_id] = queue
+        worker_running = self._session_worker_running(session_id)
+        if worker_running:
+            pending_count = self._pending_turn_counts.get(session_id, 0)
+            max_pending = max(0, self.settings.session_queue_maxsize)
+            if pending_count >= max_pending:
+                self._finish_message_stream(
+                    message,
+                    content=(
+                        f"当前有 1 条消息正在处理，另有 {pending_count} 条等待处理。"
+                        "本条消息未进入队列，请等待前面的消息完成后再发送。"
+                    ),
+                    event="wecom_turn_queue_rejected",
+                    status="rejected",
+                )
+                return
+            queued = QueuedTurn(
+                message=message,
+                enqueued_at=time.monotonic(),
+                pending_counted=True,
             )
-            return
-        worker = self._session_workers.get(message.session_id)
-        if worker is not None and not worker.done():
+            self._pending_turn_counts[session_id] = pending_count + 1
+            queue.put_nowait(queued)
+            self._schedule_queue_expiry(session_id, queued)
+            self._update_message_stream(
+                message,
+                content=(
+                    "已收到。当前有 1 条消息正在处理，"
+                    f"你的消息排在等待队列第 {pending_count + 1} 位。"
+                ),
+            )
             _emit_enterprise_event(
                 "wecom_turn_queued",
-                session_id=message.session_id,
-                queue_depth=queue.qsize(),
+                stream_id=getattr(message, _STREAM_ID_ATTR, ""),
+                session_id=session_id,
+                pending_count=pending_count + 1,
+                pending_limit=max_pending,
             )
             return
+
+        queued = QueuedTurn(message=message, enqueued_at=time.monotonic())
+        queue.put_nowait(queued)
         task = asyncio.create_task(
-            self._run_session_queue(message.session_id),
-            name=f"agentseek-wecom.session-worker.{message.session_id}",
+            self._run_session_queue(session_id),
+            name=f"agentseek-wecom.session-worker.{session_id}",
         )
-        self._session_workers[message.session_id] = task
+        self._session_workers[session_id] = task
         self._dispatch_tasks.add(task)
         task.add_done_callback(self._on_dispatch_done)
+
+    def _schedule_queue_expiry(self, session_id: str, queued: QueuedTurn) -> None:
+        timeout = max(0.05, self.settings.queue_wait_timeout_seconds)
+        handle = asyncio.get_running_loop().call_later(
+            timeout,
+            self._expire_queued_turn,
+            session_id,
+            queued,
+        )
+        queued.expiry_handle = handle
+        self._queue_expiry_handles.add(handle)
+
+    def _expire_queued_turn(self, session_id: str, queued: QueuedTurn) -> None:
+        self._discard_expiry_handle(queued)
+        if queued.started or queued.expired:
+            return
+        queued.expired = True
+        self._release_pending_count(session_id, queued)
+        self._finish_message_stream(
+            queued.message,
+            content="等待处理时间过长，本条消息已取消，请稍后重新发送。",
+            event="wecom_turn_queue_wait_timeout",
+            status="timeout",
+        )
+
+    def _discard_expiry_handle(self, queued: QueuedTurn) -> None:
+        handle = queued.expiry_handle
+        if handle is None:
+            return
+        handle.cancel()
+        self._queue_expiry_handles.discard(handle)
+        queued.expiry_handle = None
+
+    def _release_pending_count(self, session_id: str, queued: QueuedTurn) -> None:
+        if not queued.pending_counted:
+            return
+        queued.pending_counted = False
+        remaining = max(0, self._pending_turn_counts.get(session_id, 0) - 1)
+        if remaining:
+            self._pending_turn_counts[session_id] = remaining
+        else:
+            self._pending_turn_counts.pop(session_id, None)
+
+    def _session_worker_running(self, session_id: str) -> bool:
+        worker = self._session_workers.get(session_id)
+        return worker is not None and not worker.done()
+
+    def _queue_status_content(self, session_id: str) -> str:
+        active = self._session_worker_running(session_id)
+        pending_count = self._pending_turn_counts.get(session_id, 0)
+        if not active and pending_count == 0:
+            return "当前没有正在处理或等待处理的消息。"
+        lines = ["当前消息队列状态："]
+        if active:
+            started_at = self._active_turn_started_at.get(session_id)
+            elapsed = max(0, round(time.monotonic() - started_at)) if started_at is not None else 0
+            lines.append(f"- 正在处理：1 条，已运行约 {elapsed} 秒")
+        else:
+            lines.append("- 正在处理：0 条")
+        lines.append(f"- 等待处理：{pending_count} 条")
+        return "\n".join(lines)
+
+    def _update_message_stream(self, message: ChannelMessage, *, content: str) -> None:
+        stream_id = getattr(message, _STREAM_ID_ATTR, None)
+        stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
+        if stream is not None and not stream.finish:
+            stream.update(content=content, finish=False)
 
     async def _run_session_queue(self, session_id: str) -> None:
         queue = self._session_queues[session_id]
         try:
             while True:
                 try:
-                    message = queue.get_nowait()
+                    queued = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     return
+                self._discard_expiry_handle(queued)
+                was_pending = queued.pending_counted
+                self._release_pending_count(session_id, queued)
+                if queued.expired:
+                    queue.task_done()
+                    continue
+                queued.started = True
+                self._active_turn_started_at[session_id] = time.monotonic()
+                wait_ms = round((time.monotonic() - queued.enqueued_at) * 1000)
+                if was_pending:
+                    self._update_message_stream(queued.message, content="已进入处理，正在生成回复...")
+                _emit_enterprise_event(
+                    "wecom_turn_started",
+                    stream_id=getattr(queued.message, _STREAM_ID_ATTR, ""),
+                    session_id=session_id,
+                    queue_wait_ms=wait_ms,
+                    pending_count=self._pending_turn_counts.get(session_id, 0),
+                )
                 try:
-                    await self._dispatch_one(message)
+                    await self._dispatch_one(queued.message)
                 finally:
+                    self._active_turn_started_at.pop(session_id, None)
                     queue.task_done()
         finally:
             current = asyncio.current_task()
             if self._session_workers.get(session_id) is current:
                 self._session_workers.pop(session_id, None)
                 self._session_queues.pop(session_id, None)
+                self._pending_turn_counts.pop(session_id, None)
 
     async def _dispatch_one(self, message: ChannelMessage) -> None:
         started_at = time.monotonic()
@@ -731,7 +872,6 @@ class WeComChannel(Channel):
     ) -> None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
-        queue = self._session_queues.get(message.session_id)
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
         _emit_enterprise_event(
@@ -739,7 +879,7 @@ class WeComChannel(Channel):
             status=status,
             stream_id=stream_id if isinstance(stream_id, str) else "",
             session_id=message.session_id,
-            queue_depth=queue.qsize() if queue is not None else 0,
+            pending_count=self._pending_turn_counts.get(message.session_id, 0),
             error_type=error_type,
         )
 

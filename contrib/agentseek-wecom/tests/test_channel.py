@@ -166,6 +166,11 @@ def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     )
 
 
+def test_queue_backpressure_defaults() -> None:
+    assert WeComSettings.model_fields["session_queue_maxsize"].default == 3
+    assert WeComSettings.model_fields["queue_wait_timeout_seconds"].default == 240.0
+
+
 def test_file_message_downloads_media_and_injects_file_context() -> None:
     received: list[ChannelMessage] = []
     media_client = FakeMediaClient()
@@ -782,6 +787,162 @@ def test_distinct_sessions_remain_concurrent() -> None:
         return max_active
 
     assert asyncio.run(scenario()) == 2
+
+
+def test_session_queue_reports_positions_and_rejects_above_pending_limit() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
+            turn_timeout_seconds=1.0,
+            session_queue_maxsize=3,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+        release = asyncio.Event()
+        received: list[str] = []
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            if message.content == "消息0":
+                await release.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content=f"完成:{message.content}",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        replies = await asyncio.gather(*(
+            channel._handle_plain_message({
+                "msgid": f"limited-{index}",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "text": {"content": f"消息{index}"},
+            })
+            for index in range(5)
+        ))
+        initial_payloads = [json.loads(reply or "{}") for reply in replies]
+        status_reply = await channel._handle_plain_message({
+            "msgid": "queue-status-1",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "查看消息队列"},
+        })
+        status_payload = json.loads(status_reply or "{}")
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return received, initial_payloads, status_payload
+
+    received, payloads, status = asyncio.run(scenario())
+
+    assert received == [f"消息{index}" for index in range(4)]
+    assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
+    assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
+    assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
+    assert payloads[4]["stream"]["finish"] is True
+    assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
+    assert status["stream"]["finish"] is True
+    assert "正在处理：1 条" in status["stream"]["content"]
+    assert "等待处理：3 条" in status["stream"]["content"]
+
+
+def test_pending_message_expires_without_entering_agent() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
+            turn_timeout_seconds=1.0,
+            session_queue_maxsize=3,
+            queue_wait_timeout_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[list[str], dict[str, Any], dict[str, Any]]:
+        release = asyncio.Event()
+        received: list[str] = []
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            await release.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="第一条完成",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        first_reply = await channel._handle_plain_message({
+            "msgid": "queue-ttl-1",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "第一条"},
+        })
+        second_reply = await channel._handle_plain_message({
+            "msgid": "queue-ttl-2",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "第二条"},
+        })
+        await asyncio.sleep(0.08)
+        second_stream_id = json.loads(second_reply or "{}")["stream"]["id"]
+        expired_reply = await channel._handle_plain_message({
+            "msgtype": "stream",
+            "stream": {"id": second_stream_id},
+        })
+        status_reply = await channel._handle_plain_message({
+            "msgid": "queue-status-2",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "查看排队状态"},
+        })
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        del first_reply
+        return received, json.loads(expired_reply or "{}"), json.loads(status_reply or "{}")
+
+    received, expired, status = asyncio.run(scenario())
+
+    assert received == ["第一条"]
+    assert expired["stream"]["finish"] is True
+    assert expired["stream"]["content"] == "等待处理时间过长，本条消息已取消，请稍后重新发送。"
+    assert "正在处理：1 条" in status["stream"]["content"]
+    assert "等待处理：0 条" in status["stream"]["content"]
+
+
+def test_queue_status_command_is_immediate_when_session_is_idle() -> None:
+    received: list[ChannelMessage] = []
+    channel = _channel()
+    channel.bind_receiver(received.append)
+
+    reply = asyncio.run(
+        channel._handle_plain_message({
+            "msgid": "queue-status-idle",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "查看消息队列"},
+        })
+    )
+    payload = json.loads(reply or "{}")
+
+    assert payload["stream"]["finish"] is True
+    assert payload["stream"]["content"] == "当前没有正在处理或等待处理的消息。"
+    assert received == []
 
 
 def test_timed_out_turn_releases_same_session_queue() -> None:

@@ -563,10 +563,18 @@ coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权�
 严格；`choices=[]` 是合同级边界而不是当前样例知识库的 live 必达场景，不为制造
 该场景降低关键词证据门槛。
 
-进入 M3 前完成两项运行时加固：同一 WeCom session 使用有界队列单飞处理，模型和
-stream 均设超时以释放后续消息；原始本轮用户文本通过显式 LangGraph state 字段传给
-输出守卫，使裸“确认”的 fail-closed backstop 在 live 路径生效。观测继续只保存
-digest、长度、诊断信号和工具序列，不持久化员工原文或守卫前报告正文。
+M3 先以运行时前置切片启动：
+
+1. **M3-00A 会话背压**：同一 WeCom session 保持一个 active turn，默认最多三个
+   pending；显示排队位置，超限不入 Agent，等待超过 TTL 自动结束；“查看消息队列”
+   绕过模型即时返回。不同 session 继续并发。
+2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
+   under-load SIGTERM 兜底。
+3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
+
+此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
+backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化
+员工原文或守卫前报告正文。
 
 正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
 `draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。
