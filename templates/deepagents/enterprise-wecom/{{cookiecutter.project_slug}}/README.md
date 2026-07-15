@@ -118,7 +118,10 @@ cannot silently count as direct support for a named institution, policy, event,
 period, or figure. The M2 delivery boundary also applies a deterministic output
 guard after the agent run: bare confirmation and attempted report prose are
 replaced with a fail-closed operational reply and a redacted
-`report_output_guard` event. `choices=[]` never advertises report generation.
+`report_output_guard` event. Coverage tables and section labels remain valid
+operational output; the event records only an output digest, shape signals, and
+top-level tool sequence, never the raw employee or model text. `choices=[]`
+never advertises report generation.
 
 ## Run
 
