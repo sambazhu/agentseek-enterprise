@@ -425,6 +425,21 @@ the final WeCom reply times out if the model spends too long processing a large
 tool result. Prefer bounded tool output, answer-first summaries, or an async
 "正在处理" workflow for slow external tools.
 
+Distinct messages for the same WeCom session are processed by one bounded,
+arrival-ordered worker. Other employee sessions remain concurrent. Tune the
+model, stream, queue, and graceful-shutdown limits with:
+
+```env
+AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS=180
+AGENTSEEK_WECOM_TURN_TIMEOUT_SECONDS=195
+AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE=32
+AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
+```
+
+Keep the WeCom timeout slightly above the LangChain timeout. A timed-out model
+turn is cancelled and receives a terminal stream response so the next queued
+message can continue.
+
 ### Enterprise Observability
 
 The gateway can emit redacted structured events to

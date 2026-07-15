@@ -26,6 +26,7 @@ from agentseek_enterprise.runtime_logging import get_logger
 
 EMPLOYEE_CONTEXT_STATE_KEY = "employee_context"
 EMPLOYEE_IDENTITY_STATE_KEY = "_employee_identity"
+LATEST_USER_MESSAGE_STATE_KEY = "latest_user_message"
 
 logger = get_logger(__name__)
 _OA_ACCOUNT_FIELDS = (
@@ -125,6 +126,8 @@ class EnterprisePlugin:
     @hookimpl
     def load_state(self, message: Envelope, session_id: str) -> State:
         state: State = {}
+        if latest_user_message := content_of(message).strip():
+            state[LATEST_USER_MESSAGE_STATE_KEY] = latest_user_message
         state.update(self._load_short_term_memory_state(session_id))
         employee_state = self._load_employee_state(message)
         state.update(employee_state)

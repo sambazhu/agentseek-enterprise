@@ -86,6 +86,9 @@ def _active_m2_work(result: object) -> Mapping[str, object] | None:
 def _latest_human_message(result: object) -> str:
     if not isinstance(result, Mapping):
         return ""
+    explicit = result.get("latest_user_message")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
     messages = result.get("messages")
     if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
         return ""

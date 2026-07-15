@@ -55,6 +55,27 @@ class WeComSettings(BaseSettings):
         default=3600,
         validation_alias=AliasChoices("BUB_WECOM_CACHE_TTL_SECONDS", "AGENTSEEK_WECOM_CACHE_TTL_SECONDS"),
     )
+    turn_timeout_seconds: float = Field(
+        default=195.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_TURN_TIMEOUT_SECONDS",
+            "AGENTSEEK_WECOM_TURN_TIMEOUT_SECONDS",
+        ),
+    )
+    session_queue_maxsize: int = Field(
+        default=32,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_SESSION_QUEUE_MAXSIZE",
+            "AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE",
+        ),
+    )
+    shutdown_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_SHUTDOWN_TIMEOUT_SECONDS",
+            "AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS",
+        ),
+    )
     corp_id: str = Field(
         default="",
         validation_alias=AliasChoices("BUB_WECOM_CORP_ID", "AGENTSEEK_WECOM_CORP_ID"),

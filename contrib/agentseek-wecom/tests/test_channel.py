@@ -667,6 +667,251 @@ def test_duplicate_msgid_can_reprocess_after_stream_cache_ttl() -> None:
     assert second_payload["stream"]["content"] == "处理完成2"
 
 
+def test_distinct_messages_in_same_session_are_processed_serially() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
+            turn_timeout_seconds=1.0,
+            session_queue_maxsize=16,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[list[str], int, list[dict[str, Any]]]:
+        received: list[str] = []
+        active = 0
+        max_active = 0
+
+        async def on_receive(message: ChannelMessage) -> None:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            received.append(message.content)
+            await asyncio.sleep(0.01)
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content=f"完成:{message.content}",
+                )
+            )
+            active -= 1
+
+        channel.bind_receiver(on_receive)
+        replies = await asyncio.gather(*(
+            channel._handle_plain_message({
+                "msgid": f"burst-{index}",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "text": {"content": f"消息{index}"},
+            })
+            for index in range(8)
+        ))
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        payloads: list[dict[str, Any]] = []
+        for reply in replies:
+            initial = json.loads(reply or "{}")
+            final = await channel._handle_plain_message({
+                "msgtype": "stream",
+                "stream": {"id": initial["stream"]["id"]},
+            })
+            payloads.append(json.loads(final or "{}"))
+        return received, max_active, payloads
+
+    received, max_active, payloads = asyncio.run(scenario())
+
+    assert received == [f"消息{index}" for index in range(8)]
+    assert max_active == 1
+    assert [payload["stream"]["content"] for payload in payloads] == [
+        f"完成:消息{index}" for index in range(8)
+    ]
+    assert all(payload["stream"]["finish"] for payload in payloads)
+
+
+def test_distinct_sessions_remain_concurrent() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
+            turn_timeout_seconds=1.0,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> int:
+        both_entered = asyncio.Event()
+        active = 0
+        max_active = 0
+
+        async def on_receive(message: ChannelMessage) -> None:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                both_entered.set()
+            await asyncio.wait_for(both_entered.wait(), timeout=0.5)
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="处理完成",
+                )
+            )
+            active -= 1
+
+        channel.bind_receiver(on_receive)
+        await asyncio.gather(*(
+            channel._handle_plain_message({
+                "msgid": f"parallel-{userid}",
+                "msgtype": "text",
+                "from": {"userid": userid},
+                "text": {"content": "你好"},
+            })
+            for userid in ("employee-a", "employee-b")
+        ))
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return max_active
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_timed_out_turn_releases_same_session_queue() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
+            turn_timeout_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        calls = 0
+
+        async def on_receive(message: ChannelMessage) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await channel.send(
+                    ChannelMessage(
+                        session_id=message.session_id,
+                        channel="wecom",
+                        chat_id=message.chat_id,
+                        content="第二条已处理",
+                    )
+                )
+
+        channel.bind_receiver(on_receive)
+        first, second = await asyncio.gather(
+            channel._handle_plain_message({
+                "msgid": "timeout-1",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "text": {"content": "第一条"},
+            }),
+            channel._handle_plain_message({
+                "msgid": "timeout-2",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "text": {"content": "第二条"},
+            }),
+        )
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        payloads = []
+        for reply in (first, second):
+            stream_id = json.loads(reply or "{}")["stream"]["id"]
+            final = await channel._handle_plain_message({"msgtype": "stream", "stream": {"id": stream_id}})
+            payloads.append(json.loads(final or "{}"))
+        return payloads[0], payloads[1]
+
+    first, second = asyncio.run(scenario())
+
+    assert first["stream"]["content"] == "本次处理超时，请稍后重试。"
+    assert first["stream"]["finish"] is True
+    assert second["stream"]["content"] == "第二条已处理"
+    assert second["stream"]["finish"] is True
+
+
+def test_stop_cancels_server_task_after_graceful_shutdown_timeout() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            shutdown_timeout_seconds=0.01,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[bool, bool]:
+        async def hung_server() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(hung_server())
+        await asyncio.sleep(0)
+        server = SimpleNamespace(should_exit=False)
+        channel._server = server  # ty: ignore[invalid-assignment]
+        channel._server_task = task
+
+        await channel.stop()
+
+        return server.should_exit, task.cancelled()
+
+    should_exit, cancelled = asyncio.run(scenario())
+
+    assert should_exit is True
+    assert cancelled is True
+
+
+def test_stop_does_not_wait_forever_when_dispatch_task_suppresses_cancellation() -> None:
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            shutdown_timeout_seconds=0.01,
+            userid_resolve_mode="",
+        ),
+    )
+
+    async def scenario() -> tuple[bool, bool]:
+        first_cancellation_seen = asyncio.Event()
+        release = asyncio.Event()
+
+        async def stubborn_dispatch() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancellation_seen.set()
+                await release.wait()
+
+        task = asyncio.create_task(stubborn_dispatch())
+        channel._dispatch_tasks.add(task)
+        await asyncio.sleep(0)
+
+        await channel.stop()
+        returned_while_pending = not task.done()
+        release.set()
+        await task
+        return first_cancellation_seen.is_set(), returned_while_pending
+
+    assert asyncio.run(scenario()) == (True, True)
+
+
 def test_stream_poll_returns_latest_content() -> None:
     channel = _channel()
     stream = asyncio.run(channel._create_stream(session_id="wecom:u1", chat_id="u1", from_userid="u1"))

@@ -209,7 +209,11 @@ def test_graph_boundary_preserves_tool_state_and_passes_private_runtime_as_conte
     assert "_langgraph_runtime_context" not in graph_state
     assert graph_state["digital_employee_status"] == "found"
     assert str(graph_state["work_request_key"]).startswith("request_sha256_")
-    assert {"digital_employee_status", "work_request_key"} <= EnterpriseAgentState.__annotations__.keys()
+    assert {
+        "digital_employee_status",
+        "latest_user_message",
+        "work_request_key",
+    } <= EnterpriseAgentState.__annotations__.keys()
     assert runtime_mapping is not None
     runtime_context = EnterpriseAgentRuntimeContext(
         enterprise=cast("EnterpriseIdentityContext", runtime_mapping["enterprise"]),

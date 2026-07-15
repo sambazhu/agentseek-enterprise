@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,13 @@ class LangChainSettings(BaseSettings):
 
     # Uppercase field name so the env var is `BUB_LANGCHAIN_SPEC` (not `BUB_LANGCHAIN_spec`).
     SPEC: str = ""
+    RUN_TIMEOUT_SECONDS: float = Field(
+        default=180.0,
+        validation_alias=AliasChoices(
+            "BUB_LANGCHAIN_RUN_TIMEOUT_SECONDS",
+            "AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS",
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

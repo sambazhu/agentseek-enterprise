@@ -11,14 +11,15 @@ from agentseek_enterprise.langgraph_store import SQLAlchemyStore, SQLiteStore, b
 from agentseek_enterprise.long_term_memory import employee_memory_tools
 from agentseek_enterprise.memory import (
     SHORT_TERM_MEMORY_STATE_KEY,
-    SQLAlchemyShortTermMemoryStore,
     ShortTermMemorySettings,
+    SQLAlchemyShortTermMemoryStore,
     SQLiteShortTermMemoryStore,
     build_short_term_memory_store,
 )
 from agentseek_enterprise.plugin import (
     EMPLOYEE_CONTEXT_STATE_KEY,
     EMPLOYEE_IDENTITY_STATE_KEY,
+    LATEST_USER_MESSAGE_STATE_KEY,
     EnterprisePlugin,
     extract_oa_account,
     format_employee_context_for_prompt,
@@ -101,6 +102,16 @@ def test_load_state_skips_when_identity_disabled(monkeypatch: Any) -> None:
     plugin = EnterprisePlugin()
 
     assert plugin.load_state({"from_userid": "chenkang2"}, "s1") == {}
+
+
+def test_load_state_preserves_latest_user_message_for_runtime_guards(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    plugin = EnterprisePlugin()
+
+    state = plugin.load_state({"content": "  确认  "}, "wecom:chenkang2")
+
+    assert state[LATEST_USER_MESSAGE_STATE_KEY] == "确认"
 
 
 def test_load_state_marks_missing_employee(monkeypatch: Any) -> None:
@@ -200,7 +211,9 @@ def test_short_term_memory_persists_recent_messages(monkeypatch: Any, tmp_path: 
     assert [item["role"] for item in memory["recent_messages"]] == ["user", "assistant"]
     assert memory["recent_messages"][0]["content"] == "帮我记一下，我明天去深圳出差"
     assert memory["recent_messages"][1]["content"] == "好的，我记住了。"
-    assert plugin.load_state({"content": "hi"}, "wecom:other") == {}
+    assert plugin.load_state({"content": "hi"}, "wecom:other") == {
+        LATEST_USER_MESSAGE_STATE_KEY: "hi"
+    }
 
 
 def test_short_term_memory_sqlite_uses_wal_and_busy_timeout(tmp_path: Any) -> None:

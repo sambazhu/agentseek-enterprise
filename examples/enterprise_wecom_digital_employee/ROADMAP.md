@@ -550,14 +550,23 @@ M2 按四个小切片推进，避免把澄清、检索、外部授权和写作�
 4. **M2-04**：部门知识不足时向员工展示缺口，由员工选择 Gildata/公开搜索、
    上传材料或保留缺口继续生成。
 
-当前状态：M2-01、M2-02、M2-03 已通过 Mac mini PostgreSQL 与企微活体验证。
+当前状态：M2-01、M2-02、M2-03、M2-04 已通过 Mac mini PostgreSQL 与企微活体验证，
+M2 正式关闭，可以进入 M3。
 M2-03 已实现随 PackSnapshot 固定的模板检索 manifest、已确认 ReportBrief
 守卫、内部知识编排、schema revision 7 SourceRecord 账本和确定性
 coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权和
 可审计的 Gildata/Tavily SourceRecord 登记。首次活体验证发现固定行业问题会
 掩盖报告主题证据缺口，以及模型可绕过工具直接输出报告正文。修复版 Pack 1.2.0
 新增 `report_topic` 直接证据问题，并在 parse-output 交付边界增加 M2 正文守卫和
-审计事件；等待 Mac mini PostgreSQL 与企微活体复验后关闭 M2-04。
+审计事件。最终复验确认 coverage/选项/resolve 输出不会被误拦，Gildata/Tavily、
+合同修订、幂等重放和 fail-closed 均通过。当前 Pack 的主题直接证据问题有意保持
+严格；`choices=[]` 是合同级边界而不是当前样例知识库的 live 必达场景，不为制造
+该场景降低关键词证据门槛。
+
+进入 M3 前完成两项运行时加固：同一 WeCom session 使用有界队列单飞处理，模型和
+stream 均设超时以释放后续消息；原始本轮用户文本通过显式 LangGraph state 字段传给
+输出守卫，使裸“确认”的 fail-closed backstop 在 live 路径生效。观测继续只保存
+digest、长度、诊断信号和工具序列，不持久化员工原文或守卫前报告正文。
 
 正式研究必须建立在已确认的 ReportBrief 上。provisional ReportBrief 可以在
 `draft/intake` 中保存和渐进补全，但不能触发知识检索或报告写作。

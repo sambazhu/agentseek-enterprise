@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from agentseek_langchain.ag_ui import runtime_context_from_state
 from agentseek_langchain.config import get_langchain_settings
 from agentseek_langchain.loader import load_spec_from_path
 from agentseek_langchain.spec import InvocationContext
+
+_MODEL_TIMEOUT_MESSAGE = "本次模型处理超时，请稍后重试。"
 
 
 class LangChainRunnablePlugin:
@@ -86,7 +89,13 @@ class LangChainRunnablePlugin:
         if spec is None:
             return None
         await self._enrich_state_from_prompt_hooks(prompt, session_id, state)
-        return await spec.invoke(self._build_context(prompt, session_id, state))
+        timeout = _run_timeout_seconds()
+        try:
+            async with asyncio.timeout(timeout):
+                return await spec.invoke(self._build_context(prompt, session_id, state))
+        except TimeoutError:
+            logger.error("LangChain turn timed out session_id={} timeout={}s", session_id, timeout)
+            return _MODEL_TIMEOUT_MESSAGE
 
     @hookimpl(tryfirst=True)
     async def run_model_stream(
@@ -105,10 +114,19 @@ class LangChainRunnablePlugin:
 
         async def iterator():
             chunks: list[str] = []
-            async for chunk in spec.stream(context):
-                chunks.append(chunk)
-                yield StreamEvent("text", {"delta": chunk})
-            yield StreamEvent("final", {"text": "".join(chunks), "ok": True})
+            timeout = _run_timeout_seconds()
+            ok = True
+            try:
+                async with asyncio.timeout(timeout):
+                    async for chunk in spec.stream(context):
+                        chunks.append(chunk)
+                        yield StreamEvent("text", {"delta": chunk})
+            except TimeoutError:
+                ok = False
+                logger.error("LangChain stream timed out session_id={} timeout={}s", session_id, timeout)
+                chunks.append(_MODEL_TIMEOUT_MESSAGE)
+                yield StreamEvent("text", {"delta": _MODEL_TIMEOUT_MESSAGE})
+            yield StreamEvent("final", {"text": "".join(chunks), "ok": ok})
 
         return AsyncStreamEvents(iterator(), state=stream_state)
 
@@ -122,6 +140,11 @@ def _prompt_text(prompt: str | list[dict[str, Any]]) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts)
+
+
+def _run_timeout_seconds() -> float:
+    settings = get_langchain_settings()
+    return max(0.01, float(getattr(settings, "RUN_TIMEOUT_SECONDS", 180.0) or 180.0))
 
 
 def main(framework: object | None = None) -> LangChainRunnablePlugin:

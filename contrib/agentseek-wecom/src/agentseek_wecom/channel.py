@@ -110,6 +110,8 @@ class WeComChannel(Channel):
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
+        self._session_queues: dict[str, asyncio.Queue[ChannelMessage]] = {}
+        self._session_workers: dict[str, asyncio.Task[None]] = {}
         self.app = self._build_app()
 
     @property
@@ -145,13 +147,31 @@ class WeComChannel(Channel):
         if server is not None:
             server.should_exit = True
         if task is not None and not task.done():
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for dispatch_task in list(self._dispatch_tasks):
+            try:
+                async with asyncio.timeout(max(0.1, self.settings.shutdown_timeout_seconds)):
+                    await task
+            except TimeoutError:
+                logger.warning("wecom.server graceful shutdown timed out; cancelling server task")
+                task.cancel()
+                _, pending = await asyncio.wait(
+                    {task},
+                    timeout=max(0.1, self.settings.shutdown_timeout_seconds),
+                )
+                if pending:
+                    logger.error("wecom.server task did not stop after cancellation")
+        dispatch_tasks = list(self._dispatch_tasks)
+        for dispatch_task in dispatch_tasks:
             dispatch_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await dispatch_task
+        if dispatch_tasks:
+            _, pending = await asyncio.wait(
+                dispatch_tasks,
+                timeout=max(0.1, self.settings.shutdown_timeout_seconds),
+            )
+            if pending:
+                logger.warning("wecom.dispatch graceful shutdown timed out after cancellation")
         self._dispatch_tasks.clear()
+        self._session_workers.clear()
+        self._session_queues.clear()
 
     async def send(self, message: ChannelMessage) -> None:
         stream = await self._stream_for_outbound(message)
@@ -607,9 +627,121 @@ class WeComChannel(Channel):
         )
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
-        task = asyncio.create_task(self._run_receive(message), name=f"agentseek-wecom.dispatch.{message.session_id}")
+        queue = self._session_queues.get(message.session_id)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=max(1, self.settings.session_queue_maxsize))
+            self._session_queues[message.session_id] = queue
+        try:
+            queue.put_nowait(message)
+        except asyncio.QueueFull:
+            self._finish_message_stream(
+                message,
+                content="当前消息过多，请稍后重试。",
+                event="wecom_turn_queue_rejected",
+                status="rejected",
+            )
+            return
+        worker = self._session_workers.get(message.session_id)
+        if worker is not None and not worker.done():
+            _emit_enterprise_event(
+                "wecom_turn_queued",
+                session_id=message.session_id,
+                queue_depth=queue.qsize(),
+            )
+            return
+        task = asyncio.create_task(
+            self._run_session_queue(message.session_id),
+            name=f"agentseek-wecom.session-worker.{message.session_id}",
+        )
+        self._session_workers[message.session_id] = task
         self._dispatch_tasks.add(task)
         task.add_done_callback(self._on_dispatch_done)
+
+    async def _run_session_queue(self, session_id: str) -> None:
+        queue = self._session_queues[session_id]
+        try:
+            while True:
+                try:
+                    message = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    await self._dispatch_one(message)
+                finally:
+                    queue.task_done()
+        finally:
+            current = asyncio.current_task()
+            if self._session_workers.get(session_id) is current:
+                self._session_workers.pop(session_id, None)
+                self._session_queues.pop(session_id, None)
+
+    async def _dispatch_one(self, message: ChannelMessage) -> None:
+        started_at = time.monotonic()
+        enqueue_timeout = min(max(0.05, self.settings.turn_timeout_seconds), 10.0)
+        try:
+            async with asyncio.timeout(enqueue_timeout):
+                await self._run_receive(message)
+        except TimeoutError:
+            self._finish_message_stream(
+                message,
+                content="消息进入处理队列超时，请稍后重试。",
+                event="wecom_turn_enqueue_timeout",
+                status="timeout",
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.opt(exception=exc).error("wecom.dispatch failed session_id={}", message.session_id)
+            self._finish_message_stream(
+                message,
+                content="消息处理失败，请稍后重试。",
+                event="wecom_dispatch_failed",
+                status="error",
+                error_type=type(exc).__name__,
+            )
+            return
+        await self._wait_for_message_stream(message, started_at=started_at)
+
+    async def _wait_for_message_stream(self, message: ChannelMessage, *, started_at: float) -> None:
+        stream_id = getattr(message, _STREAM_ID_ATTR, None)
+        if not isinstance(stream_id, str):
+            return
+        deadline = started_at + max(0.05, self.settings.turn_timeout_seconds)
+        while time.monotonic() < deadline:
+            stream = await self._get_stream(stream_id)
+            if stream is None or stream.finish:
+                return
+            await asyncio.sleep(0.05)
+        self._finish_message_stream(
+            message,
+            content="本次处理超时，请稍后重试。",
+            event="wecom_turn_timeout",
+            status="timeout",
+        )
+
+    def _finish_message_stream(
+        self,
+        message: ChannelMessage,
+        *,
+        content: str,
+        event: str,
+        status: str,
+        error_type: str = "",
+    ) -> None:
+        stream_id = getattr(message, _STREAM_ID_ATTR, None)
+        stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
+        queue = self._session_queues.get(message.session_id)
+        if stream is not None and not stream.finish:
+            stream.update(content=content, finish=True)
+        _emit_enterprise_event(
+            event,
+            status=status,
+            stream_id=stream_id if isinstance(stream_id, str) else "",
+            session_id=message.session_id,
+            queue_depth=queue.qsize() if queue is not None else 0,
+            error_type=error_type,
+        )
 
     async def _run_receive(self, message: ChannelMessage) -> None:
         if self._on_receive is None:

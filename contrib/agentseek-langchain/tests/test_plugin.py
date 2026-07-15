@@ -34,6 +34,13 @@ class _AsyncRunnableWithContext:
         return self.output
 
 
+class _HangingRunnable:
+    async def ainvoke(self, runnable_input: object, config: ObjectDict | None = None) -> str:
+        del runnable_input, config
+        await asyncio.Event().wait()
+        return "unreachable"
+
+
 class _HookRuntime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str, ObjectDict]] = []
@@ -131,6 +138,51 @@ def test_plugin_run_model_stream_wraps_single_result(monkeypatch, tmp_path) -> N
     assert [(event.kind, event.data) for event in events] == [
         ("text", {"delta": "streamed-once"}),
         ("final", {"text": "streamed-once", "ok": True}),
+    ]
+
+
+def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_path) -> None:
+    spec = text_spec(_HangingRunnable())
+    monkeypatch.setattr(
+        plugin_module,
+        "get_langchain_settings",
+        lambda: SimpleNamespace(SPEC="dummy:SPEC", RUN_TIMEOUT_SECONDS=0.01),
+    )
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+
+    result = asyncio.run(
+        plugin_module.LangChainRunnablePlugin().run_model(
+            prompt="hello",
+            session_id="session-timeout",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+
+    assert result == plugin_module._MODEL_TIMEOUT_MESSAGE
+
+
+def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -> None:
+    spec = text_spec(_HangingRunnable())
+    monkeypatch.setattr(
+        plugin_module,
+        "get_langchain_settings",
+        lambda: SimpleNamespace(SPEC="dummy:SPEC", RUN_TIMEOUT_SECONDS=0.01),
+    )
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    plugin = plugin_module.LangChainRunnablePlugin()
+
+    stream = asyncio.run(
+        plugin.run_model_stream(
+            prompt="hello",
+            session_id="session-stream-timeout",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+    events = asyncio.run(_collect_events(stream))
+
+    assert [(event.kind, event.data) for event in events] == [
+        ("text", {"delta": plugin_module._MODEL_TIMEOUT_MESSAGE}),
+        ("final", {"text": plugin_module._MODEL_TIMEOUT_MESSAGE, "ok": False}),
     ]
 
 

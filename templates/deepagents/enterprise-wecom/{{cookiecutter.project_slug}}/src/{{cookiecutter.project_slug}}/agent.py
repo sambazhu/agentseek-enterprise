@@ -70,6 +70,7 @@ class EnterpriseAgentState(DeepAgentState):
     current_work: NotRequired[dict[str, Any]]
     digital_employee_status: NotRequired[str]
     digital_employee_profile: NotRequired[dict[str, Any]]
+    latest_user_message: NotRequired[str]
     work_request_key: NotRequired[str]
 
 
@@ -127,13 +128,14 @@ def build_spec():
         runnable_input = base_spec.build_input(context)
         if not isinstance(runnable_input, dict):
             return runnable_input
+        runnable_input = dict(runnable_input)
+        if latest_user_message := _clean(context.state.get("latest_user_message")):
+            runnable_input["latest_user_message"] = latest_user_message
         messages = runnable_input.get("messages")
         if not isinstance(messages, list):
-            runnable_input = dict(runnable_input)
             runnable_input["files"] = _STATIC_ASSETS.files_for_invocation()
             return runnable_input
         runtime_messages = _runtime_context_messages(context.state)
-        runnable_input = dict(runnable_input)
         if runtime_messages:
             runnable_input["messages"] = [*runtime_messages, *messages]
         runnable_input["files"] = _STATIC_ASSETS.files_for_invocation()

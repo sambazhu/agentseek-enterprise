@@ -64,6 +64,22 @@ def test_generic_confirmation_is_blocked_and_audited() -> None:
     assert fields["tool_sequence"] == []
 
 
+def test_generic_confirmation_uses_explicit_live_state_when_messages_drop_human_input() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    result = _result("historical request", "我会继续处理当前任务。")
+    result["messages"] = [AIMessage(content="我会继续处理当前任务。")]
+    result["latest_user_message"] = "确认"
+
+    guarded = enforce_m2_output_guard(
+        result,
+        "我会继续处理当前任务。",
+        event_sink=lambda event, **fields: events.append((event, fields)),
+    )
+
+    assert guarded == M2_OUTPUT_BLOCKED_MESSAGE
+    assert events[0][1]["reason"] == "generic_confirmation"
+
+
 def test_markdown_report_body_and_unsupported_figures_are_blocked() -> None:
     output = """# 完整报告正文
 
