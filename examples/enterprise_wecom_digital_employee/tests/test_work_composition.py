@@ -17,6 +17,7 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
+from enterprise_wecom_digital_employee.report_brief import ReportBrief
 from enterprise_wecom_digital_employee.work_composition import IndustryReportWorkComposition
 from sqlalchemy import create_engine
 
@@ -168,6 +169,35 @@ def test_current_work_is_scoped_and_loaded_on_follow_up_turn(tmp_path: Path) -> 
     assert follow_up["current_work"]["work_id"] == "work_live_001"
     assert "[CurrentWork]" in follow_up["current_work_context"]
     assert "current_work" not in other_employee
+
+
+def test_current_work_summary_publishes_current_report_brief_as_distinct_ledger_field(
+    tmp_path: Path,
+) -> None:
+    composition = build_composition(tmp_path)
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    composition.create_report_work(state)
+    brief = composition.save_report_brief(
+        state,
+        None,
+        ReportBrief(title="证券行业数字化转型报告", target_audience=("公司管理层",)),
+    )
+    composition.confirm_report_brief(
+        state,
+        None,
+        expected_version=brief.contract_version,
+        latest_user_message=f"确认 ReportBrief v{brief.contract_version}。",
+    )
+
+    follow_up = authorized_state()
+    composition.enrich_state(message("message-002"), "wecom:test", follow_up)
+
+    assert follow_up["current_work"]["report_brief"] == {
+        "contract_version": 1,
+        "status": "confirmed",
+    }
+    assert "current_report_brief: v1 status=confirmed" in follow_up["current_work_context"]
 
 
 def test_distinct_wecom_message_ids_do_not_collapse_identical_content(tmp_path: Path) -> None:

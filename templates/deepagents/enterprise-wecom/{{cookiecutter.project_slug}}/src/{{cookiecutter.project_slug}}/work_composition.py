@@ -257,6 +257,16 @@ class IndustryReportWorkComposition:
             playbook_id=self.playbook_id,
         )
 
+    def current_work_summary(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> dict[str, object] | None:
+        """Return the current WorkItem with independently named contract versions."""
+
+        item = self.current_work(state, runtime_context)
+        return self._ledger_summary(item) if item is not None else None
+
     def save_report_brief(
         self,
         state: Mapping[str, object],
@@ -272,18 +282,24 @@ class IndustryReportWorkComposition:
             contract_type=REPORT_BRIEF_CONTRACT_TYPE,
         )
         if current is not None and dict(current.payload) == brief.to_payload():
-            return current
-        version = 1 if current is None else current.contract_version + 1
-        candidate = brief.to_contract(
-            work_id=item.work_id,
-            tenant_id=item.tenant_id,
-            contract_version=version,
-            created_by=item.requester_id,
-            created_at=self._factory.clock(),
-        )
-        if current is None:
-            return self.repository.create_work_contract(candidate)
-        return self.repository.revise_work_contract(candidate)
+            saved = current
+        else:
+            version = 1 if current is None else current.contract_version + 1
+            candidate = brief.to_contract(
+                work_id=item.work_id,
+                tenant_id=item.tenant_id,
+                contract_version=version,
+                created_by=item.requester_id,
+                created_at=self._factory.clock(),
+            )
+            saved = (
+                self.repository.create_work_contract(candidate)
+                if current is None
+                else self.repository.revise_work_contract(candidate)
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return saved
 
     def confirm_report_brief(
         self,
@@ -309,19 +325,23 @@ class IndustryReportWorkComposition:
         if current.contract_version != expected_version:
             raise WorkCompositionError("ReportBrief 版本不匹配，请重新展示当前版本后再确认。")
         if current.status is WorkContractStatus.CONFIRMED:
-            return current
-        if not explicitly_confirms_report_brief(latest_user_message, expected_version=expected_version):
-            raise WorkCompositionError(
-                f"员工最新消息未显式确认 ReportBrief v{expected_version}，不能确认或启动正式研究。"
+            confirmed = current
+        else:
+            if not explicitly_confirms_report_brief(latest_user_message, expected_version=expected_version):
+                raise WorkCompositionError(
+                    f"员工最新消息未显式确认 ReportBrief v{expected_version}，不能确认或启动正式研究。"
+                )
+            confirmed = self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+                expected_contract_version=expected_version,
+                confirmed_by=item.requester_id,
+                confirmed_at=self._factory.clock(),
             )
-        return self.repository.confirm_work_contract(
-            tenant_id=item.tenant_id,
-            work_id=item.work_id,
-            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
-            expected_contract_version=expected_version,
-            confirmed_by=item.requester_id,
-            confirmed_at=self._factory.clock(),
-        )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return confirmed
 
     def confirm_research_gap_decision(
         self,
@@ -336,6 +356,7 @@ class IndustryReportWorkComposition:
         item = self.current_work(state, runtime_context)
         if item is None:
             raise WorkCompositionError("当前员工没有可登记研究缺口决策的进行中报告任务。")
+        self._require_current_confirmed_brief(item, decision.report_brief_version)
         if not explicitly_selects_gap_action(
             latest_user_message,
             expected_version=decision.report_brief_version,
@@ -401,6 +422,20 @@ class IndustryReportWorkComposition:
                 return latest
             raise
 
+    def _require_current_confirmed_brief(self, item: WorkItem, expected_version: int) -> None:
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+        )
+        if current is None or current.status is not WorkContractStatus.CONFIRMED:
+            raise WorkCompositionError("当前任务没有已确认的 ReportBrief，不执行研究缺口决策。")
+        if current.contract_version != expected_version:
+            raise WorkCompositionError(
+                f"研究缺口决策绑定的 ReportBrief v{expected_version} 已失效；"
+                f"当前已确认版本为 ReportBrief v{current.contract_version}，请重新展示当前缺口选项。"
+            )
+
     def _authorization_status(self, state: Mapping[str, object]) -> str:
         if self.profile.service_status != "enabled":
             return "disabled"
@@ -415,7 +450,7 @@ class IndustryReportWorkComposition:
         return "found"
 
     def _publish_current_work(self, state: dict[str, Any], item: WorkItem) -> None:
-        summary = _work_summary(item)
+        summary = self._ledger_summary(item)
         state["current_work"] = summary
         state["current_work_context"] = _current_work_context(summary)
         _merge_runtime_context(
@@ -432,6 +467,37 @@ class IndustryReportWorkComposition:
                 "runtime_release": item.runtime_release,
             },
         )
+
+    def _ledger_summary(self, item: WorkItem) -> dict[str, object]:
+        summary = _work_summary(item)
+        brief = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+        )
+        if brief is not None:
+            summary["report_brief"] = {
+                "contract_version": brief.contract_version,
+                "status": brief.status.value,
+            }
+        gap_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+        )
+        if gap_contract is not None:
+            try:
+                decision = ResearchGapDecision.from_contract(gap_contract)
+            except (TypeError, ValueError):
+                pass
+            else:
+                summary["research_gap_decision"] = {
+                    "contract_version": gap_contract.contract_version,
+                    "status": gap_contract.status.value,
+                    "report_brief_version": decision.report_brief_version,
+                    "action": decision.action.value,
+                }
+        return summary
 
 
 def build_work_binding() -> IndustryReportWorkComposition:
@@ -670,16 +736,37 @@ def _work_summary(item: WorkItem) -> dict[str, object]:
 def _current_work_context(summary: Mapping[str, object]) -> str:
     raw_file_ids = summary.get("input_file_ids")
     file_ids = [str(value) for value in raw_file_ids] if isinstance(raw_file_ids, list) else []
-    return "\n".join((
+    lines = [
         "[CurrentWork]",
         f"work_id: {summary['work_id']}",
         f"status: {summary['status']}",
         f"phase: {summary['current_phase']}",
         f"playbook: {summary['playbook_id']}@{summary['playbook_version']}",
         f"input_file_ids: {', '.join(file_ids) or '<none>'}",
+    ]
+    brief = summary.get("report_brief")
+    if isinstance(brief, Mapping):
+        lines.append(
+            "current_report_brief: "
+            f"v{brief.get('contract_version')} status={brief.get('status')}"
+        )
+    decision = summary.get("research_gap_decision")
+    if isinstance(decision, Mapping):
+        lines.append(
+            "latest_gap_decision: "
+            f"contract_v{decision.get('contract_version')} status={decision.get('status')} "
+            f"bound_report_brief_v{decision.get('report_brief_version')} "
+            f"action={decision.get('action')}"
+        )
+        lines.append(
+            "gap-decision 的 contract_version 和 bound_report_brief_version 不是当前 ReportBrief 版本；"
+            "当前版本只能以 current_report_brief 为准。"
+        )
+    lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",
         "[/CurrentWork]",
     ))
+    return "\n".join(lines)
 
 
 def _optional(value: str) -> str | None:

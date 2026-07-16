@@ -4,9 +4,10 @@ from typing import Any
 
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
+    REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
     enforce_m2_output_guard,
 )
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 def _result(
@@ -105,6 +106,74 @@ def test_versioned_confirmation_and_operational_reply_are_allowed() -> None:
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == output
+
+
+def test_unverified_report_brief_save_claim_is_blocked_and_audited() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    output = "ReportBrief v6 已保存，输出格式已更新为 Markdown 和 DOCX。"
+
+    guarded = enforce_m2_output_guard(
+        _result("改为 Markdown 和 DOCX", output),
+        output,
+        event_sink=lambda event, **fields: events.append((event, fields)),
+    )
+
+    assert guarded == REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
+    assert events[0][1]["reason"] == "unverified_report_brief_write"
+    assert events[0][1]["tool_sequence"] == []
+    assert output not in str(events[0][1])
+
+
+def test_report_brief_save_claim_requires_matching_successful_tool_result() -> None:
+    output = "ReportBrief v6 已保存，输出格式已更新为 Markdown 和 DOCX。"
+    result = _result("改为 Markdown 和 DOCX", output)
+    result["messages"] = [
+        HumanMessage(content="改为 Markdown 和 DOCX"),
+        AIMessage(content="", tool_calls=[{
+            "name": "save_report_brief",
+            "args": {},
+            "id": "call_save",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportBrief v6 已保存，状态=provisional。",
+            name="save_report_brief",
+            tool_call_id="call_save",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_report_brief_save_claim_rejects_mismatched_tool_result_version() -> None:
+    output = "ReportBrief v7 已保存，输出格式已更新为 XLSX。"
+    result = _result("输出为 XLSX", output)
+    result["messages"] = [
+        HumanMessage(content="输出为 XLSX"),
+        AIMessage(content="", tool_calls=[{
+            "name": "save_report_brief",
+            "args": {},
+            "id": "call_save",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="output_formats contains an unsupported format",
+            name="save_report_brief",
+            tool_call_id="call_save",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
 
 
 def test_coverage_table_and_section_labels_are_allowed_with_safe_diagnostics() -> None:

@@ -77,15 +77,31 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
 
     @tool("get_current_work_status")
     def get_current_work_status(runtime: ToolRuntime) -> str:
-        """Read the authenticated employee's current non-terminal WorkItem status."""
+        """Read current WorkItem, ReportBrief, and gap-decision versions from the ledger."""
 
-        item = composition.current_work(runtime.state, runtime.context)
-        if item is None:
+        summary = composition.current_work_summary(runtime.state, runtime.context)
+        if summary is None:
             return "当前员工没有可见的进行中任务。"
-        return (
-            f"当前任务：work_id={item.work_id}，status={item.status.value}，"
-            f"phase={item.current_phase}，playbook={item.playbook_id}@{item.playbook_version}。"
-        )
+        lines = [
+            f"当前任务：work_id={summary['work_id']}，status={summary['status']}，"
+            f"phase={summary['current_phase']}，"
+            f"playbook={summary['playbook_id']}@{summary['playbook_version']}。"
+        ]
+        brief = summary.get("report_brief")
+        if isinstance(brief, Mapping):
+            lines.append(
+                f"当前 ReportBrief：v{brief.get('contract_version')}，status={brief.get('status')}。"
+            )
+        decision = summary.get("research_gap_decision")
+        if isinstance(decision, Mapping):
+            lines.append(
+                "最新缺口决策："
+                f"contract_v{decision.get('contract_version')}，"
+                f"bound_report_brief_v{decision.get('report_brief_version')}，"
+                f"status={decision.get('status')}，action={decision.get('action')}。"
+            )
+            lines.append("缺口决策绑定版本是历史决策字段，不代表当前 ReportBrief 版本。")
+        return "\n".join(lines)
 
     @tool("save_report_brief")
     def save_report_brief(
@@ -104,6 +120,9 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         employee and ask them to confirm that exact version. output_formats accepts
         only markdown, docx, or pdf. Summary, report, and outline describe content,
         not file formats; omit output_formats to use the default docx format.
+        You must call this tool for every save or revision. Never narrate that a
+        ReportBrief was saved, revised, or reformatted unless this tool returns a
+        successful ledger version in the same turn.
         """
 
         try:
@@ -202,7 +221,9 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         exactly one action: Gildata, Tavily public search, upload materials, or
         continue with gaps. The server verifies that message, persists a confirmed
         decision contract, and only then may execute the selected external MCP.
-        Never call this tool based on an earlier turn or a generic "confirm".
+        Never call this tool based on an earlier turn or a generic "confirm". The
+        current ReportBrief version comes from the latest confirmed report-brief
+        contract, never from an older gap-decision contract.
         """
 
         async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:

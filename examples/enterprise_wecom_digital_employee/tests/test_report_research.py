@@ -38,6 +38,7 @@ from enterprise_wecom_digital_employee.report_research import (
 from enterprise_wecom_digital_employee.research_gap_decision import (
     RESEARCH_GAP_DECISION_CONTRACT_TYPE,
     ResearchGapAction,
+    ResearchGapDecision,
     explicitly_selects_gap_action,
 )
 from enterprise_wecom_digital_employee.work_composition import (
@@ -431,6 +432,105 @@ async def test_external_gap_search_requires_choice_persists_sources_and_replays_
     assert decision is not None
     assert decision.status is WorkContractStatus.CONFIRMED
     assert decision.confirmed_by == f"hmac-{'2' * 64}"
+
+
+@pytest.mark.anyio
+async def test_revised_report_brief_supersedes_old_gap_decision_version(tmp_path: Path) -> None:
+    composition, state = _confirmed_composition(tmp_path)
+
+    async def invoke(server: str, tool_name: str, arguments: dict[str, Any], confirmed: bool) -> str:
+        del confirmed
+        if server == "department-knowledge":
+            return _internal_mcp_response(tool_name, arguments)
+        return json.dumps({"results": [{"title": "public result"}]})
+
+    await resolve_research_gaps(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        action=ResearchGapAction.CONTINUE_WITH_GAPS,
+        latest_user_message="ReportBrief v1 保留缺口继续生成",
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+    old_decision_contract = composition.repository.get_current_work_contract(
+        tenant_id="tenant-test",
+        work_id="work_live_001",
+        contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    )
+    assert old_decision_contract is not None
+    old_decision = ResearchGapDecision.from_contract(old_decision_contract)
+    revised = composition.save_report_brief(
+        state,
+        None,
+        ReportBrief(
+            title="证券行业数字化转型报告（修订）",
+            target_audience=("公司管理层",),
+            coverage_period="2026年全年",
+        ),
+    )
+    composition.confirm_report_brief(
+        state,
+        None,
+        expected_version=revised.contract_version,
+        latest_user_message="确认 ReportBrief v2。",
+    )
+
+    transitional_summary = composition.current_work_summary(state)
+    assert transitional_summary is not None
+    assert transitional_summary["report_brief"] == {"contract_version": 2, "status": "confirmed"}
+    assert transitional_summary["research_gap_decision"] == {
+        "contract_version": 1,
+        "status": "confirmed",
+        "report_brief_version": 1,
+        "action": "continue_with_gaps",
+    }
+    with pytest.raises(WorkCompositionError, match="ReportBrief v1 已失效"):
+        composition.confirm_research_gap_decision(
+            state,
+            None,
+            decision=old_decision,
+            latest_user_message="ReportBrief v1 保留缺口继续生成",
+        )
+
+    current = load_current_research_result(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+    )
+    assert current.plan.report_brief_version == 2
+    assert gap_options(current)["choices"][1]["confirmation"] == "允许 ReportBrief v2 使用 Tavily 公开搜索"
+
+    resolved = await resolve_research_gaps(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        template_path=TEMPLATE_PATH,
+        action=ResearchGapAction.PUBLIC_WEB,
+        latest_user_message="允许 ReportBrief v2 使用 Tavily 公开搜索",
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    )
+    decision_contract = composition.repository.get_current_work_contract(
+        tenant_id="tenant-test",
+        work_id="work_live_001",
+        contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    )
+
+    assert resolved.internal.plan.report_brief_version == 2
+    assert decision_contract is not None
+    assert ResearchGapDecision.from_contract(decision_contract).report_brief_version == 2
+    summary = composition.current_work_summary(state)
+    assert summary is not None
+    assert summary["report_brief"] == {"contract_version": 2, "status": "confirmed"}
+    assert summary["research_gap_decision"] == {
+        "contract_version": 2,
+        "status": "confirmed",
+        "report_brief_version": 2,
+        "action": "public_web",
+    }
 
 
 @pytest.mark.anyio

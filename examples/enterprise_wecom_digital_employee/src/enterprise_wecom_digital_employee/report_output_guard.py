@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from hashlib import sha256
 
 from agentseek_enterprise.observability import emit_enterprise_event
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 _GENERIC_CONFIRM_RE = re.compile(
@@ -29,12 +29,27 @@ _REPORT_SECTION_LABELS = (
     "风险提示",
 )
 _MAX_M2_OUTPUT_CHARS = 1200
+_REPORT_BRIEF_REF_RE = re.compile(
+    r"(?:report\s*brief|reportbrief|报告简报)\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?",
+    re.IGNORECASE,
+)
+_REPORT_BRIEF_WRITE_CLAIM_RE = re.compile(
+    r"(?:已|已经)?(?:保存|更新|修改|修订)|(?:保存|更新|修改|修订)(?:为|到)|"
+    r"输出格式.{0,12}(?:改为|更新为|设为)",
+    re.IGNORECASE,
+)
+_REPORT_BRIEF_SAVE_SUCCESS_RE = re.compile(r"ReportBrief\s+v(\d+)\s+已保存")
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "当前任务仍处于 M2 需求确认、内部研究和来源登记阶段，尚未启用报告正文生成。"
     "这次模型输出已被运行时守卫拦截，不作为报告或事实交付。"
     "请明确回复“确认 ReportBrief vN”，或从 get_report_research_gaps 返回的精确版本选项中选择一项。"
     "如果内部研究已无缺口，当前阶段只能返回覆盖结果，不会即兴编写报告。"
+)
+REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到本轮 save_report_brief 的成功账本写入，因此不能声称 ReportBrief "
+    "已保存、修订或更改输出格式。当前账本版本保持不变；请重新调用保存工具，"
+    "并以工具返回的版本为准。"
 )
 
 
@@ -51,11 +66,14 @@ def enforce_m2_output_guard(
         return output
     latest_user_message = _latest_human_message(result)
     signals = _output_shape_signals(output)
+    tool_sequence = _tool_call_sequence(result)
     reason = (
         "generic_confirmation"
         if _GENERIC_CONFIRM_RE.fullmatch(latest_user_message.strip())
         else "report_body"
         if _looks_like_report_body(output, signals=signals)
+        else "unverified_report_brief_write"
+        if _claims_unverified_report_brief_write(result, output)
         else ""
     )
     _emit_guard_event(
@@ -65,8 +83,10 @@ def enforce_m2_output_guard(
         work=work,
         output=output,
         signals=signals,
-        tool_sequence=_tool_call_sequence(result),
+        tool_sequence=tool_sequence,
     )
+    if reason == "unverified_report_brief_write":
+        return REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
     return M2_OUTPUT_BLOCKED_MESSAGE if reason else output
 
 
@@ -182,6 +202,57 @@ def _message_tool_calls(message: object) -> object:
     if isinstance(message, Mapping):
         return message.get("tool_calls", ())
     return ()
+
+
+def _claims_unverified_report_brief_write(result: object, output: str) -> bool:
+    if not _REPORT_BRIEF_WRITE_CLAIM_RE.search(output) or not _REPORT_BRIEF_REF_RE.search(output):
+        return False
+    claimed_versions = {int(value) for value in _REPORT_BRIEF_REF_RE.findall(output)}
+    saved_versions = _successful_report_brief_save_versions(result)
+    return not saved_versions or not claimed_versions.issubset(saved_versions)
+
+
+def _successful_report_brief_save_versions(result: object) -> set[int]:
+    if not isinstance(result, Mapping):
+        return set()
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return set()
+    save_call_ids: set[str] = set()
+    versions: set[int] = set()
+    for message in messages:
+        if _is_human_message(message):
+            save_call_ids.clear()
+            versions.clear()
+            continue
+        raw_calls = _message_tool_calls(message)
+        if isinstance(raw_calls, Sequence) and not isinstance(raw_calls, (str, bytes)):
+            for call in raw_calls:
+                if not isinstance(call, Mapping) or str(call.get("name") or "") != "save_report_brief":
+                    continue
+                call_id = str(call.get("id") or "").strip()
+                if call_id:
+                    save_call_ids.add(call_id)
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name != "save_report_brief" and tool_call_id not in save_call_ids:
+            continue
+        versions.update(int(value) for value in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content))
+    return versions
+
+
+def _tool_result_parts(message: object) -> tuple[str, str, str]:
+    if isinstance(message, ToolMessage):
+        return str(message.name or ""), str(message.tool_call_id or ""), _content_text(message.content)
+    if not isinstance(message, Mapping):
+        return "", "", ""
+    role = str(message.get("role") or message.get("type") or "").lower()
+    if role != "tool":
+        return "", "", ""
+    return (
+        str(message.get("name") or ""),
+        str(message.get("tool_call_id") or ""),
+        _content_text(message.get("content")),
+    )
 
 
 def _emit_guard_event(
