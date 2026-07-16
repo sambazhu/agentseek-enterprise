@@ -43,6 +43,16 @@ class _HangingRunnable:
         return "unreachable"
 
 
+class APITimeoutError(RuntimeError):
+    pass
+
+
+class _ProviderTimeoutRunnable:
+    async def ainvoke(self, runnable_input: object, config: ObjectDict | None = None) -> str:
+        del runnable_input, config
+        raise APITimeoutError
+
+
 class _HookRuntime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str, ObjectDict]] = []
@@ -110,8 +120,14 @@ def test_model_call_observability_emits_sizes_latency_and_usage_without_content(
 
     asyncio.run(scenario())
 
-    assert events[0][0] == "langchain_model_call"
-    fields = events[0][1]
+    assert [(event, fields["status"]) for event, fields in events] == [
+        ("langchain_model_call", "started"),
+        ("langchain_model_call", "succeeded"),
+    ]
+    started_fields = events[0][1]
+    assert started_fields["input_chars"] == len("system promptprivate request")
+    assert started_fields["model_name"] == "qwen-flash"
+    fields = events[1][1]
     assert fields["status"] == "succeeded"
     assert fields["session_id"] == "wecom:employee"
     assert fields["input_chars"] == len("system promptprivate request")
@@ -125,6 +141,7 @@ def test_model_call_observability_emits_sizes_latency_and_usage_without_content(
     assert fields["total_tokens"] == 14
     assert "private request" not in repr(fields)
     assert "private answer" not in repr(fields)
+    assert "private request" not in repr(started_fields)
 
 
 def test_run_stage_observability_locates_pre_model_work_without_content(monkeypatch, tmp_path) -> None:
@@ -272,6 +289,27 @@ def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -
         plugin.run_model_stream(
             prompt="hello",
             session_id="session-stream-timeout",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+    events = asyncio.run(_collect_events(stream))
+
+    assert [(event.kind, event.data) for event in events] == [
+        ("text", {"delta": plugin_module._MODEL_TIMEOUT_MESSAGE}),
+        ("final", {"text": plugin_module._MODEL_TIMEOUT_MESSAGE, "ok": False}),
+    ]
+
+
+def test_plugin_run_model_stream_converts_provider_timeout_to_terminal_message(monkeypatch, tmp_path) -> None:
+    spec = text_spec(_ProviderTimeoutRunnable())
+    monkeypatch.setattr(plugin_module, "get_langchain_settings", lambda: SimpleNamespace(SPEC="dummy:SPEC"))
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    plugin = plugin_module.LangChainRunnablePlugin()
+
+    stream = asyncio.run(
+        plugin.run_model_stream(
+            prompt="hello",
+            session_id="session-provider-timeout",
             state={"_runtime_workspace": str(tmp_path)},
         )
     )

@@ -49,6 +49,20 @@ class ProjectSettings(BaseSettings):
         default=300.0,
         validation_alias=AliasChoices("LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S"),
     )
+    openai_request_timeout_s: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices(
+            "AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS",
+            "LANGCHAIN_OPENAI_REQUEST_TIMEOUT_S",
+        ),
+    )
+    openai_max_retries: int = Field(
+        default=0,
+        validation_alias=AliasChoices(
+            "AGENTSEEK_MODEL_MAX_RETRIES",
+            "LANGCHAIN_OPENAI_MAX_RETRIES",
+        ),
+    )
     mcp_config_path: str = Field(
         default=".agents/mcp.json",
         validation_alias=AliasChoices("AGENTSEEK_MCP_CONFIG_PATH", "BUB_MCP_CONFIG_PATH"),
@@ -126,6 +140,9 @@ class ProjectSettings(BaseSettings):
             kwargs["base_url"] = base_url
         timeout = self.openai_stream_chunk_timeout_s
         kwargs["stream_chunk_timeout"] = None if timeout <= 0 else timeout
+        request_timeout = self.openai_request_timeout_s
+        kwargs["timeout"] = None if request_timeout <= 0 else request_timeout
+        kwargs["max_retries"] = max(0, self.openai_max_retries)
         return init_chat_model(model=bare_model, **kwargs)
 
     def resolved_mcp_config_path(self) -> Path:

@@ -49,15 +49,19 @@ class _ModelCallObservability(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         flattened = [message for batch in messages for message in batch]
-        self._calls[run_id] = _ModelCallStats(
-            started_at=time.monotonic(),
-            input_chars=sum(_content_chars(message.content) for message in flattened),
-            system_chars=sum(
-                _content_chars(message.content) for message in flattened if isinstance(message, SystemMessage)
+        self._record_start(
+            run_id,
+            _ModelCallStats(
+                started_at=time.monotonic(),
+                input_chars=sum(_content_chars(message.content) for message in flattened),
+                system_chars=sum(
+                    _content_chars(message.content) for message in flattened
+                    if isinstance(message, SystemMessage)
+                ),
+                message_count=len(flattened),
+                tool_count=_tool_count(kwargs),
+                model_name=_model_name(serialized, kwargs),
             ),
-            message_count=len(flattened),
-            tool_count=_tool_count(kwargs),
-            model_name=_model_name(serialized, kwargs),
         )
 
     async def on_llm_start(
@@ -68,7 +72,7 @@ class _ModelCallObservability(AsyncCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        self._calls.setdefault(
+        self._record_start(
             run_id,
             _ModelCallStats(
                 started_at=time.monotonic(),
@@ -78,6 +82,21 @@ class _ModelCallObservability(AsyncCallbackHandler):
                 tool_count=_tool_count(kwargs),
                 model_name=_model_name(serialized, kwargs),
             ),
+        )
+
+    def _record_start(self, run_id: UUID, stats: _ModelCallStats) -> None:
+        if run_id in self._calls:
+            return
+        self._calls[run_id] = stats
+        _emit_enterprise_event(
+            "langchain_model_call",
+            status="started",
+            session_id=self._session_id,
+            input_chars=stats.input_chars,
+            system_chars=stats.system_chars,
+            message_count=stats.message_count,
+            tool_count=stats.tool_count,
+            model_name=stats.model_name,
         )
 
     async def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
@@ -253,6 +272,21 @@ class LangChainRunnablePlugin:
             _emit_run_stage(session_id, stage="run_model", status="cancelled", started_at=run_started)
             raise
         except Exception as exc:
+            if _is_timeout_exception(exc):
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="timeout",
+                    started_at=invoke_started,
+                    error_type=type(exc).__name__,
+                )
+                _emit_run_stage(session_id, stage="run_model", status="timeout", started_at=run_started)
+                logger.error(
+                    "LangChain provider request timed out session_id={} error_type={}",
+                    session_id,
+                    type(exc).__name__,
+                )
+                return _MODEL_TIMEOUT_MESSAGE
             _emit_run_stage(
                 session_id,
                 stage="model_invoke",
@@ -377,22 +411,40 @@ class LangChainRunnablePlugin:
                 )
                 raise
             except Exception as exc:
-                _emit_run_stage(
-                    session_id,
-                    stage="model_invoke",
-                    status="error",
-                    started_at=invoke_started,
-                    error_type=type(exc).__name__,
-                    streaming=True,
-                )
-                _emit_run_stage(
-                    session_id,
-                    stage="run_model_stream",
-                    status="error",
-                    started_at=run_started,
-                    error_type=type(exc).__name__,
-                )
-                raise
+                if _is_timeout_exception(exc):
+                    ok = False
+                    _emit_run_stage(
+                        session_id,
+                        stage="model_invoke",
+                        status="timeout",
+                        started_at=invoke_started,
+                        error_type=type(exc).__name__,
+                        streaming=True,
+                    )
+                    logger.error(
+                        "LangChain provider stream timed out session_id={} error_type={}",
+                        session_id,
+                        type(exc).__name__,
+                    )
+                    chunks.append(_MODEL_TIMEOUT_MESSAGE)
+                    yield StreamEvent("text", {"delta": _MODEL_TIMEOUT_MESSAGE})
+                else:
+                    _emit_run_stage(
+                        session_id,
+                        stage="model_invoke",
+                        status="error",
+                        started_at=invoke_started,
+                        error_type=type(exc).__name__,
+                        streaming=True,
+                    )
+                    _emit_run_stage(
+                        session_id,
+                        stage="run_model_stream",
+                        status="error",
+                        started_at=run_started,
+                        error_type=type(exc).__name__,
+                    )
+                    raise
             else:
                 _emit_run_stage(
                     session_id,
@@ -446,6 +498,18 @@ def _emit_run_stage(
 def _run_timeout_seconds() -> float:
     settings = get_langchain_settings()
     return max(0.01, float(getattr(settings, "RUN_TIMEOUT_SECONDS", 180.0) or 180.0))
+
+
+def _is_timeout_exception(error: BaseException) -> bool:
+    timeout_names = {"APITimeoutError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout"}
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, TimeoutError) or type(current).__name__ in timeout_names:
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _content_chars(content: object) -> int:

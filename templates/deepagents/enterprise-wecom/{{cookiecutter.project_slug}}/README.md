@@ -389,8 +389,9 @@ AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 AI Bot callbacks that include `response_url` return the immediate acknowledgement,
 queue position, queue status, or rejection as a completed `stream` response. Accepted
 turns reserve the one-shot `response_url` for the terminal answer or timeout notice.
-Rejected turns finish only through the completed callback stream. They do not
-also consume `response_url`, which would duplicate the rejection.
+Rejected turns return a short "not queued" callback and use their own one-shot
+`response_url` for the detailed terminal reason. The two messages have distinct
+purposes and content, avoiding duplicate rejection text while completing delivery.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
@@ -420,6 +421,9 @@ stream polling.
 Redacted `langchain_run_stage` events show time spent resolving the runnable,
 enriching prompt state, building invocation context, and entering/completing the
 model invocation. They record counts and durations, never prompt or reply text.
+`langchain_model_call` emits `started` before provider I/O and then a terminal
+status. Configure the inner provider boundary with
+`AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS` and `AGENTSEEK_MODEL_MAX_RETRIES`.
 
 ### Enterprise Observability
 

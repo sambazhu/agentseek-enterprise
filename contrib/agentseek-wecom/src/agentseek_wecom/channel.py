@@ -71,6 +71,7 @@ class StreamReply:
     response_url: str | None = None
     initial_response_sent: bool = False
     initial_response_content: str | None = None
+    deferred_response_url_content: str | None = None
     response_url_consumed: bool = False
     content: str = ""
     finish: bool = False
@@ -679,6 +680,10 @@ class WeComChannel(Channel):
                 current.initial_response_content = current.content or "已收到，正在处理..."
             current.initial_response_sent = True
             if current.response_url:
+                if current.deferred_response_url_content:
+                    terminal_content = current.deferred_response_url_content
+                    current.deferred_response_url_content = None
+                    self._schedule_response_url_delivery(current, terminal_content)
                 return make_text_stream(stream_id, current.initial_response_content, True)
         return make_text_stream(
             stream_id,
@@ -705,6 +710,7 @@ class WeComChannel(Channel):
                     ),
                     event="wecom_turn_queue_rejected",
                     status="rejected",
+                    initial_content="已收到，本条消息未进入队列。",
                 )
                 return
             queued = QueuedTurn(
@@ -900,6 +906,7 @@ class WeComChannel(Channel):
         event: str,
         status: str,
         error_type: str = "",
+        initial_content: str | None = None,
     ) -> None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
@@ -907,6 +914,9 @@ class WeComChannel(Channel):
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
             should_deliver = bool(stream.response_url and stream.initial_response_sent)
+            if stream.response_url and not stream.initial_response_sent and initial_content:
+                stream.initial_response_content = initial_content
+                stream.deferred_response_url_content = content
         _emit_enterprise_event(
             event,
             status=status,

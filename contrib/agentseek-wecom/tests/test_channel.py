@@ -974,6 +974,17 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
             for index in range(5)
         ))
         payloads = [json.loads(reply or "{}") for reply in replies]
+        duplicate_rejection = await channel._handle_plain_message({
+            "msgid": "response-queue-4",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "responseurl": (
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                "response_code=queue-4"
+            ),
+            "text": {"content": "消息4"},
+        })
+        payloads.append(json.loads(duplicate_rejection or "{}"))
         release.set()
         await asyncio.gather(*list(channel._dispatch_tasks))
         return payloads, received
@@ -985,12 +996,18 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
     assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
     assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
     assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
-    assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
+    assert payloads[4]["stream"]["content"] == "已收到，本条消息未进入队列。"
+    assert payloads[5] == payloads[4]
     assert received == [f"消息{index}" for index in range(4)]
     delivered_urls = [url for url, _content in sender.calls]
-    assert len(delivered_urls) == 4
-    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(4))
-    assert not any("response_code=queue-4" in url for url in delivered_urls)
+    assert len(delivered_urls) == 5
+    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(5))
+    rejection_deliveries = [
+        content for url, content in sender.calls if "response_code=queue-4" in url
+    ]
+    assert len(rejection_deliveries) == 1
+    assert "另有 3 条等待处理" in rejection_deliveries[0]
+    assert rejection_deliveries[0] != payloads[4]["stream"]["content"]
 
 
 def test_pending_message_expires_without_entering_agent() -> None:
