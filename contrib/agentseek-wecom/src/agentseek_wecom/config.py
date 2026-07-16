@@ -48,7 +48,7 @@ class WeComSettings(BaseSettings):
         validation_alias=AliasChoices("BUB_WECOM_RECEIVE_ID", "AGENTSEEK_WECOM_RECEIVE_ID"),
     )
     initial_wait_seconds: float = Field(
-        default=1.5,
+        default=0.5,
         validation_alias=AliasChoices("BUB_WECOM_INITIAL_WAIT_SECONDS", "AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS"),
     )
     cache_ttl_seconds: int = Field(

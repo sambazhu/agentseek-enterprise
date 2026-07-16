@@ -168,6 +168,7 @@ def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
 
 
 def test_queue_backpressure_defaults() -> None:
+    assert WeComSettings.model_fields["initial_wait_seconds"].default == 0.5
     assert WeComSettings.model_fields["session_queue_maxsize"].default == 3
     assert WeComSettings.model_fields["queue_wait_timeout_seconds"].default == 240.0
 
@@ -528,7 +529,7 @@ def test_text_message_returns_placeholder_before_slow_receive_completes() -> Non
     assert final_payload["stream"]["finish"] is True
 
 
-def test_ai_bot_callback_streams_ack_then_final_without_consuming_response_url() -> None:
+def test_ai_bot_callback_finishes_ack_then_delivers_final_once_via_response_url() -> None:
     sender = FakeResponseUrlSender()
     release_resolver = threading.Event()
     resolver_started = threading.Event()
@@ -589,12 +590,126 @@ def test_ai_bot_callback_streams_ack_then_final_without_consuming_response_url()
     payload, duplicate_payload = asyncio.run(scenario())
 
     assert payload["stream"]["content"] == "已收到，正在处理..."
-    assert payload["stream"]["finish"] is False
+    assert payload["stream"]["finish"] is True
     assert duplicate_payload["stream"]["id"] == payload["stream"]["id"]
-    assert duplicate_payload["stream"]["content"] == "处理完成"
+    assert duplicate_payload["stream"]["content"] == "已收到，正在处理..."
     assert duplicate_payload["stream"]["finish"] is True
     assert received[0].session_id == "wecom:zhuchunlin"
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
+            "处理完成",
+        )
+    ]
+
+
+def test_ai_bot_fast_turn_finishes_in_callback_without_consuming_response_url() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+        response_url_sender=sender,
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="快速处理完成",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+    plain = asyncio.run(
+        channel._handle_plain_message({
+            "msgid": "response-url-fast-turn",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "responseurl": (
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                "response_code=fast-turn"
+            ),
+            "text": {"content": "你好"},
+        })
+    )
+    payload = json.loads(plain or "{}")
+
+    assert payload["stream"]["content"] == "快速处理完成"
+    assert payload["stream"]["finish"] is True
     assert sender.calls == []
+
+
+def test_ai_bot_concurrent_duplicate_replays_ack_and_delivers_final_once() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.01,
+            userid_resolve_mode="",
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> list[dict[str, Any]]:
+        release = asyncio.Event()
+        received = 0
+
+        async def on_receive(message: ChannelMessage) -> None:
+            nonlocal received
+            received += 1
+            await release.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="去重后处理完成",
+                )
+            )
+
+        callback = {
+            "msgid": "response-url-concurrent-duplicate",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "responseurl": (
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                "response_code=concurrent-duplicate"
+            ),
+            "text": {"content": "你好"},
+        }
+        channel.bind_receiver(on_receive)
+        replies = await asyncio.gather(
+            channel._handle_plain_message(callback),
+            channel._handle_plain_message(callback),
+        )
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        assert received == 1
+        return [json.loads(reply or "{}") for reply in replies]
+
+    payloads = asyncio.run(scenario())
+
+    assert payloads[0] == payloads[1]
+    assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
+    assert payloads[0]["stream"]["finish"] is True
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+            "response_code=concurrent-duplicate",
+            "去重后处理完成",
+        )
+    ]
 
 
 def test_text_message_sanitizes_wecom_raw_payload() -> None:
@@ -991,7 +1106,7 @@ def test_session_queue_reports_positions_and_rejects_above_pending_limit() -> No
     assert "等待处理：3 条" in status["stream"]["content"]
 
 
-def test_ai_bot_queue_feedback_and_final_replies_share_one_stream() -> None:
+def test_ai_bot_queue_feedback_uses_callback_and_final_replies_use_response_url() -> None:
     sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
@@ -1063,7 +1178,7 @@ def test_ai_bot_queue_feedback_and_final_replies_share_one_stream() -> None:
 
     payloads, final_payloads, received = asyncio.run(scenario())
 
-    assert all(payload["stream"]["finish"] is False for payload in payloads[:4])
+    assert all(payload["stream"]["finish"] is True for payload in payloads[:4])
     assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
     assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
     assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
@@ -1076,7 +1191,24 @@ def test_ai_bot_queue_feedback_and_final_replies_share_one_stream() -> None:
         f"完成:消息{index}" for index in range(4)
     ]
     assert all(payload["stream"]["finish"] is True for payload in final_payloads)
-    assert sender.calls == []
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=queue-0",
+            "完成:消息0",
+        ),
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=queue-1",
+            "完成:消息1",
+        ),
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=queue-2",
+            "完成:消息2",
+        ),
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=queue-3",
+            "完成:消息3",
+        ),
+    ]
 
 
 def test_pending_message_expires_without_entering_agent() -> None:
@@ -1149,7 +1281,7 @@ def test_pending_message_expires_without_entering_agent() -> None:
     assert "等待处理：0 条" in status["stream"]["content"]
 
 
-def test_ai_bot_pending_timeout_completes_the_same_stream() -> None:
+def test_ai_bot_pending_timeout_delivers_once_via_response_url() -> None:
     sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
@@ -1195,7 +1327,7 @@ def test_ai_bot_pending_timeout_completes_the_same_stream() -> None:
                 ),
                 "text": {"content": f"消息{index}"},
             }) or "{}")
-            assert payload["stream"]["finish"] is False
+            assert payload["stream"]["finish"] is True
             assert payload["stream"]["content"]
             payloads.append(payload)
         await asyncio.sleep(0.08)
@@ -1212,7 +1344,16 @@ def test_ai_bot_pending_timeout_completes_the_same_stream() -> None:
     assert received == ["消息0"]
     assert expired["stream"]["finish"] is True
     assert expired["stream"]["content"] == "等待处理时间过长，本条消息已取消，请稍后重新发送。"
-    assert sender.calls == []
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=ttl-1",
+            "等待处理时间过长，本条消息已取消，请稍后重新发送。",
+        ),
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=ttl-0",
+            "第一条完成",
+        ),
+    ]
 
 
 def test_queue_status_command_is_immediate_when_session_is_idle() -> None:

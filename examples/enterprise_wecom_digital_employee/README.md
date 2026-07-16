@@ -436,18 +436,22 @@ model, stream, queue, and graceful-shutdown limits with:
 
 ```env
 AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS=180
+AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS=0.5
 AGENTSEEK_WECOM_TURN_TIMEOUT_SECONDS=195
 AGENTSEEK_WECOM_SESSION_QUEUE_MAXSIZE=3
 AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS=240
 AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
-Ordinary AI Bot turns use one delivery path even when the callback contains
-`response_url`: acknowledgement state, queue state, terminal answer, rejection,
-and timeout all remain on the callback `stream_id`. Queue status and rejection
-can finish immediately on that stream. The one-shot `response_url` is reserved
-for explicitly asynchronous work such as a pending file extraction; it is never
-mixed into an ordinary chat turn.
+AI Bot turns use an explicit two-stage delivery contract when the callback
+contains `response_url`. The channel waits up to
+`AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS`; a fast
+result finishes in the callback and does not consume the URL. Otherwise the
+callback ends with a visible acknowledgement (or queue position), and the final
+answer or timeout consumes that message's URL exactly once. Queue status and
+rejection finish in the callback only. Callbacks without `response_url` retain
+the legacy stream-polling path, while pending file extraction always uses the
+deferred path.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 

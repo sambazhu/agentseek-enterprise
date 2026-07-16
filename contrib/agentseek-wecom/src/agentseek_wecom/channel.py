@@ -71,6 +71,8 @@ class StreamReply:
     response_url: str | None = None
     initial_response_sent: bool = False
     initial_response_content: str | None = None
+    initial_response_finish: bool | None = None
+    deferred_response_url: bool = False
     response_url_consumed: bool = False
     content: str = ""
     finish: bool = False
@@ -204,7 +206,7 @@ class WeComChannel(Channel):
             return
         stream.update(content=content_of(message), finish=True)
         delivery_status = "succeeded"
-        if stream.response_url and stream.initial_response_sent:
+        if stream.deferred_response_url:
             delivery_status = await self._deliver_response_url_once(stream, stream.content)
         _emit_enterprise_event(
             "wecom_stream_finished",
@@ -492,10 +494,7 @@ class WeComChannel(Channel):
                 userid=userid,
                 leading_content=leading_content,
             )
-            return await self._stream_response(stream.stream_id)
-        # Ordinary media turns use the same stream-polling lifecycle as text
-        # turns. response_url is reserved for genuinely asynchronous extraction.
-        stream.response_url = None
+            return await self._stream_response(stream.stream_id, force_deferred=True)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -528,7 +527,7 @@ class WeComChannel(Channel):
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
-            response_url=None,
+            response_url=_extract_response_url(data),
         )
         if is_duplicate:
             logger.info("wecom.duplicate_msgid stream_id={}", stream.stream_id)
@@ -580,8 +579,9 @@ class WeComChannel(Channel):
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
         setattr(message, _QUEUE_SESSION_ID_ATTR, session_id)
         setattr(message, _FROM_USERID_ATTR, from_userid)
-        # Return the stream envelope quickly; slow tool/model work continues in
-        # the channel manager task and is picked up by WeCom stream polls.
+        # Fast turns finish in this callback. Slow turns receive one terminal
+        # acknowledgement here and deliver their eventual result through the
+        # callback's one-shot response_url.
         self._schedule_receive(message)
         return await self._stream_response(stream.stream_id)
 
@@ -672,22 +672,63 @@ class WeComChannel(Channel):
         async with self._lock:
             return self._streams.get(stream_id)
 
-    async def _stream_response(self, stream_id: str) -> str:
+    async def _stream_response(self, stream_id: str, *, force_deferred: bool = False) -> str:
         current = await self._get_stream(stream_id)
-        if current is None or not current.response_url:
+        if current is None:
+            return make_text_stream(stream_id, "任务不存在或已过期", True)
+        if current.initial_response_sent:
+            return make_text_stream(
+                stream_id,
+                current.initial_response_content or "已收到，正在处理...",
+                bool(current.initial_response_finish),
+            )
+
+        # Give genuinely fast turns a short chance to finish so they need only
+        # one callback reply. The decision below is synchronous: once the
+        # callback claims the final response or deferred response_url path,
+        # outbound completion cannot race into both channels.
+        force_response_url = force_deferred and bool(current.response_url)
+        if not current.finish and not force_response_url:
             await self._wait_for_first_update(stream_id)
         current = await self._get_stream(stream_id)
-        if current is not None:
-            if current.initial_response_content is None:
-                current.initial_response_content = current.content or "已收到，正在处理..."
-            current.initial_response_sent = True
-            if current.response_url:
-                return make_text_stream(stream_id, current.initial_response_content, True)
-        return make_text_stream(
-            stream_id,
-            (current.content if current else "") or "已收到，正在处理...",
-            bool(current.finish if current else False),
-        )
+        if current is None:
+            return make_text_stream(stream_id, "任务不存在或已过期", True)
+        if current.initial_response_sent:
+            return make_text_stream(
+                stream_id,
+                current.initial_response_content or "已收到，正在处理...",
+                bool(current.initial_response_finish),
+            )
+
+        initial_content = current.content or "已收到，正在处理..."
+        if force_response_url and current.response_url:
+            current.deferred_response_url = True
+            initial_finish = True
+        elif current.finish:
+            # The callback owns this completed result. Clear response_url so a
+            # later retry or terminal hook cannot deliver the same text twice.
+            current.response_url = None
+            initial_finish = True
+        elif current.response_url:
+            # AI Bot clients do not reliably render finish=false updates. End
+            # the callback stream with a visible acknowledgement, then use this
+            # message's response_url exactly once for the eventual terminal text.
+            current.deferred_response_url = True
+            initial_finish = True
+        else:
+            # Compatibility path for callbacks without response_url.
+            initial_finish = False
+
+        current.initial_response_content = initial_content
+        current.initial_response_finish = initial_finish
+        current.initial_response_sent = True
+
+        # Completion can land after the wait loop but immediately before this
+        # delivery decision. If the deferred path won, schedule its already
+        # available terminal result now.
+        if current.deferred_response_url and current.finish:
+            self._schedule_response_url_delivery(current, current.content)
+        return make_text_stream(stream_id, initial_content, initial_finish)
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
         session_id = self._queue_session_id(message)
@@ -909,7 +950,7 @@ class WeComChannel(Channel):
         should_deliver = False
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
-            should_deliver = bool(stream.response_url and stream.initial_response_sent)
+            should_deliver = stream.deferred_response_url
         _emit_enterprise_event(
             event,
             status=status,
