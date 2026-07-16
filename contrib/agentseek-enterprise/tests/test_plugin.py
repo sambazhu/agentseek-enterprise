@@ -15,6 +15,7 @@ from agentseek_enterprise.memory import (
     SQLAlchemyShortTermMemoryStore,
     SQLiteShortTermMemoryStore,
     build_short_term_memory_store,
+    format_short_term_memory_for_prompt,
 )
 from agentseek_enterprise.plugin import (
     EMPLOYEE_CONTEXT_STATE_KEY,
@@ -280,6 +281,26 @@ def test_system_prompt_can_include_short_term_memory(monkeypatch: Any) -> None:
     assert "[ShortTermMemory]" in prompt
     assert "用户: 帮我记一下，我明天去深圳出差" in prompt
     assert "不要主动提及这里的不相关近期事实" in prompt
+
+
+def test_short_term_memory_prompt_keeps_newest_messages_with_bounded_content() -> None:
+    prompt = format_short_term_memory_for_prompt(
+        {
+            "recent_messages": [
+                {"role": "user", "content": "old-" + "x" * 80},
+                {"role": "assistant", "content": "middle-" + "y" * 80},
+                {"role": "user", "content": "newest-" + "z" * 80},
+            ]
+        },
+        max_chars=240,
+        max_message_chars=30,
+    )
+
+    assert prompt is not None
+    assert len(prompt) <= 240
+    assert "newest-" in prompt
+    assert "…[已截断]" in prompt
+    assert "old-" not in prompt
 
 
 def _turn_snapshot(

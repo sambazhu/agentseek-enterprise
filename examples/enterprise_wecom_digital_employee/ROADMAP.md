@@ -567,7 +567,9 @@ M3 先以运行时前置切片启动：
 
 1. **M3-00A 会话背压**：同一 WeCom session 保持一个 active turn，默认最多三个
    pending；显示排队位置，超限不入 Agent，等待超过 TTL 自动结束；“查看消息队列”
-   绕过模型即时返回。不同 session 继续并发。
+   绕过模型即时返回。不同 session 继续并发。事件层已通过 Mac mini
+   验证；用户面改为初始 `finish=true` 回执 + 一次性 `response_url`
+   终态投递，待活体复验排队、拒绝、状态、最终回复和 TTL 取消全部可见后关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
 3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。

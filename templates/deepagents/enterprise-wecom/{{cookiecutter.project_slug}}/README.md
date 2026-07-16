@@ -26,7 +26,10 @@ Fill `.env` with:
 - short-TTL employee identity cache settings, so repeated messages from the
   same resolved employee do not reopen the DM/JDBC path on every turn;
 - short-term memory retention settings and, for production, an optional
-  `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` pointing at PostgreSQL/MySQL;
+  `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` pointing at PostgreSQL/MySQL.
+  Prompt injection is independently bounded by
+  `AGENTSEEK_ENTERPRISE_MEMORY_PROMPT_MAX_CHARS` and
+  `AGENTSEEK_ENTERPRISE_MEMORY_PROMPT_MAX_MESSAGE_CHARS`;
 - the tenant id, namespace secret, and durable store path, or
   `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` for PostgreSQL/MySQL;
 - ContextSeek semantic storage: PostgreSQL + `pgvector` with bge-m3 dense
@@ -202,7 +205,9 @@ organization path, role, and post when available.
 Expected: the answer recalls the recent Shenzhen trip from the short-term
 conversation memory database. Production deployments can set
 `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` to PostgreSQL/MySQL; local
-development falls back to `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`.
+development falls back to `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH`. The
+newest messages are retained first when the configured prompt character budget
+is reached, preventing large research/tool replies from bloating later turns.
 
 ### C. Explicit Durable Memory (Employee Store)
 
@@ -389,7 +394,11 @@ accepted waiting stream immediately displays its queue position; further
 messages are rejected before they reach the agent. A pending message that does
 not start within the queue-wait timeout is finished as expired. Employees can
 send `查看消息队列` or `查看排队状态` for an immediate status response that does
-not enter the model queue.
+not enter the model queue. AI Bot callbacks carrying `response_url` receive a
+completed initial ACK/queue response; the final answer or queue-timeout notice
+uses that one-shot URL. This avoids relying on clients to render intermediate
+`finish=false` stream content. Callbacks without `response_url` retain legacy
+stream polling.
 
 ### Enterprise Observability
 

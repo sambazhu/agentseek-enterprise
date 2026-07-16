@@ -17,6 +17,7 @@ class InvocationContext:
     agents_md: str | None
     # LangGraph runtime context, e.g. CopilotKit ``output_schema`` binding.
     runtime_context: Mapping[str, object] | None = None
+    callbacks: tuple[object, ...] = ()
 
 
 InputBuilder = Callable[[InvocationContext], object]
@@ -59,7 +60,15 @@ class RunnableSpec:
             yield chunk
 
     def _prepare(self, context: InvocationContext) -> tuple[object, Mapping[str, object] | None]:
-        return self.build_input(context), self.build_config(context)
+        config = self.build_config(context)
+        if context.callbacks:
+            merged = dict(config or {})
+            existing = merged.get("callbacks")
+            callbacks = list(existing) if isinstance(existing, (list, tuple)) else []
+            callbacks.extend(context.callbacks)
+            merged["callbacks"] = callbacks
+            config = merged
+        return self.build_input(context), config
 
 
 def default_runnable_config(context: InvocationContext) -> Mapping[str, object]:

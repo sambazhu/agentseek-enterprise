@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -461,6 +462,73 @@ def test_text_message_returns_placeholder_before_slow_receive_completes() -> Non
     assert final_payload["stream"]["finish"] is True
 
 
+def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> None:
+    sender = FakeResponseUrlSender()
+    release_resolver = threading.Event()
+    resolver_started = threading.Event()
+    received: list[ChannelMessage] = []
+
+    class BlockingResolver:
+        def resolve(self, open_userid: str) -> str:
+            assert open_userid == "encrypted-open-userid"
+            resolver_started.set()
+            release_resolver.wait(timeout=1.0)
+            return "zhuchunlin"
+
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            turn_timeout_seconds=1.0,
+        ),
+        userid_resolver=BlockingResolver(),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> dict[str, Any]:
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message)
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="处理完成",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        response = await asyncio.wait_for(
+            channel._handle_plain_message({
+                "msgid": "response-url-turn",
+                "msgtype": "text",
+                "from": {"userid": "encrypted-open-userid"},
+                "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
+                "text": {"content": "你好"},
+            }),
+            timeout=0.2,
+        )
+        assert await asyncio.to_thread(resolver_started.wait, 0.2)
+        assert received == []
+        release_resolver.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(response or "{}")
+
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["content"] == "已收到，正在处理..."
+    assert payload["stream"]["finish"] is True
+    assert received[0].session_id == "wecom:zhuchunlin"
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
+            "处理完成",
+        )
+    ]
+
+
 def test_text_message_sanitizes_wecom_raw_payload() -> None:
     received: list[ChannelMessage] = []
     channel = _channel()
@@ -855,6 +923,72 @@ def test_session_queue_reports_positions_and_rejects_above_pending_limit() -> No
     assert "等待处理：3 条" in status["stream"]["content"]
 
 
+def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            turn_timeout_seconds=1.0,
+            session_queue_maxsize=3,
+            userid_resolve_mode="",
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> tuple[list[dict[str, Any]], list[str]]:
+        release = asyncio.Event()
+        received: list[str] = []
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            if message.content == "消息0":
+                await release.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content=f"完成:{message.content}",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        replies = await asyncio.gather(*(
+            channel._handle_plain_message({
+                "msgid": f"response-queue-{index}",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "responseurl": (
+                    "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                    f"response_code=queue-{index}"
+                ),
+                "text": {"content": f"消息{index}"},
+            })
+            for index in range(5)
+        ))
+        payloads = [json.loads(reply or "{}") for reply in replies]
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return payloads, received
+
+    payloads, received = asyncio.run(scenario())
+
+    assert all(payload["stream"]["finish"] is True for payload in payloads)
+    assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
+    assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
+    assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
+    assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
+    assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
+    assert received == [f"消息{index}" for index in range(4)]
+    delivered_urls = [url for url, _content in sender.calls]
+    assert len(delivered_urls) == 4
+    assert all(f"response_code=queue-{index}" in delivered_urls[index] for index in range(4))
+    assert not any("response_code=queue-4" in url for url in delivered_urls)
+
+
 def test_pending_message_expires_without_entering_agent() -> None:
     channel = WeComChannel(
         on_receive=None,
@@ -923,6 +1057,65 @@ def test_pending_message_expires_without_entering_agent() -> None:
     assert expired["stream"]["content"] == "等待处理时间过长，本条消息已取消，请稍后重新发送。"
     assert "正在处理：1 条" in status["stream"]["content"]
     assert "等待处理：0 条" in status["stream"]["content"]
+
+
+def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            turn_timeout_seconds=1.0,
+            session_queue_maxsize=3,
+            queue_wait_timeout_seconds=0.05,
+            userid_resolve_mode="",
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> list[str]:
+        release = asyncio.Event()
+        received: list[str] = []
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            await release.wait()
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="第一条完成",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        for index in range(2):
+            payload = json.loads(await channel._handle_plain_message({
+                "msgid": f"response-ttl-{index}",
+                "msgtype": "text",
+                "from": {"userid": "chenkang2"},
+                "responseurl": (
+                    "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                    f"response_code=ttl-{index}"
+                ),
+                "text": {"content": f"消息{index}"},
+            }) or "{}")
+            assert payload["stream"]["finish"] is True
+        await asyncio.sleep(0.08)
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return received
+
+    received = asyncio.run(scenario())
+
+    assert received == ["消息0"]
+    assert sender.calls.count((
+        "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=ttl-1",
+        "等待处理时间过长，本条消息已取消，请稍后重新发送。",
+    )) == 1
 
 
 def test_queue_status_command_is_immediate_when_session_is_idle() -> None:

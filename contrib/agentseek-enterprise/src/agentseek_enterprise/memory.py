@@ -277,20 +277,35 @@ def short_term_memory_state(session_id: str, messages: list[dict[str, Any]]) -> 
     }
 
 
-def format_short_term_memory_for_prompt(value: Any) -> str | None:
+def format_short_term_memory_for_prompt(
+    value: Any,
+    *,
+    max_chars: int | None = None,
+    max_message_chars: int | None = None,
+) -> str | None:
     if not isinstance(value, dict):
         return None
     messages = value.get("recent_messages")
     if not isinstance(messages, list) or not messages:
         return None
 
-    lines = [
+    header = [
         "[ShortTermMemory]",
         "以下是同一员工同一会话的近期对话。用于理解追问、代词、继续处理和刚才提到的事项，不代表最终授权。",
         "只在当前问题直接询问近期对话、刚才提到的事项、代词所指或继续上一步任务时使用。",
         "如果当前问题询问长期偏好、长期记忆或员工画像，不要主动提及这里的不相关近期事实。",
     ]
-    for item in messages:
+    total_limit = max_chars if max_chars is not None else _positive_env_int(
+        "AGENTSEEK_ENTERPRISE_MEMORY_PROMPT_MAX_CHARS",
+        12_000,
+    )
+    message_limit = max_message_chars if max_message_chars is not None else _positive_env_int(
+        "AGENTSEEK_ENTERPRISE_MEMORY_PROMPT_MAX_MESSAGE_CHARS",
+        3_000,
+    )
+    remaining = max(0, total_limit - len("\n".join(header)) - 1)
+    rendered: list[str] = []
+    for item in reversed(messages):
         if not isinstance(item, dict):
             continue
         role = str(item.get("role") or "").strip()
@@ -298,8 +313,35 @@ def format_short_term_memory_for_prompt(value: Any) -> str | None:
         if not role or not content:
             continue
         label = "用户" if role == "user" else "助手" if role == "assistant" else role
-        lines.append(f"{label}: {content}")
-    return "\n".join(lines) if len(lines) > 2 else None
+        content = _truncate_prompt_text(content, message_limit)
+        line = f"{label}: {content}"
+        if len(line) > remaining:
+            if rendered or remaining <= len(label) + 4:
+                break
+            line = _truncate_prompt_text(line, remaining)
+        rendered.append(line)
+        remaining -= len(line) + 1
+        if remaining <= 0:
+            break
+    if not rendered:
+        return None
+    return "\n".join([*header, *reversed(rendered)])
+
+
+def _truncate_prompt_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    suffix = "…[已截断]"
+    if limit <= len(suffix):
+        return value[:limit]
+    return f"{value[: limit - len(suffix)]}{suffix}"
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
 
 
 def _sqlite_path_from_env() -> Path:

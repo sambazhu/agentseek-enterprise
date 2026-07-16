@@ -27,6 +27,8 @@ from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
+_QUEUE_SESSION_ID_ATTR = "_agentseek_wecom_queue_session_id"
+_FROM_USERID_ATTR = "_agentseek_wecom_from_userid"
 _QUEUE_STATUS_COMMANDS = frozenset({"查看消息队列", "查看排队状态"})
 
 
@@ -66,6 +68,9 @@ class StreamReply:
     session_id: str
     chat_id: str
     from_userid: str | None
+    response_url: str | None = None
+    initial_response_sent: bool = False
+    response_url_consumed: bool = False
     content: str = ""
     finish: bool = False
     created_at: float = field(default_factory=time.time)
@@ -197,9 +202,12 @@ class WeComChannel(Channel):
         if stream is None:
             return
         stream.update(content=content_of(message), finish=True)
+        delivery_status = "succeeded"
+        if stream.response_url and stream.initial_response_sent:
+            delivery_status = await self._deliver_response_url_once(stream, stream.content)
         _emit_enterprise_event(
             "wecom_stream_finished",
-            status="succeeded",
+            status=delivery_status,
             stream_id=stream.stream_id,
             session_id=stream.session_id,
             chat_id=stream.chat_id,
@@ -391,6 +399,7 @@ class WeComChannel(Channel):
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
+            response_url=_extract_response_url(data),
         )
         if is_duplicate:
             logger.info("wecom.duplicate_msgid stream_id={}", stream.stream_id)
@@ -503,8 +512,11 @@ class WeComChannel(Channel):
 
     async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
         from_userid = _extract_from_userid(data)
-        resolved_userid = await self._resolve_userid(from_userid)
-        userid = resolved_userid or from_userid
+        # Queue admission and the first callback response must not wait for the
+        # network-backed open-userid conversion. The session worker resolves the
+        # plaintext userid before the message reaches the enterprise runtime.
+        resolved_userid = None
+        userid = from_userid
         session_id = f"wecom:{userid or 'unknown'}"
         chat_id = userid or session_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
@@ -512,6 +524,7 @@ class WeComChannel(Channel):
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
+            response_url=_extract_response_url(data),
         )
         if is_duplicate:
             logger.info("wecom.duplicate_msgid stream_id={}", stream.stream_id)
@@ -561,6 +574,8 @@ class WeComChannel(Channel):
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
+        setattr(message, _QUEUE_SESSION_ID_ATTR, session_id)
+        setattr(message, _FROM_USERID_ATTR, from_userid)
         # Return the stream envelope quickly; slow tool/model work continues in
         # the channel manager task and is picked up by WeCom stream polls.
         self._schedule_receive(message)
@@ -611,12 +626,14 @@ class WeComChannel(Channel):
         session_id: str,
         chat_id: str,
         from_userid: str | None,
+        response_url: str | None,
     ) -> tuple[StreamReply, bool]:
         stream = StreamReply(
             stream_id=uuid4().hex,
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
+            response_url=response_url,
             content="已收到，正在处理...",
             finish=False,
         )
@@ -648,17 +665,21 @@ class WeComChannel(Channel):
             return self._streams.get(stream_id)
 
     async def _stream_response(self, stream_id: str) -> str:
-        await self._wait_for_first_update(stream_id)
         current = await self._get_stream(stream_id)
+        if current is None or not current.response_url:
+            await self._wait_for_first_update(stream_id)
+        current = await self._get_stream(stream_id)
+        if current is not None:
+            current.initial_response_sent = True
         return make_text_stream(
             stream_id,
             (current.content if current else "") or "已收到，正在处理...",
-            bool(current.finish if current else False),
+            bool(current.finish if current else False) or bool(current and current.response_url),
         )
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
-        session_id = message.session_id
-        queue = self._session_queues.get(message.session_id)
+        session_id = self._queue_session_id(message)
+        queue = self._session_queues.get(session_id)
         if queue is None:
             queue = asyncio.Queue()
             self._session_queues[session_id] = queue
@@ -821,6 +842,7 @@ class WeComChannel(Channel):
         enqueue_timeout = min(max(0.05, self.settings.turn_timeout_seconds), 10.0)
         try:
             async with asyncio.timeout(enqueue_timeout):
+                await self._hydrate_message_identity(message)
                 await self._run_receive(message)
         except TimeoutError:
             self._finish_message_stream(
@@ -872,16 +894,98 @@ class WeComChannel(Channel):
     ) -> None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
+        should_deliver = False
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
+            should_deliver = bool(stream.response_url and stream.initial_response_sent)
         _emit_enterprise_event(
             event,
             status=status,
             stream_id=stream_id if isinstance(stream_id, str) else "",
-            session_id=message.session_id,
-            pending_count=self._pending_turn_counts.get(message.session_id, 0),
+            session_id=self._queue_session_id(message),
+            pending_count=self._pending_turn_counts.get(self._queue_session_id(message), 0),
             error_type=error_type,
         )
+        if should_deliver and stream is not None:
+            self._schedule_response_url_delivery(stream, content)
+
+    def _schedule_response_url_delivery(self, stream: StreamReply, content: str) -> None:
+        task = asyncio.create_task(
+            self._deliver_response_url_background(stream, content),
+            name=f"agentseek-wecom.response-url.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    async def _deliver_response_url_background(self, stream: StreamReply, content: str) -> None:
+        await self._deliver_response_url_once(stream, content)
+
+    async def _deliver_response_url_once(self, stream: StreamReply, content: str) -> str:
+        response_url = stream.response_url
+        if not response_url or stream.response_url_consumed:
+            return "skipped"
+        # response_url is a one-shot capability. Claim it before network I/O so
+        # competing terminal paths can never send duplicate employee messages.
+        stream.response_url_consumed = True
+        try:
+            await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)
+        except Exception as exc:
+            logger.warning(
+                "wecom.response_url delivery failed stream_id={} error_type={}",
+                stream.stream_id,
+                type(exc).__name__,
+            )
+            _emit_enterprise_event(
+                "wecom_response_url_delivery",
+                status="error",
+                stream_id=stream.stream_id,
+                session_id=stream.session_id,
+                content_chars=len(content),
+                error_type=type(exc).__name__,
+            )
+            return "delivery_error"
+        _emit_enterprise_event(
+            "wecom_response_url_delivery",
+            status="succeeded",
+            stream_id=stream.stream_id,
+            session_id=stream.session_id,
+            content_chars=len(content),
+        )
+        return "succeeded"
+
+    @staticmethod
+    def _queue_session_id(message: ChannelMessage) -> str:
+        value = getattr(message, _QUEUE_SESSION_ID_ATTR, None)
+        return value if isinstance(value, str) and value else message.session_id
+
+    async def _hydrate_message_identity(self, message: ChannelMessage) -> None:
+        from_userid = getattr(message, _FROM_USERID_ATTR, None)
+        if not isinstance(from_userid, str) or not from_userid:
+            return
+        resolved_userid = await self._resolve_userid(from_userid)
+        userid = resolved_userid or from_userid
+        session_id = f"wecom:{userid}"
+        message.session_id = session_id
+        message.chat_id = userid
+        message.context.update({
+            "from_userid": from_userid,
+            "userid": userid,
+            "oa_account": userid,
+            "chat_id": userid,
+        })
+        wecom = message.context.get("wecom")
+        if isinstance(wecom, dict):
+            wecom.update({
+                "from_userid": from_userid,
+                "open_userid": from_userid if resolved_userid else None,
+                "resolved_userid": resolved_userid,
+                "userid": userid,
+            })
+        stream_id = getattr(message, _STREAM_ID_ATTR, None)
+        stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
+        if stream is not None:
+            stream.session_id = session_id
+            stream.chat_id = userid
 
     async def _run_receive(self, message: ChannelMessage) -> None:
         if self._on_receive is None:

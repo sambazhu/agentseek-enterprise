@@ -7,6 +7,8 @@ import agentseek_langchain.plugin as plugin_module
 from agentseek_langchain.profiles import text_spec
 from agentseek_langchain.shapes import ObjectDict, copy_str_mapping
 from agentseek_langchain.spec import RunnableSpec
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
 
 
 class _AsyncRunnable:
@@ -76,7 +78,53 @@ def test_plugin_run_model_delegates_to_loaded_spec(monkeypatch, tmp_path) -> Non
         "session_id": "session-1",
         "workspace": str(tmp_path),
     }
+    callbacks = runnable.calls[0][1].get("callbacks") if runnable.calls[0][1] else None
+    assert isinstance(callbacks, list)
+    assert isinstance(callbacks[0], plugin_module._ModelCallObservability)
     assert info_messages == ["Using LangChain spec entrypoint: dummy:SPEC"]
+
+
+def test_model_call_observability_emits_sizes_latency_and_usage_without_content(monkeypatch) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        plugin_module,
+        "_emit_enterprise_event",
+        lambda event, **fields: events.append((event, fields)),
+    )
+    handler = plugin_module._ModelCallObservability("wecom:employee")
+
+    async def scenario() -> None:
+        await handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[SystemMessage(content="system prompt"), HumanMessage(content="private request")]],
+            run_id=plugin_module.UUID(int=1),
+            invocation_params={"model": "qwen-flash", "tools": [{"name": "tool-a"}]},
+        )
+        await handler.on_llm_end(
+            LLMResult(generations=[[ChatGeneration(message=AIMessage(
+                content="private answer",
+                usage_metadata={"input_tokens": 11, "output_tokens": 3, "total_tokens": 14},
+            ))]]),
+            run_id=plugin_module.UUID(int=1),
+        )
+
+    asyncio.run(scenario())
+
+    assert events[0][0] == "langchain_model_call"
+    fields = events[0][1]
+    assert fields["status"] == "succeeded"
+    assert fields["session_id"] == "wecom:employee"
+    assert fields["input_chars"] == len("system promptprivate request")
+    assert fields["system_chars"] == len("system prompt")
+    assert fields["message_count"] == 2
+    assert fields["tool_count"] == 1
+    assert fields["model_name"] == "qwen-flash"
+    assert fields["output_chars"] == len("private answer")
+    assert fields["prompt_tokens"] == 11
+    assert fields["completion_tokens"] == 3
+    assert fields["total_tokens"] == 14
+    assert "private request" not in repr(fields)
+    assert "private answer" not in repr(fields)
 
 
 def test_plugin_enriches_state_before_spec_build_input(monkeypatch, tmp_path) -> None:
