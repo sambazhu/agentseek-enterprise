@@ -571,8 +571,9 @@ M3 先以运行时前置切片启动：
    `response_url`；由于 WeCom AI Bot 不稳定渲染 `finish=false`，未请求的 ACK 和排队位置
    不再作为用户面发布门槛，可见验收收敛为单次终态拒绝、队列查询、TTL 取消和最终回复。
    企业 harness 保留 DeepAgents 默认 subagent 作为可选执行助手；它不参与普通会话与
-   WorkItem 的路由。隐式自动摘要保持关闭，model-node 硬超时负责约束剩余的 pre-model
-   长延迟和 burst hang，待 Mac mini 复验后关闭。
+   WorkItem 的路由。隐式自动摘要保持关闭；插件层首模型回调 watchdog 直接约束
+   `model_invoke` 到首个 provider callback 的 pre-model 长延迟，整轮 timeout 和
+   model-node timeout 继续作为后备，待 Mac mini 复验 burst 后关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
 3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。

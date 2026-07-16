@@ -141,6 +141,11 @@ surface. Install the optional `agentseek-api` runtime when you want
 - If your runnable supports LangChain runtime `context=...` (for example `create_agent(..., context_schema=...)`), AG-UI context is forwarded there automatically.
 - If the runnable returns `structured_response`, the package serializes it into JSON text so the surrounding transport can decide how to render it.
 - `messages_spec(...)` decides whether `AGENTS.md` is injected; the plugin only reads it and places it on `InvocationContext.agents_md`.
+- `AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS` bounds the interval from
+  `model_invoke` entry to the first observable provider/model callback. It
+  falls back to `AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS`, while
+  `AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS` remains the broader whole-runnable
+  deadline for multi-step tool execution.
 
 ## Verify
 

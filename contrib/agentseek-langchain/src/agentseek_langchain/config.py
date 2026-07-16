@@ -25,6 +25,14 @@ class LangChainSettings(BaseSettings):
             "AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS",
         ),
     )
+    MODEL_START_TIMEOUT_SECONDS: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices(
+            "BUB_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS",
+            "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS",
+            "AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS",
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

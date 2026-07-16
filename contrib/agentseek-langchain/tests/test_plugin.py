@@ -38,9 +38,16 @@ class _AsyncRunnableWithContext:
 
 
 class _HangingRunnable:
+    def __init__(self) -> None:
+        self.cancelled = False
+
     async def ainvoke(self, runnable_input: object, config: ObjectDict | None = None) -> str:
         del runnable_input, config
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
         return "unreachable"
 
 
@@ -52,6 +59,24 @@ class _ProviderTimeoutRunnable:
     async def ainvoke(self, runnable_input: object, config: ObjectDict | None = None) -> str:
         del runnable_input, config
         raise APITimeoutError
+
+
+class _StartsModelThenCompletesRunnable:
+    async def ainvoke(self, runnable_input: object, config: ObjectDict | None = None) -> str:
+        del runnable_input
+        assert config is not None
+        callbacks = config.get("callbacks")
+        assert isinstance(callbacks, list)
+        observer = callbacks[-1]
+        assert isinstance(observer, plugin_module._ModelCallObservability)
+        await observer.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[HumanMessage(content="private request")]],
+            run_id=plugin_module.UUID(int=9),
+            invocation_params={"model": "qwen-flash"},
+        )
+        await asyncio.sleep(0.03)
+        return "completed-after-model-start"
 
 
 class _HookRuntime:
@@ -247,7 +272,8 @@ def test_plugin_run_model_stream_wraps_single_result(monkeypatch, tmp_path) -> N
 
 def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
-    spec = text_spec(_HangingRunnable())
+    runnable = _HangingRunnable()
+    spec = text_spec(runnable)
     monkeypatch.setattr(
         plugin_module,
         "get_langchain_settings",
@@ -274,10 +300,75 @@ def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_pat
         ("model_invoke", "timeout"),
         ("run_model", "timeout"),
     ]
+    assert runnable.cancelled is True
+
+
+def test_plugin_run_model_bounds_pre_model_stall_before_broader_run_timeout(monkeypatch, tmp_path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    spec = text_spec(_HangingRunnable())
+    monkeypatch.setattr(
+        plugin_module,
+        "get_langchain_settings",
+        lambda: SimpleNamespace(
+            SPEC="dummy:SPEC",
+            RUN_TIMEOUT_SECONDS=1.0,
+            MODEL_START_TIMEOUT_SECONDS=0.01,
+        ),
+    )
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    monkeypatch.setattr(
+        plugin_module,
+        "_emit_enterprise_event",
+        lambda event, **fields: events.append((event, fields)),
+    )
+
+    result = asyncio.run(
+        plugin_module.LangChainRunnablePlugin().run_model(
+            prompt="hello",
+            session_id="session-model-start-timeout",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+
+    assert result == plugin_module._MODEL_TIMEOUT_MESSAGE
+    timeout_event = next(
+        fields
+        for event, fields in events
+        if event == "langchain_run_stage"
+        and fields.get("stage") == "model_invoke"
+        and fields.get("status") == "timeout"
+    )
+    assert timeout_event["timeout_phase"] == "model_start"
+    assert timeout_event["timeout_seconds"] == 0.01
+
+
+def test_plugin_model_start_watchdog_stops_after_first_model_callback(monkeypatch, tmp_path) -> None:
+    spec = text_spec(_StartsModelThenCompletesRunnable())
+    monkeypatch.setattr(
+        plugin_module,
+        "get_langchain_settings",
+        lambda: SimpleNamespace(
+            SPEC="dummy:SPEC",
+            RUN_TIMEOUT_SECONDS=1.0,
+            MODEL_START_TIMEOUT_SECONDS=0.01,
+        ),
+    )
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+
+    result = asyncio.run(
+        plugin_module.LangChainRunnablePlugin().run_model(
+            prompt="hello",
+            session_id="session-model-started",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+
+    assert result == "completed-after-model-start"
 
 
 def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -> None:
-    spec = text_spec(_HangingRunnable())
+    runnable = _HangingRunnable()
+    spec = text_spec(runnable)
     monkeypatch.setattr(
         plugin_module,
         "get_langchain_settings",
@@ -299,6 +390,50 @@ def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -
         ("text", {"delta": plugin_module._MODEL_TIMEOUT_MESSAGE}),
         ("final", {"text": plugin_module._MODEL_TIMEOUT_MESSAGE, "ok": False}),
     ]
+    assert runnable.cancelled is True
+
+
+def test_plugin_run_model_stream_bounds_pre_model_stall(monkeypatch, tmp_path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    spec = text_spec(_HangingRunnable())
+    monkeypatch.setattr(
+        plugin_module,
+        "get_langchain_settings",
+        lambda: SimpleNamespace(
+            SPEC="dummy:SPEC",
+            RUN_TIMEOUT_SECONDS=1.0,
+            MODEL_START_TIMEOUT_SECONDS=0.01,
+        ),
+    )
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    monkeypatch.setattr(
+        plugin_module,
+        "_emit_enterprise_event",
+        lambda event, **fields: events.append((event, fields)),
+    )
+
+    plugin = plugin_module.LangChainRunnablePlugin()
+    stream = asyncio.run(
+        plugin.run_model_stream(
+            prompt="hello",
+            session_id="session-stream-model-start-timeout",
+            state={"_runtime_workspace": str(tmp_path)},
+        )
+    )
+    stream_events = asyncio.run(_collect_events(stream))
+
+    assert [(event.kind, event.data) for event in stream_events] == [
+        ("text", {"delta": plugin_module._MODEL_TIMEOUT_MESSAGE}),
+        ("final", {"text": plugin_module._MODEL_TIMEOUT_MESSAGE, "ok": False}),
+    ]
+    timeout_event = next(
+        fields
+        for event, fields in events
+        if event == "langchain_run_stage"
+        and fields.get("stage") == "model_invoke"
+        and fields.get("status") == "timeout"
+    )
+    assert timeout_event["timeout_phase"] == "model_start"
 
 
 def test_langgraph_node_timeout_is_treated_as_model_timeout() -> None:

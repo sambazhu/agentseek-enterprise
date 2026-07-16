@@ -161,6 +161,7 @@ def test_template_renders_without_unrendered_jinja(
         assert "AGENTSEEK_WORK_ENABLED=false" in env_example
         assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example
         assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
+        assert "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS=60" in env_example
 
     lifecycle = generated / ".agentseek" / "lifecycle.toml"
     assert lifecycle.is_file(), f"missing .agentseek/lifecycle.toml in {generated}"

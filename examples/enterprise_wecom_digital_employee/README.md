@@ -478,8 +478,11 @@ Redacted `langchain_run_stage` events show time spent resolving the runnable,
 enriching prompt state, building invocation context, and entering/completing the
 model invocation. They record counts and durations, never prompt or reply text.
 `langchain_model_call` emits `started` before provider I/O and then a terminal
-status. Configure the inner provider and LangGraph model-node boundary with
-`AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS` and `AGENTSEEK_MODEL_MAX_RETRIES`.
+status. Configure the provider request with
+`AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS`, the pre-provider runnable boundary
+with `AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS`, and the broader agent
+turn with `AGENTSEEK_LANGCHAIN_RUN_TIMEOUT_SECONDS`. The start deadline falls
+back to the provider request timeout when its dedicated setting is absent.
 
 ### Enterprise Observability
 

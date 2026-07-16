@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,9 +20,14 @@ from republic import AsyncStreamEvents, StreamEvent, StreamState
 from agentseek_langchain.ag_ui import runtime_context_from_state
 from agentseek_langchain.config import get_langchain_settings
 from agentseek_langchain.loader import load_spec_from_path
-from agentseek_langchain.spec import InvocationContext
+from agentseek_langchain.spec import InvocationContext, RunnableSpec
 
 _MODEL_TIMEOUT_MESSAGE = "本次模型处理超时，请稍后重试。"
+_TASK_CANCEL_GRACE_SECONDS = 0.5
+
+
+class _ModelStartTimeoutError(TimeoutError):
+    """The runnable did not enter its first observable model call in time."""
 
 
 @dataclass(slots=True)
@@ -39,6 +46,10 @@ class _ModelCallObservability(AsyncCallbackHandler):
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
         self._calls: dict[UUID, _ModelCallStats] = {}
+        self._first_call_started = asyncio.Event()
+
+    async def wait_until_started(self) -> None:
+        await self._first_call_started.wait()
 
     async def on_chat_model_start(
         self,
@@ -88,6 +99,7 @@ class _ModelCallObservability(AsyncCallbackHandler):
         if run_id in self._calls:
             return
         self._calls[run_id] = stats
+        self._first_call_started.set()
         _emit_enterprise_event(
             "langchain_model_call",
             status="started",
@@ -161,7 +173,13 @@ class LangChainRunnablePlugin:
         logger.info(f"Using LangChain spec entrypoint: {spec_path}")
         return self._spec_cache
 
-    def _build_context(self, prompt: str | list[dict[str, Any]], session_id: str, state: State) -> InvocationContext:
+    def _build_context(
+        self,
+        prompt: str | list[dict[str, Any]],
+        session_id: str,
+        state: State,
+        model_observer: _ModelCallObservability,
+    ) -> InvocationContext:
         workspace_value = state.get("_runtime_workspace")
         workspace = Path(str(workspace_value)).resolve() if workspace_value else Path.cwd().resolve()
         return InvocationContext(
@@ -171,7 +189,7 @@ class LangChainRunnablePlugin:
             workspace=workspace,
             agents_md=self._read_agents_md(workspace),
             runtime_context=runtime_context_from_state(state),
-            callbacks=(_ModelCallObservability(session_id),),
+            callbacks=(model_observer,),
         )
 
     async def _enrich_state_from_prompt_hooks(
@@ -238,7 +256,8 @@ class LangChainRunnablePlugin:
             started_at=stage_started,
         )
         stage_started = time.monotonic()
-        context = self._build_context(prompt, session_id, state)
+        model_observer = _ModelCallObservability(session_id)
+        context = self._build_context(prompt, session_id, state, model_observer)
         _emit_run_stage(
             session_id,
             stage="context_build",
@@ -246,16 +265,39 @@ class LangChainRunnablePlugin:
             started_at=stage_started,
         )
         timeout = _run_timeout_seconds()
+        model_start_timeout = _model_start_timeout_seconds()
         invoke_started = time.monotonic()
         _emit_run_stage(
             session_id,
             stage="model_invoke",
             status="started",
             timeout_seconds=timeout,
+            model_start_timeout_seconds=model_start_timeout,
         )
         try:
             async with asyncio.timeout(timeout):
-                result = await spec.invoke(context)
+                result = await _invoke_with_model_start_timeout(
+                    spec,
+                    context,
+                    model_observer,
+                    model_start_timeout,
+                )
+        except _ModelStartTimeoutError:
+            _emit_run_stage(
+                session_id,
+                stage="model_invoke",
+                status="timeout",
+                started_at=invoke_started,
+                timeout_seconds=model_start_timeout,
+                timeout_phase="model_start",
+            )
+            _emit_run_stage(session_id, stage="run_model", status="timeout", started_at=run_started)
+            logger.error(
+                "LangChain model start timed out session_id={} timeout={}s",
+                session_id,
+                model_start_timeout,
+            )
+            return _MODEL_TIMEOUT_MESSAGE
         except TimeoutError:
             _emit_run_stage(
                 session_id,
@@ -263,6 +305,7 @@ class LangChainRunnablePlugin:
                 status="timeout",
                 started_at=invoke_started,
                 timeout_seconds=timeout,
+                timeout_phase="run",
             )
             _emit_run_stage(session_id, stage="run_model", status="timeout", started_at=run_started)
             logger.error("LangChain turn timed out session_id={} timeout={}s", session_id, timeout)
@@ -355,7 +398,8 @@ class LangChainRunnablePlugin:
             streaming=True,
         )
         stage_started = time.monotonic()
-        context = self._build_context(prompt, session_id, state)
+        model_observer = _ModelCallObservability(session_id)
+        context = self._build_context(prompt, session_id, state, model_observer)
         _emit_run_stage(
             session_id,
             stage="context_build",
@@ -368,6 +412,7 @@ class LangChainRunnablePlugin:
         async def iterator():
             chunks: list[str] = []
             timeout = _run_timeout_seconds()
+            model_start_timeout = _model_start_timeout_seconds()
             ok = True
             invoke_started = time.monotonic()
             _emit_run_stage(
@@ -375,13 +420,37 @@ class LangChainRunnablePlugin:
                 stage="model_invoke",
                 status="started",
                 timeout_seconds=timeout,
+                model_start_timeout_seconds=model_start_timeout,
                 streaming=True,
             )
             try:
                 async with asyncio.timeout(timeout):
-                    async for chunk in spec.stream(context):
+                    async for chunk in _stream_with_model_start_timeout(
+                        spec,
+                        context,
+                        model_observer,
+                        model_start_timeout,
+                    ):
                         chunks.append(chunk)
                         yield StreamEvent("text", {"delta": chunk})
+            except _ModelStartTimeoutError:
+                ok = False
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="timeout",
+                    started_at=invoke_started,
+                    timeout_seconds=model_start_timeout,
+                    timeout_phase="model_start",
+                    streaming=True,
+                )
+                logger.error(
+                    "LangChain stream model start timed out session_id={} timeout={}s",
+                    session_id,
+                    model_start_timeout,
+                )
+                chunks.append(_MODEL_TIMEOUT_MESSAGE)
+                yield StreamEvent("text", {"delta": _MODEL_TIMEOUT_MESSAGE})
             except TimeoutError:
                 ok = False
                 _emit_run_stage(
@@ -390,6 +459,7 @@ class LangChainRunnablePlugin:
                     status="timeout",
                     started_at=invoke_started,
                     timeout_seconds=timeout,
+                    timeout_phase="run",
                     streaming=True,
                 )
                 logger.error("LangChain stream timed out session_id={} timeout={}s", session_id, timeout)
@@ -465,6 +535,90 @@ class LangChainRunnablePlugin:
         return AsyncStreamEvents(iterator(), state=stream_state)
 
 
+async def _invoke_with_model_start_timeout(
+    spec: RunnableSpec,
+    context: InvocationContext,
+    observer: _ModelCallObservability,
+    timeout: float,
+) -> str:
+    operation = asyncio.create_task(spec.invoke(context))
+    try:
+        await _wait_for_model_start_or_completion(operation, observer, timeout)
+        return await operation
+    finally:
+        await _cancel_task(operation)
+
+
+async def _stream_with_model_start_timeout(
+    spec: RunnableSpec,
+    context: InvocationContext,
+    observer: _ModelCallObservability,
+    timeout: float,
+) -> AsyncIterator[str]:
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    finished = object()
+
+    async def pump() -> None:
+        try:
+            async for chunk in spec.stream(context):
+                await queue.put(chunk)
+        finally:
+            await queue.put(finished)
+
+    operation = asyncio.create_task(pump())
+    try:
+        await _wait_for_model_start_or_completion(operation, observer, timeout)
+        while True:
+            item = await queue.get()
+            if item is finished:
+                await operation
+                return
+            if not isinstance(item, str):
+                raise TypeError(f"Expected streamed text, got {type(item)!r}")
+            yield item
+    finally:
+        await _cancel_task(operation)
+
+
+async def _wait_for_model_start_or_completion(
+    operation: asyncio.Task[Any],
+    observer: _ModelCallObservability,
+    timeout: float,
+) -> None:
+    model_started = asyncio.create_task(observer.wait_until_started())
+    try:
+        done, _ = await asyncio.wait(
+            {operation, model_started},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            await _cancel_task(operation)
+            raise _ModelStartTimeoutError(f"No model call started within {timeout}s")
+    finally:
+        await _cancel_task(model_started)
+
+
+async def _cancel_task(task: asyncio.Task[Any]) -> None:
+    if task.done():
+        return
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=_TASK_CANCEL_GRACE_SECONDS)
+    if not done:
+        task.add_done_callback(_consume_task_result)
+        logger.warning(
+            "LangChain operation did not stop within cancellation grace timeout={}s",
+            _TASK_CANCEL_GRACE_SECONDS,
+        )
+        return
+    _consume_task_result(task)
+
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
 def _prompt_text(prompt: str | list[dict[str, Any]]) -> str:
     if isinstance(prompt, str):
         return prompt
@@ -498,6 +652,14 @@ def _emit_run_stage(
 def _run_timeout_seconds() -> float:
     settings = get_langchain_settings()
     return max(0.01, float(getattr(settings, "RUN_TIMEOUT_SECONDS", 180.0) or 180.0))
+
+
+def _model_start_timeout_seconds() -> float:
+    settings = get_langchain_settings()
+    return max(
+        0.01,
+        float(getattr(settings, "MODEL_START_TIMEOUT_SECONDS", 60.0) or 60.0),
+    )
 
 
 def _is_timeout_exception(error: BaseException) -> bool:
