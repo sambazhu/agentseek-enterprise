@@ -494,7 +494,9 @@ class WeComChannel(Channel):
                 userid=userid,
                 leading_content=leading_content,
             )
-            return await self._stream_response(stream.stream_id, force_deferred=True)
+            if stream.response_url:
+                return self._commit_stream_response(stream, force_deferred=True)
+            return await self._stream_response(stream.stream_id)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -511,6 +513,8 @@ class WeComChannel(Channel):
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
         self._schedule_receive(message)
+        if stream.response_url:
+            return self._commit_stream_response(stream)
         return await self._stream_response(stream.stream_id)
 
     async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
@@ -562,7 +566,7 @@ class WeComChannel(Channel):
                 active=self._session_worker_running(session_id),
                 pending_count=self._pending_turn_counts.get(session_id, 0),
             )
-            return await self._stream_response(stream.stream_id)
+            return self._commit_stream_response(stream)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -583,6 +587,8 @@ class WeComChannel(Channel):
         # acknowledgement here and deliver their eventual result through the
         # callback's one-shot response_url.
         self._schedule_receive(message)
+        if stream.response_url:
+            return self._commit_stream_response(stream)
         return await self._stream_response(stream.stream_id)
 
     async def _resolve_userid(self, from_userid: str | None) -> str | None:
@@ -672,7 +678,7 @@ class WeComChannel(Channel):
         async with self._lock:
             return self._streams.get(stream_id)
 
-    async def _stream_response(self, stream_id: str, *, force_deferred: bool = False) -> str:
+    async def _stream_response(self, stream_id: str) -> str:
         current = await self._get_stream(stream_id)
         if current is None:
             return make_text_stream(stream_id, "任务不存在或已过期", True)
@@ -687,8 +693,7 @@ class WeComChannel(Channel):
         # one callback reply. The decision below is synchronous: once the
         # callback claims the final response or deferred response_url path,
         # outbound completion cannot race into both channels.
-        force_response_url = force_deferred and bool(current.response_url)
-        if not current.finish and not force_response_url:
+        if not current.finish and not current.response_url:
             await self._wait_for_first_update(stream_id)
         current = await self._get_stream(stream_id)
         if current is None:
@@ -700,8 +705,18 @@ class WeComChannel(Channel):
                 bool(current.initial_response_finish),
             )
 
+        return self._commit_stream_response(current)
+
+    def _commit_stream_response(self, current: StreamReply, *, force_deferred: bool = False) -> str:
+        if current.initial_response_sent:
+            return make_text_stream(
+                current.stream_id,
+                current.initial_response_content or "已收到，正在处理...",
+                bool(current.initial_response_finish),
+            )
+
         initial_content = current.content or "已收到，正在处理..."
-        if force_response_url and current.response_url:
+        if force_deferred and current.response_url:
             current.deferred_response_url = True
             initial_finish = True
         elif current.finish:
@@ -728,7 +743,7 @@ class WeComChannel(Channel):
         # available terminal result now.
         if current.deferred_response_url and current.finish:
             self._schedule_response_url_delivery(current, current.content)
-        return make_text_stream(stream_id, initial_content, initial_finish)
+        return make_text_stream(current.stream_id, initial_content, initial_finish)
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
         session_id = self._queue_session_id(message)

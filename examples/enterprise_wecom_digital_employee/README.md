@@ -444,13 +444,12 @@ AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
 AI Bot turns use an explicit two-stage delivery contract when the callback
-contains `response_url`. The channel waits up to
-`AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS`; a fast
-result finishes in the callback and does not consume the URL. Otherwise the
-callback ends with a visible acknowledgement (or queue position), and the final
-answer or timeout consumes that message's URL exactly once. Queue status and
-rejection finish in the callback only. Callbacks without `response_url` retain
-the legacy stream-polling path, while pending file extraction always uses the
+contains `response_url`. Queue admission synchronously commits a terminal
+acknowledgement (or queue position) before the background Agent worker can run;
+the final answer or timeout then consumes that message's URL exactly once.
+Queue status and rejection finish in the callback only. Callbacks without
+`response_url` wait up to `AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS` and retain the
+legacy stream-polling path, while pending file extraction always uses the
 deferred path.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
@@ -527,7 +526,13 @@ AGENTSEEK_LANGFUSE_RELEASE=enterprise-wecom-v0.0.8
 AGENTSEEK_LANGFUSE_TRACE_NAME=agentseek.enterprise
 AGENTSEEK_LANGFUSE_FLUSH=true
 AGENTSEEK_LANGFUSE_SAMPLE_RATE=1.0
+AGENTSEEK_LANGFUSE_QUEUE_MAXSIZE=1024
 ```
+
+Langfuse network calls and `flush()` run in a bounded daemon worker, never on
+the gateway callback event loop. When the queue is full, telemetry is dropped
+instead of delaying WeCom traffic; local JSONL events remain synchronous and
+available. The probe waits for its queued event before reporting `sent`.
 
 The example includes the Langfuse Python SDK in `pyproject.toml`. After setting
 the keys and host, run a single probe before enabling long-running gateway

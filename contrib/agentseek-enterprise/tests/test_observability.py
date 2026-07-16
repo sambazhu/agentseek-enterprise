@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from types import ModuleType
 from typing import Any
 
@@ -109,7 +111,7 @@ def test_langfuse_enabled_emits_sanitized_trace_with_fake_sdk(monkeypatch: Any, 
             calls.append(("flush", {}))
 
     fake_module = ModuleType("langfuse")
-    fake_module.Langfuse = FakeLangfuse
+    fake_module.__dict__["Langfuse"] = FakeLangfuse
     monkeypatch.setitem(sys.modules, "langfuse", fake_module)
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "true")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
@@ -132,6 +134,7 @@ def test_langfuse_enabled_emits_sanitized_trace_with_fake_sdk(monkeypatch: Any, 
         status="found",
         content="朱春霖，你好！",
     )
+    assert writer.wait_for_langfuse(1.0)
 
     assert calls[0][0] == "client"
     assert calls[0][1]["public_key"] == "pk-test"
@@ -192,7 +195,7 @@ def test_langfuse_event_falls_back_to_create_event(monkeypatch: Any, tmp_path: A
             calls.append((name, {"trace_context": trace_context, "metadata": metadata}))
 
     fake_module = ModuleType("langfuse")
-    fake_module.Langfuse = FakeLangfuse
+    fake_module.__dict__["Langfuse"] = FakeLangfuse
     monkeypatch.setitem(sys.modules, "langfuse", fake_module)
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
     monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
@@ -202,11 +205,86 @@ def test_langfuse_event_falls_back_to_create_event(monkeypatch: Any, tmp_path: A
 
     writer = EnterpriseEventWriter()
     assert writer.emit("memory_recall", status="hit")
+    assert writer.wait_for_langfuse(1.0)
 
     assert calls[1][0] == "memory_recall"
     assert calls[1][1]["trace_context"]["trace_id"]
     assert calls[1][1]["metadata"]["event"] == "memory_recall"
     assert writer.langfuse_status() == {"status": "sent"}
+
+
+def test_langfuse_flush_never_blocks_runtime_event_emission(monkeypatch: Any, tmp_path: Any) -> None:
+    log_path = tmp_path / "enterprise-events.jsonl"
+    flush_started = threading.Event()
+    release_flush = threading.Event()
+
+    class FakeLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def create_event(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def flush(self) -> None:
+            flush_started.set()
+            release_flush.wait(timeout=1.0)
+
+    fake_module = ModuleType("langfuse")
+    fake_module.__dict__["Langfuse"] = FakeLangfuse
+    monkeypatch.setitem(sys.modules, "langfuse", fake_module)
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_EVENTS_LOG_PATH", str(log_path))
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+
+    writer = EnterpriseEventWriter()
+    started_at = time.monotonic()
+    assert writer.emit("wecom_message_received", session_id="wecom:employee")
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.1
+    assert log_path.exists()
+    assert flush_started.wait(timeout=0.5)
+    release_flush.set()
+    assert writer.wait_for_langfuse(1.0)
+    assert writer.langfuse_status() == {"status": "sent"}
+
+
+def test_langfuse_queue_drops_telemetry_instead_of_blocking(monkeypatch: Any) -> None:
+    flush_started = threading.Event()
+    release_flush = threading.Event()
+
+    class FakeLangfuse:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def create_event(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def flush(self) -> None:
+            flush_started.set()
+            release_flush.wait(timeout=1.0)
+
+    fake_module = ModuleType("langfuse")
+    fake_module.__dict__["Langfuse"] = FakeLangfuse
+    monkeypatch.setitem(sys.modules, "langfuse", fake_module)
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("AGENTSEEK_LANGFUSE_QUEUE_MAXSIZE", "1")
+
+    writer = EnterpriseEventWriter()
+    assert writer.emit("event_1")
+    assert flush_started.wait(timeout=0.5)
+    assert writer.emit("event_2")
+    started_at = time.monotonic()
+    assert not writer.emit("event_3")
+
+    assert time.monotonic() - started_at < 0.1
+    assert writer.langfuse_status()["status"] == "dropped"
+    release_flush.set()
+    assert writer.wait_for_langfuse(1.0)
 
 
 def test_relative_event_path_resolves_against_explicit_project_root(monkeypatch: Any, tmp_path: Any) -> None:

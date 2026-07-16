@@ -204,10 +204,9 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
             )
         )
 
-    channel.bind_receiver(on_receive)
-
-    plain = asyncio.run(
-        channel._handle_plain_message({
+    async def scenario() -> dict[str, Any]:
+        channel.bind_receiver(on_receive)
+        plain = await channel._handle_plain_message({
             "msgid": "file-msg-1",
             "msgtype": "file",
             "from": {"userid": "chenkang2"},
@@ -220,17 +219,25 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
                 "filesize": 10,
             },
         })
-    )
-    payload = json.loads(plain or "{}")
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(plain or "{}")
 
-    assert payload["stream"]["content"] == "文件处理完成"
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["content"] == "已收到，正在处理..."
+    assert payload["stream"]["finish"] is True
     assert media_client.calls == ["https://ww-aibot-img.example.com/report.txt?sign=secret"]
     assert file_service.calls[0]["filename"] == "document_20260710_000000_000000.txt"
     assert received[0].context["files"]["current_files_context"].startswith("[CurrentFiles]")
     assert received[0].context["wecom"]["raw"]["file"]["has_url"] is True
     assert "url" not in received[0].context["wecom"]["raw"]["file"]
     assert "已收到并解析文件" in received[0].content
-    assert sender.calls == []
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=immediate-file",
+            "文件处理完成",
+        )
+    ]
 
 
 def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
@@ -603,7 +610,7 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_once_via_response_url(
     ]
 
 
-def test_ai_bot_fast_turn_finishes_in_callback_without_consuming_response_url() -> None:
+def test_ai_bot_fast_turn_still_returns_ack_before_running_background_work() -> None:
     sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
@@ -627,9 +634,9 @@ def test_ai_bot_fast_turn_finishes_in_callback_without_consuming_response_url() 
             )
         )
 
-    channel.bind_receiver(on_receive)
-    plain = asyncio.run(
-        channel._handle_plain_message({
+    async def scenario() -> dict[str, Any]:
+        channel.bind_receiver(on_receive)
+        plain = await channel._handle_plain_message({
             "msgid": "response-url-fast-turn",
             "msgtype": "text",
             "from": {"userid": "chenkang2"},
@@ -639,12 +646,19 @@ def test_ai_bot_fast_turn_finishes_in_callback_without_consuming_response_url() 
             ),
             "text": {"content": "你好"},
         })
-    )
-    payload = json.loads(plain or "{}")
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(plain or "{}")
 
-    assert payload["stream"]["content"] == "快速处理完成"
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["content"] == "已收到，正在处理..."
     assert payload["stream"]["finish"] is True
-    assert sender.calls == []
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=fast-turn",
+            "快速处理完成",
+        )
+    ]
 
 
 def test_ai_bot_concurrent_duplicate_replays_ack_and_delivers_final_once() -> None:

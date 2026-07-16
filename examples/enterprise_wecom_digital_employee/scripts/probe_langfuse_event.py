@@ -13,6 +13,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Send a single AgentSeek Enterprise event to Langfuse.")
     parser.add_argument("--env-file", default=os.environ.get("AGENTSEEK_ENV_FILE", ".env"))
     parser.add_argument("--event", default="langfuse_probe")
+    parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
 
     env_path = Path(args.env_file).expanduser()
@@ -28,6 +29,7 @@ def main() -> int:
         component="agentseek-enterprise",
         project_root=str(env_path.parent),
     )
+    writer.wait_for_langfuse(args.timeout)
     status = writer.langfuse_status()
     result = {
         "event": args.event,

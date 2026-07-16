@@ -4,8 +4,10 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -105,6 +107,7 @@ class EnterpriseObservabilitySettings:
     langfuse_trace_name: str = "agentseek.enterprise"
     langfuse_flush: bool = True
     langfuse_sample_rate: float = 1.0
+    langfuse_queue_maxsize: int = 1024
 
     @classmethod
     def from_env(cls, *, project_root: str | Path | None = None) -> EnterpriseObservabilitySettings:
@@ -132,6 +135,12 @@ class EnterpriseObservabilitySettings:
             or "agentseek.enterprise",
             langfuse_flush=_truthy(os.environ.get("AGENTSEEK_LANGFUSE_FLUSH", "true")),
             langfuse_sample_rate=_bounded_float(os.environ.get("AGENTSEEK_LANGFUSE_SAMPLE_RATE"), 0.0, 1.0, 1.0),
+            langfuse_queue_maxsize=_bounded_int(
+                os.environ.get("AGENTSEEK_LANGFUSE_QUEUE_MAXSIZE"),
+                1,
+                100_000,
+                1024,
+            ),
         )
 
 
@@ -169,6 +178,11 @@ class EnterpriseEventWriter:
     def langfuse_status(self) -> dict[str, str]:
         return self._langfuse.status()
 
+    def wait_for_langfuse(self, timeout: float = 10.0) -> bool:
+        """Wait for events already queued for Langfuse without affecting runtime emission."""
+
+        return self._langfuse.wait(timeout)
+
     def _payload(self, event: str, fields: dict[str, Any]) -> dict[str, Any]:
         return {
             "ts": datetime.now(UTC).isoformat(),
@@ -190,18 +204,84 @@ class _LangfuseEmitter:
         self._client: Any | None = None
         self._last_status = "disabled" if not settings.langfuse_enabled else "ready"
         self._last_error = ""
+        self._queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=settings.langfuse_queue_maxsize)
+        self._worker: threading.Thread | None = None
+        self._worker_lock = threading.Lock()
+        self._status_lock = threading.Lock()
 
     def emit(self, payload: dict[str, Any]) -> bool:
         if self._disabled or not self._settings.langfuse_enabled:
-            self._last_status = "disabled"
+            self._set_status("disabled")
             return False
         if (secrets.randbelow(1_000_000) / 1_000_000) > self._settings.langfuse_sample_rate:
-            self._last_status = "sampled_out"
+            self._set_status("sampled_out")
             return False
+        self._ensure_worker()
+        self._set_status("queued")
+        try:
+            self._queue.put_nowait(("event", dict(payload)))
+        except queue.Full:
+            previous = self.status().get("status")
+            self._set_status("dropped", "Langfuse event queue is full")
+            if previous != "dropped":
+                logger.warning(
+                    "Langfuse enterprise event queue full; dropping telemetry maxsize={}",
+                    self._settings.langfuse_queue_maxsize,
+                )
+            return False
+        return True
+
+    def status(self) -> dict[str, str]:
+        with self._status_lock:
+            status = {"status": self._last_status}
+            if self._last_error:
+                status["error"] = self._last_error
+        return status
+
+    def wait(self, timeout: float) -> bool:
+        if not self._settings.langfuse_enabled:
+            return False
+        self._ensure_worker()
+        barrier = threading.Event()
+        try:
+            self._queue.put(("barrier", barrier), timeout=max(0.0, timeout))
+        except queue.Full:
+            return False
+        return barrier.wait(max(0.0, timeout))
+
+    def _ensure_worker(self) -> None:
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            return
+        with self._worker_lock:
+            worker = self._worker
+            if worker is not None and worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._run_worker,
+                name="agentseek-langfuse-emitter",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _run_worker(self) -> None:
+        while True:
+            kind, value = self._queue.get()
+            try:
+                if kind == "barrier":
+                    value.set()
+                    continue
+                self._emit_now(value)
+            finally:
+                self._queue.task_done()
+
+    def _emit_now(self, payload: dict[str, Any]) -> None:
+        if self._disabled:
+            return
         try:
             client = self._get_client()
             if client is None:
-                return False
+                return
             metadata = dict(payload)
             event_name = str(metadata.get("event") or "agentseek.enterprise.event")
             event_name = _safe_event_name(event_name)
@@ -228,35 +308,29 @@ class _LangfuseEmitter:
             )
             if self._settings.langfuse_flush and hasattr(client, "flush"):
                 client.flush()
-            self._last_status = "sent"
-            self._last_error = ""
+            self._set_status("sent")
         except Exception as exc:  # pragma: no cover - depends on optional SDK/API version.
             self._disabled = True
-            self._last_status = "error"
-            self._last_error = f"{type(exc).__name__}: {exc}"
+            self._set_status("error", f"{type(exc).__name__}: {exc}")
             logger.warning("Langfuse enterprise event emission disabled after error: {}", exc)
-            return False
-        else:
-            return True
 
-    def status(self) -> dict[str, str]:
-        status = {"status": self._last_status}
-        if self._last_error:
-            status["error"] = self._last_error
-        return status
+    def _set_status(self, status: str, error: str = "") -> None:
+        with self._status_lock:
+            self._last_status = status
+            self._last_error = error
 
     def _get_client(self) -> Any | None:
         if self._client is not None:
             return self._client
         if not self._settings.langfuse_public_key or not self._settings.langfuse_secret_key:
-            self._last_status = "missing_config"
+            self._set_status("missing_config")
             logger.warning("AGENTSEEK_LANGFUSE_ENABLED=true but Langfuse keys are not configured")
             self._disabled = True
             return None
         try:
             from langfuse import Langfuse  # type: ignore[import-not-found]
         except ImportError:
-            self._last_status = "missing_sdk"
+            self._set_status("missing_sdk")
             logger.warning("AGENTSEEK_LANGFUSE_ENABLED=true but the langfuse package is not installed")
             self._disabled = True
             return None
