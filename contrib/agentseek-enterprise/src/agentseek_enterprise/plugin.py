@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import Mapping
@@ -124,12 +125,12 @@ class EnterprisePlugin:
         return None
 
     @hookimpl
-    def load_state(self, message: Envelope, session_id: str) -> State:
+    async def load_state(self, message: Envelope, session_id: str) -> State:
         state: State = {}
         if latest_user_message := content_of(message).strip():
             state[LATEST_USER_MESSAGE_STATE_KEY] = latest_user_message
         state.update(self._load_short_term_memory_state(session_id))
-        employee_state = self._load_employee_state(message)
+        employee_state = await self._load_employee_state(message)
         state.update(employee_state)
         employee_context = employee_state.get(EMPLOYEE_CONTEXT_STATE_KEY)
         if isinstance(employee_context, Mapping):
@@ -171,7 +172,7 @@ class EnterprisePlugin:
                 duration_ms=elapsed_ms(started_at),
             )
 
-    def _load_employee_state(self, message: Envelope) -> State:
+    async def _load_employee_state(self, message: Envelope) -> State:
         if not _identity_enabled():
             return {}
 
@@ -196,7 +197,7 @@ class EnterprisePlugin:
             }
 
         try:
-            context, cache_hit = self._get_employee_context(provider, oa_account)
+            context, cache_hit = await self._get_employee_context(provider, oa_account)
         except Exception as exc:
             logger.warning("Employee identity lookup failed for {}: {}", oa_account, exc)
             emit_enterprise_event(
@@ -251,13 +252,14 @@ class EnterprisePlugin:
             },
         }
 
-    def _get_employee_context(
+    async def _get_employee_context(
         self,
         provider: StaffIdentityProvider,
         oa_account: str,
     ) -> tuple[EmployeeContext | None, bool]:
         if not _identity_cache_enabled():
-            return provider.get_employee_context(oa_account), False
+            context = await _lookup_employee_context(provider, oa_account)
+            return context, False
 
         now = time.monotonic()
         key = (_identity_provider_name(), _identity_cache_key(oa_account))
@@ -269,7 +271,7 @@ class EnterprisePlugin:
             logger.debug("Employee identity cache expired for {}", oa_account)
             self._identity_cache.pop(key, None)
 
-        context = provider.get_employee_context(oa_account)
+        context = await _lookup_employee_context(provider, oa_account)
         if context is not None:
             ttl = _identity_cache_ttl_seconds()
             self._identity_cache[key] = _IdentityCacheEntry(context=context, expires_at=now + ttl)
@@ -444,6 +446,28 @@ def _identity_cache_max_entries() -> int:
     except ValueError:
         return 1024
     return max(1, max_entries)
+
+
+def _identity_lookup_timeout_seconds() -> float:
+    value = os.environ.get("AGENTSEEK_ENTERPRISE_IDENTITY_LOOKUP_TIMEOUT_SECONDS", "15").strip()
+    try:
+        timeout = float(value)
+    except ValueError:
+        return 15.0
+    return max(0.05, timeout)
+
+
+async def _lookup_employee_context(
+    provider: StaffIdentityProvider,
+    oa_account: str,
+) -> EmployeeContext | None:
+    timeout = _identity_lookup_timeout_seconds()
+    try:
+        async with asyncio.timeout(timeout):
+            return await asyncio.to_thread(provider.get_employee_context, oa_account)
+    except TimeoutError as exc:
+        msg = f"Employee identity lookup timed out after {timeout:g}s"
+        raise TimeoutError(msg) from exc
 
 
 def _identity_cache_key(oa_account: str) -> str:

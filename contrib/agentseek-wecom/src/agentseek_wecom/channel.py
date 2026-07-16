@@ -70,6 +70,7 @@ class StreamReply:
     from_userid: str | None
     response_url: str | None = None
     initial_response_sent: bool = False
+    initial_response_content: str | None = None
     response_url_consumed: bool = False
     content: str = ""
     finish: bool = False
@@ -585,7 +586,11 @@ class WeComChannel(Channel):
         if not from_userid or self._userid_resolver is None:
             return None
         try:
-            return await asyncio.to_thread(self._userid_resolver.resolve, from_userid)
+            async with asyncio.timeout(max(0.05, self.settings.api_timeout_seconds)):
+                return await asyncio.to_thread(self._userid_resolver.resolve, from_userid)
+        except TimeoutError:
+            logger.warning("wecom.userid_resolve timed out for open_userid={}", from_userid)
+            return None
         except Exception as exc:
             logger.warning("wecom.userid_resolve failed for open_userid={}: {}", from_userid, exc)
             return None
@@ -670,11 +675,17 @@ class WeComChannel(Channel):
             await self._wait_for_first_update(stream_id)
         current = await self._get_stream(stream_id)
         if current is not None:
+            if current.initial_response_content is None:
+                current.initial_response_content = current.content or "已收到，正在处理..."
             current.initial_response_sent = True
+            if current.response_url:
+                # AI Bot clients render a plain text callback reliably, including
+                # under burst traffic. Keep response_url for the one terminal reply.
+                return make_text(current.initial_response_content)
         return make_text_stream(
             stream_id,
             (current.content if current else "") or "已收到，正在处理...",
-            bool(current.finish if current else False) or bool(current and current.response_url),
+            bool(current.finish if current else False),
         )
 
     def _schedule_receive(self, message: ChannelMessage) -> None:

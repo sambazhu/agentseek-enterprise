@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Mapping
 from contextlib import closing
 from types import SimpleNamespace
@@ -44,6 +46,10 @@ class FakeIdentityProvider:
         return self.context
 
 
+def _load_state(plugin: EnterprisePlugin, message: dict[str, Any], session_id: str) -> dict[str, Any]:
+    return asyncio.run(plugin.load_state(message, session_id))
+
+
 def _employee_context() -> EmployeeContext:
     return EmployeeContext(
         user_id="person-1",
@@ -83,7 +89,7 @@ def test_load_state_injects_employee_context(monkeypatch: Any) -> None:
     plugin._provider = provider
     plugin._provider_initialized = True
 
-    state = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+    state = _load_state(plugin, {"from_userid": "chenkang2"}, "wecom:chenkang2")
 
     assert provider.queries == ["chenkang2"]
     assert state[EMPLOYEE_CONTEXT_STATE_KEY]["oa_account"] == "chenkang2"
@@ -102,7 +108,7 @@ def test_load_state_skips_when_identity_disabled(monkeypatch: Any) -> None:
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
     plugin = EnterprisePlugin()
 
-    assert plugin.load_state({"from_userid": "chenkang2"}, "s1") == {}
+    assert _load_state(plugin, {"from_userid": "chenkang2"}, "s1") == {}
 
 
 def test_load_state_preserves_latest_user_message_for_runtime_guards(monkeypatch: Any) -> None:
@@ -110,7 +116,7 @@ def test_load_state_preserves_latest_user_message_for_runtime_guards(monkeypatch
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
     plugin = EnterprisePlugin()
 
-    state = plugin.load_state({"content": "  确认  "}, "wecom:chenkang2")
+    state = _load_state(plugin, {"content": "  确认  "}, "wecom:chenkang2")
 
     assert state[LATEST_USER_MESSAGE_STATE_KEY] == "确认"
 
@@ -122,7 +128,7 @@ def test_load_state_marks_missing_employee(monkeypatch: Any) -> None:
     plugin._provider = FakeIdentityProvider(None)
     plugin._provider_initialized = True
 
-    state = plugin.load_state({"from_userid": "missing"}, "s1")
+    state = _load_state(plugin, {"from_userid": "missing"}, "s1")
 
     assert EMPLOYEE_CONTEXT_STATE_KEY not in state
     assert state[EMPLOYEE_IDENTITY_STATE_KEY]["status"] == "not_found"
@@ -138,8 +144,8 @@ def test_load_state_caches_successful_employee_context(monkeypatch: Any) -> None
     plugin._provider = provider
     plugin._provider_initialized = True
 
-    first = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
-    second = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+    first = _load_state(plugin, {"from_userid": "chenkang2"}, "wecom:chenkang2")
+    second = _load_state(plugin, {"from_userid": "chenkang2"}, "wecom:chenkang2")
 
     assert provider.queries == ["chenkang2"]
     assert first[EMPLOYEE_IDENTITY_STATE_KEY]["cache"] == "miss"
@@ -148,19 +154,22 @@ def test_load_state_caches_successful_employee_context(monkeypatch: Any) -> None
 
 
 def test_load_state_identity_cache_expires(monkeypatch: Any) -> None:
-    monotonic_values = iter([100.0, 101.5])
     monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_ENABLED", "true")
     monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_CACHE_TTL_SECONDS", "1")
-    monkeypatch.setattr(enterprise_plugin.time, "monotonic", lambda: next(monotonic_values))
     plugin = EnterprisePlugin()
     provider = FakeIdentityProvider(_employee_context())
     plugin._provider = provider
     plugin._provider_initialized = True
 
-    plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
-    state = plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+    _load_state(plugin, {"from_userid": "chenkang2"}, "wecom:chenkang2")
+    cache_key, cached = next(iter(plugin._identity_cache.items()))
+    plugin._identity_cache[cache_key] = enterprise_plugin._IdentityCacheEntry(
+        context=cached.context,
+        expires_at=0,
+    )
+    state = _load_state(plugin, {"from_userid": "chenkang2"}, "wecom:chenkang2")
 
     assert provider.queries == ["chenkang2", "chenkang2"]
     assert state[EMPLOYEE_IDENTITY_STATE_KEY]["cache"] == "miss"
@@ -175,8 +184,8 @@ def test_load_state_does_not_cache_missing_employee(monkeypatch: Any) -> None:
     plugin._provider = provider
     plugin._provider_initialized = True
 
-    plugin.load_state({"from_userid": "missing"}, "s1")
-    plugin.load_state({"from_userid": "missing"}, "s1")
+    _load_state(plugin, {"from_userid": "missing"}, "s1")
+    _load_state(plugin, {"from_userid": "missing"}, "s1")
 
     assert provider.queries == ["missing", "missing"]
 
@@ -205,16 +214,58 @@ def test_short_term_memory_persists_recent_messages(monkeypatch: Any, tmp_path: 
         "好的，我记住了。",
     )
 
-    state = plugin.load_state({"content": "我刚才说我要去哪里？"}, "wecom:chenkang2")
+    state = _load_state(plugin, {"content": "我刚才说我要去哪里？"}, "wecom:chenkang2")
 
     memory = state[SHORT_TERM_MEMORY_STATE_KEY]
     assert memory["session_id"] == "wecom:chenkang2"
     assert [item["role"] for item in memory["recent_messages"]] == ["user", "assistant"]
     assert memory["recent_messages"][0]["content"] == "帮我记一下，我明天去深圳出差"
     assert memory["recent_messages"][1]["content"] == "好的，我记住了。"
-    assert plugin.load_state({"content": "hi"}, "wecom:other") == {
+    assert _load_state(plugin, {"content": "hi"}, "wecom:other") == {
         LATEST_USER_MESSAGE_STATE_KEY: "hi"
     }
+
+
+def test_load_state_identity_timeout_does_not_block_event_loop(monkeypatch: Any) -> None:
+    release = threading.Event()
+    provider_started = threading.Event()
+
+    class BlockingIdentityProvider:
+        def get_employee_context(self, oa_account: str) -> EmployeeContext | None:
+            assert oa_account == "chenkang2"
+            provider_started.set()
+            release.wait(timeout=1.0)
+            return _employee_context()
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_PROVIDER", "dm")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_LOOKUP_TIMEOUT_SECONDS", "0.05")
+    plugin = EnterprisePlugin()
+    plugin._provider = BlockingIdentityProvider()
+    plugin._provider_initialized = True
+
+    async def scenario() -> tuple[dict[str, Any], bool]:
+        event_loop_progressed = False
+
+        async def tick() -> None:
+            nonlocal event_loop_progressed
+            await asyncio.sleep(0.01)
+            event_loop_progressed = True
+
+        tick_task = asyncio.create_task(tick())
+        try:
+            state = await plugin.load_state({"from_userid": "chenkang2"}, "wecom:chenkang2")
+        finally:
+            release.set()
+        await tick_task
+        return state, event_loop_progressed
+
+    state, event_loop_progressed = asyncio.run(scenario())
+
+    assert provider_started.is_set()
+    assert event_loop_progressed is True
+    assert state[EMPLOYEE_IDENTITY_STATE_KEY]["status"] == "error"
+    assert state[EMPLOYEE_IDENTITY_STATE_KEY]["error_type"] == "TimeoutError"
 
 
 def test_short_term_memory_sqlite_uses_wal_and_busy_timeout(tmp_path: Any) -> None:

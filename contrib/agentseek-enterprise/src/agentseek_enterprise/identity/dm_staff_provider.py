@@ -430,6 +430,15 @@ def _subprocess_timeout_seconds() -> float:
     return max(1.0, timeout)
 
 
+def _sidecar_timeout_seconds() -> float:
+    value = os.environ.get("AGENTSEEK_IDENTITY_DM_SIDECAR_TIMEOUT_SECONDS", "8").strip()
+    try:
+        timeout = float(value)
+    except ValueError:
+        return 8.0
+    return max(1.0, timeout)
+
+
 class _DmIdentitySidecarClient:
     """Line-oriented local worker that keeps JPype/JDBC out of the gateway process."""
 
@@ -448,7 +457,7 @@ class _DmIdentitySidecarClient:
             self._stop_process()
 
     def _lookup_locked(self, oa_account: str) -> EmployeeContext | None:
-        timeout = _subprocess_timeout_seconds()
+        timeout = _sidecar_timeout_seconds()
         last_error: Exception | None = None
         for _attempt in range(2):
             process = self._ensure_process()

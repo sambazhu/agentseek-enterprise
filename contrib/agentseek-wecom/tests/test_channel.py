@@ -487,7 +487,15 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> 
         response_url_sender=sender,
     )
 
-    async def scenario() -> dict[str, Any]:
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        callback = {
+            "msgid": "response-url-turn",
+            "msgtype": "text",
+            "from": {"userid": "encrypted-open-userid"},
+            "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
+            "text": {"content": "你好"},
+        }
+
         async def on_receive(message: ChannelMessage) -> None:
             received.append(message)
             await channel.send(
@@ -501,25 +509,20 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> 
 
         channel.bind_receiver(on_receive)
         response = await asyncio.wait_for(
-            channel._handle_plain_message({
-                "msgid": "response-url-turn",
-                "msgtype": "text",
-                "from": {"userid": "encrypted-open-userid"},
-                "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
-                "text": {"content": "你好"},
-            }),
+            channel._handle_plain_message(callback),
             timeout=0.2,
         )
         assert await asyncio.to_thread(resolver_started.wait, 0.2)
         assert received == []
         release_resolver.set()
         await asyncio.gather(*list(channel._dispatch_tasks))
-        return json.loads(response or "{}")
+        duplicate = await channel._handle_plain_message(callback)
+        return json.loads(response or "{}"), json.loads(duplicate or "{}")
 
-    payload = asyncio.run(scenario())
+    payload, duplicate_payload = asyncio.run(scenario())
 
-    assert payload["stream"]["content"] == "已收到，正在处理..."
-    assert payload["stream"]["finish"] is True
+    assert payload == {"msgtype": "text", "text": {"content": "已收到，正在处理..."}}
+    assert duplicate_payload == payload
     assert received[0].session_id == "wecom:zhuchunlin"
     assert sender.calls == [
         (
@@ -976,12 +979,12 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
 
     payloads, received = asyncio.run(scenario())
 
-    assert all(payload["stream"]["finish"] is True for payload in payloads)
-    assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
-    assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
-    assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
-    assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
-    assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
+    assert all(payload["msgtype"] == "text" for payload in payloads)
+    assert payloads[0]["text"]["content"] == "已收到，正在处理..."
+    assert "等待队列第 1 位" in payloads[1]["text"]["content"]
+    assert "等待队列第 2 位" in payloads[2]["text"]["content"]
+    assert "等待队列第 3 位" in payloads[3]["text"]["content"]
+    assert "本条消息未进入队列" in payloads[4]["text"]["content"]
     assert received == [f"消息{index}" for index in range(4)]
     delivered_urls = [url for url, _content in sender.calls]
     assert len(delivered_urls) == 4
@@ -1103,7 +1106,8 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
                 ),
                 "text": {"content": f"消息{index}"},
             }) or "{}")
-            assert payload["stream"]["finish"] is True
+            assert payload["msgtype"] == "text"
+            assert payload["text"]["content"]
         await asyncio.sleep(0.08)
         release.set()
         await asyncio.gather(*list(channel._dispatch_tasks))

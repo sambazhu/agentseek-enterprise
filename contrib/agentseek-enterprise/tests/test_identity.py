@@ -281,6 +281,51 @@ def test_dm_staff_identity_provider_can_query_via_persistent_sidecar(monkeypatch
     assert instances[0].closed is True
 
 
+def test_dm_staff_sidecar_timeout_recycles_worker_for_next_lookup(monkeypatch: Any) -> None:
+    context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
+    client = dm_staff_provider._DmIdentitySidecarClient()
+    processes = [object(), object()]
+    process_index = 0
+    stopped: list[object] = []
+
+    def ensure_process() -> object:
+        nonlocal process_index
+        process = processes[process_index]
+        process_index += 1
+        return process
+
+    responses: list[str | TimeoutError] = [
+        TimeoutError(),
+        json.dumps({"ok": True, "employee_context": context.to_dict()}, ensure_ascii=False),
+    ]
+
+    def read_response(process: object, timeout: float) -> str:
+        del process
+        assert timeout == 1.0
+        response = responses.pop(0)
+        if isinstance(response, TimeoutError):
+            raise response
+        return response
+
+    def stop_process() -> None:
+        stopped.append(processes[process_index - 1])
+
+    monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_SIDECAR_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(client, "_ensure_process", ensure_process)
+    monkeypatch.setattr(client, "_drain_stale_responses", lambda: None)
+    monkeypatch.setattr(client, "_read_response_line", read_response)
+    monkeypatch.setattr(client, "_stop_process", stop_process)
+    monkeypatch.setattr(dm_staff_provider, "_sidecar_stdin", lambda _process: io.StringIO())
+
+    with pytest.raises(RuntimeError, match="sidecar timed out after 1s"):
+        client.lookup("chenkang2")
+
+    result = client.lookup("chenkang2")
+
+    assert result == context
+    assert stopped == [processes[0]]
+
+
 def test_dm_staff_sidecar_outputs_employee_context(monkeypatch: Any, capsys: Any) -> None:
     context = EmployeeContext(user_id="person-1", oa_account="chenkang2", name="陈康")
 

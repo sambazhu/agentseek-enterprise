@@ -442,6 +442,22 @@ AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS=240
 AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
+AI Bot callbacks that include `response_url` return the immediate acknowledgement,
+queue position, queue status, or rejection as a plain `text` response. Accepted
+turns reserve the one-shot `response_url` for the terminal answer or timeout notice.
+This keeps burst feedback visible without consuming the final-delivery capability.
+
+When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
+
+```bash
+AGENTSEEK_IDENTITY_DM_SIDECAR_TIMEOUT_SECONDS=8
+AGENTSEEK_ENTERPRISE_IDENTITY_LOOKUP_TIMEOUT_SECONDS=15
+```
+
+The inner deadline recycles a stuck JDBC/JVM sidecar. The outer deadline runs the
+blocking provider outside the event loop and degrades the current turn to identity
+status `error`, so one failed lookup cannot freeze other sessions or shutdown.
+
 Keep the WeCom timeout slightly above the LangChain timeout. A timed-out model
 turn is cancelled and receives a terminal stream response so the next queued
 message can continue. The queue limit counts pending messages, not the active
