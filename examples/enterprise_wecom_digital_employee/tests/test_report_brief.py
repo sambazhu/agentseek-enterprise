@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from agentseek_work import WorkContractSnapshot, WorkContractStatus
@@ -9,6 +10,9 @@ from enterprise_wecom_digital_employee.report_brief import (
     ReportBrief,
     explicitly_confirms_report_brief,
 )
+from enterprise_wecom_digital_employee.work_tools import work_tools
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 NOW = datetime(2026, 7, 14, tzinfo=UTC)
 
@@ -81,6 +85,32 @@ def test_report_brief_rejects_duplicate_or_blank_audiences() -> None:
         ReportBrief(title="report", target_audience=("管理层", "管理层"))
     with pytest.raises(ValueError, match="blank"):
         ReportBrief(title="report", target_audience=("",))
+
+
+def test_save_report_brief_tool_constrains_formats_and_isolates_invalid_values() -> None:
+    save_tool = cast(
+        StructuredTool,
+        {item.name: item for item in work_tools(cast(Any, object()))}["save_report_brief"],
+    )
+    schema_model = cast(type[BaseModel], save_tool.tool_call_schema)
+    schema = schema_model.model_json_schema()
+    format_variants = schema["properties"]["output_formats"]["anyOf"]
+    array_schema = next(item for item in format_variants if item.get("type") == "array")
+
+    assert array_schema["items"]["enum"] == ["markdown", "docx", "pdf"]
+    assert "Summary, report, and outline describe content" in save_tool.description
+
+    save_func = save_tool.func
+    assert save_func is not None
+    result = save_func(
+        title="证券行业摘要",
+        target_audience=["管理层"],
+        runtime=cast(Any, object()),
+        output_formats=cast(Any, ["摘要"]),
+    )
+
+    assert "unsupported format" in result
+    assert "markdown, docx, and pdf" in result
 
 
 def test_report_brief_parser_fails_closed_on_wrong_contract_or_schema() -> None:

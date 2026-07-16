@@ -565,15 +565,17 @@ coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权�
 
 M3 先以运行时前置切片启动：
 
-1. **M3-00A 会话背压**：同一 WeCom session 保持一个 active turn，默认最多三个
+1. **M3-00A 会话背压（已完成）**：同一 WeCom session 保持一个 active turn，默认最多三个
    pending；记录排队位置，超限不入 Agent，等待超过 TTL 自动结束；“查看消息队列”
-   绕过模型即时返回。不同 session 继续并发。普通聊天回归单 stream，不再使用
-   `response_url`；由于 WeCom AI Bot 不稳定渲染 `finish=false`，未请求的 ACK 和排队位置
-   不再作为用户面发布门槛，可见验收收敛为单次终态拒绝、队列查询、TTL 取消和最终回复。
+   绕过模型即时返回。不同 session 继续并发。带 `response_url` 的 WeCom AI Bot 回调在
+   Agent worker 运行前同步固化 `finish=true` ACK、排队位置或拒绝；进入 Agent 的消息再由
+   `response_url` exactly-once 投递最终结果。Langfuse 网络与 flush 在有界 daemon 队列中
+   异步发送，观测故障不能阻塞 callback；队列满时只丢 telemetry，不影响本地 JSONL 或业务。
    企业 harness 保留 DeepAgents 默认 subagent 作为可选执行助手；它不参与普通会话与
    WorkItem 的路由。隐式自动摘要保持关闭；插件层首模型回调 watchdog 直接约束
    `model_invoke` 到首个 provider callback 的 pre-model 长延迟，整轮 timeout 和
-   model-node timeout 继续作为后备，待 Mac mini 复验 burst 后关闭。
+   model-node timeout 继续作为后备。Mac mini 已验证单聊、五消息 burst、队列背压、TTL、
+   Langfuse 不可达和 response_url exactly-once 全部通过，M3-00A 正式关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
 3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。

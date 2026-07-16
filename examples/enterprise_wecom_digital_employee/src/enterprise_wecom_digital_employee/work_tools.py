@@ -13,7 +13,11 @@ from enterprise_wecom_digital_employee.external_research import (
 from enterprise_wecom_digital_employee.external_research import (
     resolve_research_gaps as _resolve_research_gaps,
 )
-from enterprise_wecom_digital_employee.report_brief import CoveragePeriodSource, ReportBrief
+from enterprise_wecom_digital_employee.report_brief import (
+    CoveragePeriodSource,
+    ReportBrief,
+    ReportOutputFormat,
+)
 from enterprise_wecom_digital_employee.report_research import (
     load_current_research_result as _load_current_research_result,
 )
@@ -89,7 +93,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         target_audience: list[str],
         runtime: ToolRuntime,
         coverage_period: str = "",
-        output_formats: list[str] | None = None,
+        output_formats: list[ReportOutputFormat] | None = None,
         confidentiality_level: str = "internal",
     ) -> str:
         """Save or revise the lightweight ReportBrief for the current report WorkItem.
@@ -97,21 +101,23 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         Use the employee's stated topic and audience. coverage_period may be empty,
         in which case the approved playbook default is used. Saving is provisional:
         it does not authorize research. Show the returned version and summary to the
-        employee and ask them to confirm that exact version.
+        employee and ask them to confirm that exact version. output_formats accepts
+        only markdown, docx, or pdf. Summary, report, and outline describe content,
+        not file formats; omit output_formats to use the default docx format.
         """
 
-        clean_period = coverage_period.strip()
-        brief = ReportBrief(
-            title=title.strip(),
-            target_audience=tuple(value.strip() for value in target_audience if value.strip()),
-            coverage_period=clean_period or "截至请求时间的最新可得数据",
-            coverage_period_source=(
-                CoveragePeriodSource.EXPLICIT if clean_period else CoveragePeriodSource.PLAYBOOK_DEFAULT
-            ),
-            output_formats=tuple(output_formats or ["docx"]),
-            confidentiality_level=confidentiality_level,
-        )
         try:
+            clean_period = coverage_period.strip()
+            brief = ReportBrief(
+                title=title.strip(),
+                target_audience=tuple(value.strip() for value in target_audience if value.strip()),
+                coverage_period=clean_period or "截至请求时间的最新可得数据",
+                coverage_period_source=(
+                    CoveragePeriodSource.EXPLICIT if clean_period else CoveragePeriodSource.PLAYBOOK_DEFAULT
+                ),
+                output_formats=tuple(output_formats or ["docx"]),
+                confidentiality_level=confidentiality_level,
+            )
             contract = composition.save_report_brief(runtime.state, runtime.context, brief)
         except (ValueError, WorkCompositionError) as exc:
             return str(exc)

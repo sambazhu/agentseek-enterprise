@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from agentseek_work import WorkContractSnapshot, WorkContractStatus
 
@@ -25,6 +25,8 @@ _REPORT_BRIEF_VERSION_PATTERNS = (
     re.compile(r"report\s*brief\s*(?:version|版本)?\s*[vV]?\s*(\d+)", re.IGNORECASE),
     re.compile(r"(?:报告简报|报告需求|报告需求简报)\s*(?:version|版本|第)?\s*[vV]?\s*(\d+)\s*版?"),
 )
+
+ReportOutputFormat = Literal["markdown", "docx", "pdf"]
 
 
 class CoveragePeriodSource(StrEnum):
@@ -55,7 +57,10 @@ class ReportBrief:
         if not self.output_formats:
             raise ValueError("output_formats must not be empty")
         if any(value not in _ALLOWED_OUTPUT_FORMATS for value in self.output_formats):
-            raise ValueError("output_formats contains an unsupported format")
+            raise ValueError(
+                "output_formats contains an unsupported format; "
+                "supported formats are markdown, docx, and pdf"
+            )
         if self.confidentiality_level not in _ALLOWED_CONFIDENTIALITY_LEVELS:
             raise ValueError("confidentiality_level is unsupported")
         _require_unique_nonblank(self.target_audience, "target_audience")
