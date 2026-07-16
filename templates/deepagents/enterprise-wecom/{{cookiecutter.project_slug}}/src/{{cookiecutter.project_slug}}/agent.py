@@ -16,7 +16,6 @@ from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
 from deepagents import (
     FilesystemPermission,
-    GeneralPurposeSubagentProfile,
     HarnessProfile,
     create_deep_agent,
     register_harness_profile,
@@ -64,7 +63,6 @@ Complete formal reports are durable WorkItems. When the employee explicitly asks
 _STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
 _ENTERPRISE_HARNESS_PROFILE = HarnessProfile(
     excluded_middleware=frozenset({"SummarizationMiddleware"}),
-    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
 )
 _ENTERPRISE_HARNESS_REGISTERED = False
 _READ_ONLY_ENTERPRISE_FILESYSTEM = [

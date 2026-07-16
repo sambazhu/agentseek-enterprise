@@ -550,11 +550,12 @@ WeCom requests.
   `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH` and
   `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
-- The enterprise harness disables DeepAgents' implicit general-purpose
-  subagent and automatic conversational summarization. v0.1.0 uses
-  deterministic WorkItem orchestration, while AgentSeek supplies bounded,
-  persisted short-term context; hidden summary-model calls and the unused
-  `task` tool are therefore excluded.
+- The enterprise harness keeps DeepAgents' default general-purpose subagent and
+  `task` tool available as optional execution helpers. They do not distinguish
+  ordinary chat from formal work: durable WorkItems are created only through
+  the guarded work tools. Automatic conversational summarization is disabled
+  because AgentSeek already supplies bounded, persisted short-term context and
+  hidden summary-model calls would bypass the normal model-call observability.
 - ContextSeek only stores final conversation turns, not MCP calls or tool
   output. Retrieved history is marked as untrusted context and injected as a
   system message. PostgreSQL + pgvector is the production semantic backend when

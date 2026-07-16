@@ -5,12 +5,11 @@ from typing import Any
 import enterprise_wecom_digital_employee.agent as agent_module
 
 
-def test_enterprise_harness_disables_hidden_summary_and_default_subagent() -> None:
+def test_enterprise_harness_disables_hidden_summary_without_overriding_default_subagent() -> None:
     profile = agent_module._ENTERPRISE_HARNESS_PROFILE
 
     assert profile.excluded_middleware == frozenset({"SummarizationMiddleware"})
-    assert profile.general_purpose_subagent is not None
-    assert profile.general_purpose_subagent.enabled is False
+    assert profile.general_purpose_subagent is None
 
 
 def test_enterprise_harness_registration_is_idempotent(monkeypatch) -> None:
@@ -28,7 +27,7 @@ def test_enterprise_harness_registration_is_idempotent(monkeypatch) -> None:
     assert calls == [("openai", agent_module._ENTERPRISE_HARNESS_PROFILE)]
 
 
-def test_built_agent_does_not_expose_default_task_tool(monkeypatch, tmp_path) -> None:
+def test_built_agent_keeps_default_task_tool_and_model_node_timeout(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(agent_module, "_ENTERPRISE_HARNESS_REGISTERED", False)
     monkeypatch.setenv("AGENTSEEK_MODEL", "openai:qwen-flash")
     monkeypatch.setenv("AGENTSEEK_MODEL_PROVIDER", "openai")
@@ -43,7 +42,7 @@ def test_built_agent_does_not_expose_default_task_tool(monkeypatch, tmp_path) ->
         graph: Any = agent_module.build_agent()
         tools = graph.nodes["tools"].bound.tools_by_name
 
-        assert "task" not in tools
+        assert "task" in tools
         assert graph.nodes["model"].timeout is not None
         assert graph.nodes["model"].timeout.run_timeout == 12.5
     finally:

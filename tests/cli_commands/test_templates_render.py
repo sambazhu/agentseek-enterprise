@@ -145,7 +145,7 @@ def test_template_renders_without_unrendered_jinja(
         agent_source = agent_module.read_text(encoding="utf-8")
         compile(agent_source, str(agent_module), "exec")
         assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
-        assert "GeneralPurposeSubagentProfile(enabled=False)" in agent_source
+        assert "GeneralPurposeSubagentProfile" not in agent_source
         assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
         assert "{{" not in report_output_guard.read_text(encoding="utf-8")
