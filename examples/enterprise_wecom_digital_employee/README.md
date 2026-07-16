@@ -363,6 +363,20 @@ it calls a configured MCP server. Think of it as a small gate in front of every
 business tool call: classify the tool, decide whether it can run, require
 confirmation when needed, and write an audit event.
 
+Tool visibility is separate from policy evaluation. With the versioned
+DigitalEmployeeProfile/Work runtime enabled, the raw `list_mcp_tools` and
+`call_mcp_tool(server_name, tool_name, ...)` dispatch tools are not exposed to
+the model. Profile grants bind only approved direct capabilities such as
+`analyze_file`; department knowledge and external research go through bounded
+Work tools that supply the MCP server/tool pair in code. This prevents the model
+from swapping names such as `tavily-search` and `tavily_search`, and prevents an
+ungranted configured server from becoming model-visible. The policy and audit
+gate still evaluates every MCP call made by those Work tools.
+
+Deployments with `AGENTSEEK_WORK_ENABLED=false` retain the legacy generic MCP
+adapter for backward compatibility. The generic confirmation flow below applies
+to that mode; new role profiles should prefer grant-bound high-level tools.
+
 By default the policy keeps existing query tools available and writes audit
 events to `./runtime/mcp-audit.jsonl`.
 
@@ -408,7 +422,7 @@ AGENTSEEK_ENTERPRISE_MCP_RISKY_TOOLS=oa/cancel_request,agent-platform/install_ag
 AGENTSEEK_ENTERPRISE_MCP_CONFIRM_TOOLS=tavily-search/tavily_search
 ```
 
-Confirmation flow:
+Legacy generic-adapter confirmation flow:
 
 1. The model calls `call_mcp_tool(..., confirmed=false)`.
 2. The adapter returns a confirmation-required response for `write`, `risky`, or

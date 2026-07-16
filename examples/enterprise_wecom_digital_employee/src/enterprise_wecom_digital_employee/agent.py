@@ -38,11 +38,12 @@ from enterprise_wecom_digital_employee.work_tools import work_tools
 SYSTEM_PROMPT = """You are an enterprise WeCom digital employee.
 
 You receive one employee's message at a time through AgentSeek. Use employee_context when present.
-For knowledge lookup and office workflows, discover and call MCP tools instead of inventing results.
+For knowledge lookup and office workflows, use only the tools exposed in the current tool schema. Never invent or reconstruct an MCP server name or remote tool name.
 When DigitalEmployeeProfile lists an authorized department knowledge reference, use that MCP server first for report and research questions. Progress from document listing or hybrid search to reading only selected chunks. Do not treat employee-uploaded files as shared department knowledge.
 Do not automatically use Gildata, Tavily, or another external source to fill a department-knowledge gap. After internal research, call get_report_research_gaps and present its exact version-bound choices. Call resolve_report_research_gaps only when the employee's latest message explicitly selects exactly one returned choice for that ReportBrief version. Never bypass this work-level authorization by calling an external MCP directly.
 Before state-changing operations, ask for confirmation unless the user's latest message already confirms the exact action.
-The `call_mcp_tool` adapter enforces enterprise policy. If it says confirmation is required, summarize the exact action and key arguments, wait for the employee's clear confirmation, then call the same MCP tool again with `confirmed=true`.
+If the legacy `call_mcp_tool` adapter is exposed, its server_name is the configured server identifier and tool_name is the remote tool identifier; never swap them. The adapter enforces enterprise policy. If it says confirmation is required, summarize the exact action and key arguments, wait for the employee's clear confirmation, then call the same MCP tool again with `confirmed=true`.
+This digital employee is responsible for securities-industry research and formal report work. For unrelated personal utility requests such as weather, entertainment, or lifestyle queries, politely explain that the request is outside this role's scope and do not invoke an MCP tool.
 Keep WeCom replies concise and operational.
 
 Recent conversation context is persisted by the runtime per employee session for its configured retention period. In a WeCom single chat, the same employee session can recover recent context after a gateway restart until that retention expires. It is recent context, not a long-term profile, proof of authorization, or proof that a business action completed.
@@ -121,15 +122,17 @@ def build_agent() -> Any:
             )
         },
     )
-    enabled_work_tools = work_tools(get_work_composition()) if settings.work_enabled else []
+    composition = get_work_composition() if settings.work_enabled else None
+    enabled_work_tools = work_tools(composition) if composition is not None else []
+    direct_capability_tools = _direct_capability_tools(
+        tool_grants=composition.profile.tool_grants if composition is not None else None,
+    )
     agent = create_deep_agent(
         model=settings.build_model(),
         tools=[
             describe_employee_context_contract,
-            list_mcp_tools,
-            call_mcp_tool,
+            *direct_capability_tools,
             *employee_memory_tools(),
-            *file_analysis_tools(),
             *enabled_work_tools,
         ],
         system_prompt=_system_prompt(_STATIC_ASSETS),
@@ -144,6 +147,21 @@ def build_agent() -> Any:
     request_timeout = settings.openai_request_timeout_s
     model_node.timeout = TimeoutPolicy.coerce(request_timeout if request_timeout > 0 else None)
     return agent
+
+
+def _direct_capability_tools(*, tool_grants: tuple[str, ...] | None) -> list[Any]:
+    """Bind direct tools conservatively; Work mode uses bounded workflow tools for MCP."""
+
+    if tool_grants is None:
+        # Compatibility for deployments that have not enabled the versioned
+        # DigitalEmployeeProfile/Work runtime yet.
+        return [list_mcp_tools, call_mcp_tool, *file_analysis_tools()]
+
+    granted = frozenset(tool_grants)
+    tools: list[Any] = []
+    if "analyze_file" in granted:
+        tools.extend(file_analysis_tools())
+    return tools
 
 
 def build_spec():
