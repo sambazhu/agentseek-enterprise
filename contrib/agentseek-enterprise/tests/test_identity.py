@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -307,7 +311,8 @@ def test_dm_staff_sidecar_timeout_recycles_worker_for_next_lookup(monkeypatch: A
             raise response
         return response
 
-    def stop_process() -> None:
+    def stop_process(*, force: bool = False) -> None:
+        assert force is True
         stopped.append(processes[process_index - 1])
 
     monkeypatch.setenv("AGENTSEEK_IDENTITY_DM_SIDECAR_TIMEOUT_SECONDS", "1")
@@ -324,6 +329,26 @@ def test_dm_staff_sidecar_timeout_recycles_worker_for_next_lookup(monkeypatch: A
 
     assert result == context
     assert stopped == [processes[0]]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP fault injection is POSIX-only")
+def test_dm_staff_sidecar_force_stop_kills_frozen_process() -> None:
+    client = dm_staff_provider._DmIdentitySidecarClient()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        text=True,
+    )
+    client._process = process
+    try:
+        os.kill(process.pid, signal.SIGSTOP)
+        client._stop_process(force=True)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+
+    assert process.poll() is not None
+    assert client._process is None
 
 
 def test_dm_staff_sidecar_outputs_employee_context(monkeypatch: Any, capsys: Any) -> None:

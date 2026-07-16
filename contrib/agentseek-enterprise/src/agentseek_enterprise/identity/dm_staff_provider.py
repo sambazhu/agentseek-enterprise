@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import importlib
 import json
 import os
@@ -475,7 +476,7 @@ class _DmIdentitySidecarClient:
             try:
                 line = self._read_response_line(process, timeout)
             except TimeoutError as exc:
-                self._stop_process()
+                self._stop_process(force=True)
                 raise RuntimeError(f"DM identity sidecar timed out after {timeout:g}s") from exc
 
             try:
@@ -546,19 +547,32 @@ class _DmIdentitySidecarClient:
             except queue.Empty:
                 return
 
-    def _stop_process(self) -> None:
+    def _stop_process(self, *, force: bool = False) -> None:
         process = self._process
         self._process = None
         if process is None or process.poll() is not None:
+            return
+        if force:
+            logger.warning("DM identity sidecar force-killing pid={}", process.pid)
+            self._kill_process(process)
             return
         logger.info("DM identity sidecar stopping pid={}", process.pid)
         process.terminate()
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
+            self._kill_process(process)
+
+    @staticmethod
+    def _kill_process(process: subprocess.Popen[str]) -> None:
+        with contextlib.suppress(ProcessLookupError):
             process.kill()
+        try:
             process.wait(timeout=2)
-            logger.warning("DM identity sidecar killed pid={}", process.pid)
+        except subprocess.TimeoutExpired:
+            logger.warning("DM identity sidecar remained alive after SIGKILL pid={}", process.pid)
+            return
+        logger.warning("DM identity sidecar killed pid={}", process.pid)
 
 
 def _employee_context_from_sidecar_line(line: str, *, label: str) -> EmployeeContext | None:

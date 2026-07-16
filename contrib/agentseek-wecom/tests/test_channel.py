@@ -521,7 +521,8 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> 
 
     payload, duplicate_payload = asyncio.run(scenario())
 
-    assert payload == {"msgtype": "text", "text": {"content": "已收到，正在处理..."}}
+    assert payload["stream"]["content"] == "已收到，正在处理..."
+    assert payload["stream"]["finish"] is True
     assert duplicate_payload == payload
     assert received[0].session_id == "wecom:zhuchunlin"
     assert sender.calls == [
@@ -979,17 +980,20 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
 
     payloads, received = asyncio.run(scenario())
 
-    assert all(payload["msgtype"] == "text" for payload in payloads)
-    assert payloads[0]["text"]["content"] == "已收到，正在处理..."
-    assert "等待队列第 1 位" in payloads[1]["text"]["content"]
-    assert "等待队列第 2 位" in payloads[2]["text"]["content"]
-    assert "等待队列第 3 位" in payloads[3]["text"]["content"]
-    assert "本条消息未进入队列" in payloads[4]["text"]["content"]
+    assert all(payload["stream"]["finish"] is True for payload in payloads)
+    assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
+    assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
+    assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
+    assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
+    assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
     assert received == [f"消息{index}" for index in range(4)]
     delivered_urls = [url for url, _content in sender.calls]
-    assert len(delivered_urls) == 4
-    assert all(f"response_code=queue-{index}" in delivered_urls[index] for index in range(4))
-    assert not any("response_code=queue-4" in url for url in delivered_urls)
+    assert len(delivered_urls) == 5
+    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(5))
+    assert any(
+        "response_code=queue-4" in url and "本条消息未进入队列" in content
+        for url, content in sender.calls
+    )
 
 
 def test_pending_message_expires_without_entering_agent() -> None:
@@ -1106,8 +1110,8 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
                 ),
                 "text": {"content": f"消息{index}"},
             }) or "{}")
-            assert payload["msgtype"] == "text"
-            assert payload["text"]["content"]
+            assert payload["stream"]["finish"] is True
+            assert payload["stream"]["content"]
         await asyncio.sleep(0.08)
         release.set()
         await asyncio.gather(*list(channel._dispatch_tasks))

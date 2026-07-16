@@ -387,9 +387,10 @@ AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
 AI Bot callbacks that include `response_url` return the immediate acknowledgement,
-queue position, queue status, or rejection as a plain `text` response. Accepted
+queue position, queue status, or rejection as a completed `stream` response. Accepted
 turns reserve the one-shot `response_url` for the terminal answer or timeout notice.
-This keeps burst feedback visible without consuming the final-delivery capability.
+A rejected turn has no later answer, so it also sends the rejection through its own
+`response_url` as a burst-safe terminal-delivery fallback.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
@@ -398,7 +399,7 @@ AGENTSEEK_IDENTITY_DM_SIDECAR_TIMEOUT_SECONDS=8
 AGENTSEEK_ENTERPRISE_IDENTITY_LOOKUP_TIMEOUT_SECONDS=15
 ```
 
-The inner deadline recycles a stuck JDBC/JVM sidecar. The outer deadline runs the
+The inner deadline force-kills and recycles a stuck JDBC/JVM sidecar. The outer deadline runs the
 blocking provider outside the event loop and degrades the current turn to identity
 status `error`, so one failed lookup cannot freeze other sessions or shutdown.
 
