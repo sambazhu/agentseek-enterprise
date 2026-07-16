@@ -176,6 +176,7 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
     received: list[ChannelMessage] = []
     media_client = FakeMediaClient()
     file_service = FakeFileService()
+    sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
         settings=WeComSettings(
@@ -188,6 +189,7 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
         ),
         media_client=media_client,
         file_service=file_service,
+        response_url_sender=sender,
     )
 
     async def on_receive(message: ChannelMessage) -> None:
@@ -208,6 +210,10 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
             "msgid": "file-msg-1",
             "msgtype": "file",
             "from": {"userid": "chenkang2"},
+            "responseurl": (
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                "response_code=immediate-file"
+            ),
             "file": {
                 "url": "https://ww-aibot-img.example.com/report.txt?sign=secret",
                 "filesize": 10,
@@ -223,6 +229,7 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
     assert received[0].context["wecom"]["raw"]["file"]["has_url"] is True
     assert "url" not in received[0].context["wecom"]["raw"]["file"]
     assert "已收到并解析文件" in received[0].content
+    assert sender.calls == []
 
 
 def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
@@ -344,6 +351,65 @@ def test_pending_file_waits_for_extract_before_dispatching_model() -> None:
     assert "extract_status: done" in received[0].context["files"]["current_files_context"]
 
 
+def test_pending_file_reserves_response_url_for_async_completion() -> None:
+    sender = FakeResponseUrlSender()
+    file_service = PendingThenDoneFileService()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            callback_path="/callback/{botid}",
+            initial_wait_seconds=0.01,
+            userid_resolve_mode="",
+        ),
+        media_client=FakeMediaClient(),
+        file_service=file_service,
+        response_url_sender=sender,
+    )
+
+    async def on_receive(message: ChannelMessage) -> None:
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="PDF异步解析完成",
+            )
+        )
+
+    async def scenario() -> dict[str, Any]:
+        channel.bind_receiver(on_receive)
+        plain = await channel._handle_plain_message({
+            "msgid": "pending-pdf-response-url",
+            "msgtype": "file",
+            "from": {"userid": "chenkang2"},
+            "responseurl": (
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?"
+                "response_code=pending-file"
+            ),
+            "file": {
+                "url": "https://ww-aibot-img.example.com/report.pdf?sign=secret",
+                "filename": "report.pdf",
+                "mime_type": "application/pdf",
+            },
+        })
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(plain or "{}")
+
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["content"] == "已收到，正在处理..."
+    assert payload["stream"]["finish"] is True
+    assert sender.calls == [
+        (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=pending-file",
+            "PDF异步解析完成",
+        )
+    ]
+
+
 def test_text_message_creates_stream_and_emits_channel_message() -> None:
     received: list[ChannelMessage] = []
     channel = _channel()
@@ -462,7 +528,7 @@ def test_text_message_returns_placeholder_before_slow_receive_completes() -> Non
     assert final_payload["stream"]["finish"] is True
 
 
-def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> None:
+def test_ai_bot_callback_streams_ack_then_final_without_consuming_response_url() -> None:
     sender = FakeResponseUrlSender()
     release_resolver = threading.Event()
     resolver_started = threading.Event()
@@ -481,6 +547,7 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> 
             enabled=False,
             token="token",
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.01,
             turn_timeout_seconds=1.0,
         ),
         userid_resolver=BlockingResolver(),
@@ -522,15 +589,12 @@ def test_ai_bot_callback_finishes_ack_then_delivers_final_via_response_url() -> 
     payload, duplicate_payload = asyncio.run(scenario())
 
     assert payload["stream"]["content"] == "已收到，正在处理..."
-    assert payload["stream"]["finish"] is True
-    assert duplicate_payload == payload
+    assert payload["stream"]["finish"] is False
+    assert duplicate_payload["stream"]["id"] == payload["stream"]["id"]
+    assert duplicate_payload["stream"]["content"] == "处理完成"
+    assert duplicate_payload["stream"]["finish"] is True
     assert received[0].session_id == "wecom:zhuchunlin"
-    assert sender.calls == [
-        (
-            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=turn",
-            "处理完成",
-        )
-    ]
+    assert sender.calls == []
 
 
 def test_text_message_sanitizes_wecom_raw_payload() -> None:
@@ -927,7 +991,7 @@ def test_session_queue_reports_positions_and_rejects_above_pending_limit() -> No
     assert "等待处理：3 条" in status["stream"]["content"]
 
 
-def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls() -> None:
+def test_ai_bot_queue_feedback_and_final_replies_share_one_stream() -> None:
     sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
@@ -935,6 +999,7 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
             enabled=False,
             token="token",
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.01,
             turn_timeout_seconds=1.0,
             session_queue_maxsize=3,
             userid_resolve_mode="",
@@ -942,7 +1007,7 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
         response_url_sender=sender,
     )
 
-    async def scenario() -> tuple[list[dict[str, Any]], list[str]]:
+    async def scenario() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         release = asyncio.Event()
         received: list[str] = []
 
@@ -987,27 +1052,31 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
         payloads.append(json.loads(duplicate_rejection or "{}"))
         release.set()
         await asyncio.gather(*list(channel._dispatch_tasks))
-        return payloads, received
+        final_payloads = [
+            json.loads(await channel._handle_plain_message({
+                "msgtype": "stream",
+                "stream": {"id": payloads[index]["stream"]["id"]},
+            }) or "{}")
+            for index in range(4)
+        ]
+        return payloads, final_payloads, received
 
-    payloads, received = asyncio.run(scenario())
+    payloads, final_payloads, received = asyncio.run(scenario())
 
-    assert all(payload["stream"]["finish"] is True for payload in payloads)
+    assert all(payload["stream"]["finish"] is False for payload in payloads[:4])
     assert payloads[0]["stream"]["content"] == "已收到，正在处理..."
     assert "等待队列第 1 位" in payloads[1]["stream"]["content"]
     assert "等待队列第 2 位" in payloads[2]["stream"]["content"]
     assert "等待队列第 3 位" in payloads[3]["stream"]["content"]
-    assert payloads[4]["stream"]["content"] == "已收到，本条消息未进入队列。"
+    assert "另有 3 条等待处理" in payloads[4]["stream"]["content"]
+    assert payloads[4]["stream"]["finish"] is True
     assert payloads[5] == payloads[4]
     assert received == [f"消息{index}" for index in range(4)]
-    delivered_urls = [url for url, _content in sender.calls]
-    assert len(delivered_urls) == 5
-    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(5))
-    rejection_deliveries = [
-        content for url, content in sender.calls if "response_code=queue-4" in url
+    assert [payload["stream"]["content"] for payload in final_payloads] == [
+        f"完成:消息{index}" for index in range(4)
     ]
-    assert len(rejection_deliveries) == 1
-    assert "另有 3 条等待处理" in rejection_deliveries[0]
-    assert rejection_deliveries[0] != payloads[4]["stream"]["content"]
+    assert all(payload["stream"]["finish"] is True for payload in final_payloads)
+    assert sender.calls == []
 
 
 def test_pending_message_expires_without_entering_agent() -> None:
@@ -1080,7 +1149,7 @@ def test_pending_message_expires_without_entering_agent() -> None:
     assert "等待处理：0 条" in status["stream"]["content"]
 
 
-def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
+def test_ai_bot_pending_timeout_completes_the_same_stream() -> None:
     sender = FakeResponseUrlSender()
     channel = WeComChannel(
         on_receive=None,
@@ -1088,6 +1157,7 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
             enabled=False,
             token="token",
             encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            initial_wait_seconds=0.005,
             turn_timeout_seconds=1.0,
             session_queue_maxsize=3,
             queue_wait_timeout_seconds=0.05,
@@ -1096,7 +1166,7 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
         response_url_sender=sender,
     )
 
-    async def scenario() -> list[str]:
+    async def scenario() -> tuple[list[str], dict[str, Any]]:
         release = asyncio.Event()
         received: list[str] = []
 
@@ -1113,6 +1183,7 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
             )
 
         channel.bind_receiver(on_receive)
+        payloads: list[dict[str, Any]] = []
         for index in range(2):
             payload = json.loads(await channel._handle_plain_message({
                 "msgid": f"response-ttl-{index}",
@@ -1124,20 +1195,24 @@ def test_ai_bot_pending_timeout_is_delivered_via_response_url_once() -> None:
                 ),
                 "text": {"content": f"消息{index}"},
             }) or "{}")
-            assert payload["stream"]["finish"] is True
+            assert payload["stream"]["finish"] is False
             assert payload["stream"]["content"]
+            payloads.append(payload)
         await asyncio.sleep(0.08)
+        expired = json.loads(await channel._handle_plain_message({
+            "msgtype": "stream",
+            "stream": {"id": payloads[1]["stream"]["id"]},
+        }) or "{}")
         release.set()
         await asyncio.gather(*list(channel._dispatch_tasks))
-        return received
+        return received, expired
 
-    received = asyncio.run(scenario())
+    received, expired = asyncio.run(scenario())
 
     assert received == ["消息0"]
-    assert sender.calls.count((
-        "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=ttl-1",
-        "等待处理时间过长，本条消息已取消，请稍后重新发送。",
-    )) == 1
+    assert expired["stream"]["finish"] is True
+    assert expired["stream"]["content"] == "等待处理时间过长，本条消息已取消，请稍后重新发送。"
+    assert sender.calls == []
 
 
 def test_queue_status_command_is_immediate_when_session_is_idle() -> None:

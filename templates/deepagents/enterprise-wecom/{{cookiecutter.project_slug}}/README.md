@@ -386,12 +386,12 @@ AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS=240
 AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
-AI Bot callbacks that include `response_url` return the immediate acknowledgement,
-queue position, queue status, or rejection as a completed `stream` response. Accepted
-turns reserve the one-shot `response_url` for the terminal answer or timeout notice.
-Rejected turns return a short "not queued" callback and use their own one-shot
-`response_url` for the detailed terminal reason. The two messages have distinct
-purposes and content, avoiding duplicate rejection text while completing delivery.
+Ordinary AI Bot turns use one delivery path even when the callback contains
+`response_url`: the callback returns an unfinished `stream` with the acknowledgement
+or queue position, and WeCom polls that same stream until its terminal answer,
+rejection, or timeout. Queue status and rejection can finish immediately on the
+same stream. The one-shot `response_url` is reserved for explicitly asynchronous
+work such as a pending file extraction; it is never mixed into a normal chat turn.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
