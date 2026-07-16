@@ -127,6 +127,44 @@ def test_model_call_observability_emits_sizes_latency_and_usage_without_content(
     assert "private answer" not in repr(fields)
 
 
+def test_run_stage_observability_locates_pre_model_work_without_content(monkeypatch, tmp_path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    spec = text_spec(_AsyncRunnable("private answer"))
+    monkeypatch.setattr(plugin_module, "get_langchain_settings", lambda: SimpleNamespace(SPEC="dummy:SPEC"))
+    monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    monkeypatch.setattr(
+        plugin_module,
+        "_emit_enterprise_event",
+        lambda event, **fields: events.append((event, fields)),
+    )
+
+    result = asyncio.run(
+        plugin_module.LangChainRunnablePlugin().run_model(
+            prompt="private request",
+            session_id="wecom:employee",
+            state={"_runtime_workspace": str(tmp_path), "private_state": "private value"},
+        )
+    )
+
+    assert result == "private answer"
+    stage_events = [fields for event, fields in events if event == "langchain_run_stage"]
+    assert [(item["stage"], item["status"]) for item in stage_events] == [
+        ("run_model", "started"),
+        ("spec_resolve", "succeeded"),
+        ("prompt_enrichment", "succeeded"),
+        ("context_build", "succeeded"),
+        ("model_invoke", "started"),
+        ("model_invoke", "succeeded"),
+        ("run_model", "succeeded"),
+    ]
+    assert stage_events[0]["prompt_chars"] == len("private request")
+    assert stage_events[0]["state_key_count"] == 2
+    assert stage_events[-2]["output_chars"] == len("private answer")
+    assert "private request" not in repr(stage_events)
+    assert "private answer" not in repr(stage_events)
+    assert "private value" not in repr(stage_events)
+
+
 def test_plugin_enriches_state_before_spec_build_input(monkeypatch, tmp_path) -> None:
     runnable = _AsyncRunnable("delegated-output")
 
@@ -190,6 +228,7 @@ def test_plugin_run_model_stream_wraps_single_result(monkeypatch, tmp_path) -> N
 
 
 def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
     spec = text_spec(_HangingRunnable())
     monkeypatch.setattr(
         plugin_module,
@@ -197,6 +236,11 @@ def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_pat
         lambda: SimpleNamespace(SPEC="dummy:SPEC", RUN_TIMEOUT_SECONDS=0.01),
     )
     monkeypatch.setattr(plugin_module, "load_spec_from_path", lambda path: spec)
+    monkeypatch.setattr(
+        plugin_module,
+        "_emit_enterprise_event",
+        lambda event, **fields: events.append((event, fields)),
+    )
 
     result = asyncio.run(
         plugin_module.LangChainRunnablePlugin().run_model(
@@ -207,6 +251,11 @@ def test_plugin_run_model_times_out_without_hanging_session(monkeypatch, tmp_pat
     )
 
     assert result == plugin_module._MODEL_TIMEOUT_MESSAGE
+    stage_events = [fields for event, fields in events if event == "langchain_run_stage"]
+    assert [(item["stage"], item["status"]) for item in stage_events[-2:]] == [
+        ("model_invoke", "timeout"),
+        ("run_model", "timeout"),
+    ]
 
 
 def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -> None:

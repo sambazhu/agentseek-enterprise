@@ -190,17 +190,93 @@ class LangChainRunnablePlugin:
 
     @hookimpl(tryfirst=True)
     async def run_model(self, prompt: str | list[dict[str, Any]], session_id: str, state: State) -> str | None:
+        run_started = time.monotonic()
+        _emit_run_stage(
+            session_id,
+            stage="run_model",
+            status="started",
+            prompt_chars=len(_prompt_text(prompt)),
+            state_key_count=len(state),
+        )
+        stage_started = time.monotonic()
         spec = self._get_spec()
+        _emit_run_stage(
+            session_id,
+            stage="spec_resolve",
+            status="succeeded" if spec is not None else "skipped",
+            started_at=stage_started,
+        )
         if spec is None:
+            _emit_run_stage(session_id, stage="run_model", status="skipped", started_at=run_started)
             return None
+
+        stage_started = time.monotonic()
         await self._enrich_state_from_prompt_hooks(prompt, session_id, state)
+        _emit_run_stage(
+            session_id,
+            stage="prompt_enrichment",
+            status="succeeded",
+            started_at=stage_started,
+        )
+        stage_started = time.monotonic()
+        context = self._build_context(prompt, session_id, state)
+        _emit_run_stage(
+            session_id,
+            stage="context_build",
+            status="succeeded",
+            started_at=stage_started,
+        )
         timeout = _run_timeout_seconds()
+        invoke_started = time.monotonic()
+        _emit_run_stage(
+            session_id,
+            stage="model_invoke",
+            status="started",
+            timeout_seconds=timeout,
+        )
         try:
             async with asyncio.timeout(timeout):
-                return await spec.invoke(self._build_context(prompt, session_id, state))
+                result = await spec.invoke(context)
         except TimeoutError:
+            _emit_run_stage(
+                session_id,
+                stage="model_invoke",
+                status="timeout",
+                started_at=invoke_started,
+                timeout_seconds=timeout,
+            )
+            _emit_run_stage(session_id, stage="run_model", status="timeout", started_at=run_started)
             logger.error("LangChain turn timed out session_id={} timeout={}s", session_id, timeout)
             return _MODEL_TIMEOUT_MESSAGE
+        except asyncio.CancelledError:
+            _emit_run_stage(session_id, stage="model_invoke", status="cancelled", started_at=invoke_started)
+            _emit_run_stage(session_id, stage="run_model", status="cancelled", started_at=run_started)
+            raise
+        except Exception as exc:
+            _emit_run_stage(
+                session_id,
+                stage="model_invoke",
+                status="error",
+                started_at=invoke_started,
+                error_type=type(exc).__name__,
+            )
+            _emit_run_stage(
+                session_id,
+                stage="run_model",
+                status="error",
+                started_at=run_started,
+                error_type=type(exc).__name__,
+            )
+            raise
+        _emit_run_stage(
+            session_id,
+            stage="model_invoke",
+            status="succeeded",
+            started_at=invoke_started,
+            output_chars=len(result),
+        )
+        _emit_run_stage(session_id, stage="run_model", status="succeeded", started_at=run_started)
+        return result
 
     @hookimpl(tryfirst=True)
     async def run_model_stream(
@@ -209,18 +285,64 @@ class LangChainRunnablePlugin:
         session_id: str,
         state: State,
     ) -> AsyncStreamEvents | None:
+        run_started = time.monotonic()
+        _emit_run_stage(
+            session_id,
+            stage="run_model_stream",
+            status="started",
+            prompt_chars=len(_prompt_text(prompt)),
+            state_key_count=len(state),
+        )
+        stage_started = time.monotonic()
         spec = self._get_spec()
+        _emit_run_stage(
+            session_id,
+            stage="spec_resolve",
+            status="succeeded" if spec is not None else "skipped",
+            started_at=stage_started,
+            streaming=True,
+        )
         if spec is None:
+            _emit_run_stage(
+                session_id,
+                stage="run_model_stream",
+                status="skipped",
+                started_at=run_started,
+            )
             return None
 
+        stage_started = time.monotonic()
         await self._enrich_state_from_prompt_hooks(prompt, session_id, state)
+        _emit_run_stage(
+            session_id,
+            stage="prompt_enrichment",
+            status="succeeded",
+            started_at=stage_started,
+            streaming=True,
+        )
+        stage_started = time.monotonic()
         context = self._build_context(prompt, session_id, state)
+        _emit_run_stage(
+            session_id,
+            stage="context_build",
+            status="succeeded",
+            started_at=stage_started,
+            streaming=True,
+        )
         stream_state = StreamState()
 
         async def iterator():
             chunks: list[str] = []
             timeout = _run_timeout_seconds()
             ok = True
+            invoke_started = time.monotonic()
+            _emit_run_stage(
+                session_id,
+                stage="model_invoke",
+                status="started",
+                timeout_seconds=timeout,
+                streaming=True,
+            )
             try:
                 async with asyncio.timeout(timeout):
                     async for chunk in spec.stream(context):
@@ -228,9 +350,64 @@ class LangChainRunnablePlugin:
                         yield StreamEvent("text", {"delta": chunk})
             except TimeoutError:
                 ok = False
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="timeout",
+                    started_at=invoke_started,
+                    timeout_seconds=timeout,
+                    streaming=True,
+                )
                 logger.error("LangChain stream timed out session_id={} timeout={}s", session_id, timeout)
                 chunks.append(_MODEL_TIMEOUT_MESSAGE)
                 yield StreamEvent("text", {"delta": _MODEL_TIMEOUT_MESSAGE})
+            except asyncio.CancelledError:
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="cancelled",
+                    started_at=invoke_started,
+                    streaming=True,
+                )
+                _emit_run_stage(
+                    session_id,
+                    stage="run_model_stream",
+                    status="cancelled",
+                    started_at=run_started,
+                )
+                raise
+            except Exception as exc:
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="error",
+                    started_at=invoke_started,
+                    error_type=type(exc).__name__,
+                    streaming=True,
+                )
+                _emit_run_stage(
+                    session_id,
+                    stage="run_model_stream",
+                    status="error",
+                    started_at=run_started,
+                    error_type=type(exc).__name__,
+                )
+                raise
+            else:
+                _emit_run_stage(
+                    session_id,
+                    stage="model_invoke",
+                    status="succeeded",
+                    started_at=invoke_started,
+                    output_chars=sum(len(chunk) for chunk in chunks),
+                    streaming=True,
+                )
+            _emit_run_stage(
+                session_id,
+                stage="run_model_stream",
+                status="succeeded" if ok else "timeout",
+                started_at=run_started,
+            )
             yield StreamEvent("final", {"text": "".join(chunks), "ok": ok})
 
         return AsyncStreamEvents(iterator(), state=stream_state)
@@ -245,6 +422,25 @@ def _prompt_text(prompt: str | list[dict[str, Any]]) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts)
+
+
+def _emit_run_stage(
+    session_id: str,
+    *,
+    stage: str,
+    status: str,
+    started_at: float | None = None,
+    **fields: Any,
+) -> None:
+    if started_at is not None:
+        fields["elapsed_ms"] = round((time.monotonic() - started_at) * 1000)
+    _emit_enterprise_event(
+        "langchain_run_stage",
+        status=status,
+        session_id=session_id,
+        stage=stage,
+        **fields,
+    )
 
 
 def _run_timeout_seconds() -> float:

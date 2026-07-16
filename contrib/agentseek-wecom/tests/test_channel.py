@@ -988,12 +988,9 @@ def test_ai_bot_queue_feedback_is_visible_and_accepted_turns_use_response_urls()
     assert "本条消息未进入队列" in payloads[4]["stream"]["content"]
     assert received == [f"消息{index}" for index in range(4)]
     delivered_urls = [url for url, _content in sender.calls]
-    assert len(delivered_urls) == 5
-    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(5))
-    assert any(
-        "response_code=queue-4" in url and "本条消息未进入队列" in content
-        for url, content in sender.calls
-    )
+    assert len(delivered_urls) == 4
+    assert all(any(f"response_code=queue-{index}" in url for url in delivered_urls) for index in range(4))
+    assert not any("response_code=queue-4" in url for url in delivered_urls)
 
 
 def test_pending_message_expires_without_entering_agent() -> None:
