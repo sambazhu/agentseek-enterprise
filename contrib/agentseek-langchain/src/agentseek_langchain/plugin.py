@@ -501,7 +501,14 @@ def _run_timeout_seconds() -> float:
 
 
 def _is_timeout_exception(error: BaseException) -> bool:
-    timeout_names = {"APITimeoutError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout"}
+    timeout_names = {
+        "APITimeoutError",
+        "ConnectTimeout",
+        "NodeTimeoutError",
+        "PoolTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+    }
     current: BaseException | None = error
     seen: set[int] = set()
     while current is not None and id(current) not in seen:

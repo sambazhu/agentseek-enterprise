@@ -104,6 +104,7 @@ def test_template_renders_without_unrendered_jinja(
         assert "agentseek-work" in dependencies
         assert "pyyaml>=6.0" in dependencies
         pack_manifest = generated / "digital_employees" / "industry-report" / "pack.yaml"
+        agent_module = generated / "src" / generated.name / "agent.py"
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
         report_brief = generated / "src" / generated.name / "report_brief.py"
         report_research = generated / "src" / generated.name / "report_research.py"
@@ -126,6 +127,7 @@ def test_template_renders_without_unrendered_jinja(
             / "internal-research-template.yaml"
         )
         assert pack_manifest.is_file()
+        assert agent_module.is_file()
         assert pack_loader.is_file()
         assert report_brief.is_file()
         assert report_research.is_file()
@@ -140,6 +142,10 @@ def test_template_renders_without_unrendered_jinja(
         assert knowledge_config.is_file()
         assert research_template.is_file()
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
+        agent_source = agent_module.read_text(encoding="utf-8")
+        compile(agent_source, str(agent_module), "exec")
+        assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
+        assert "GeneralPurposeSubagentProfile(enabled=False)" in agent_source
         assert "{{" not in report_brief.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
         assert "{{" not in report_output_guard.read_text(encoding="utf-8")

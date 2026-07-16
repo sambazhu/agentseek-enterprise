@@ -9,6 +9,7 @@ from agentseek_langchain.shapes import ObjectDict, copy_str_mapping
 from agentseek_langchain.spec import RunnableSpec
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
+from langgraph.errors import NodeTimeoutError
 
 
 class _AsyncRunnable:
@@ -298,6 +299,12 @@ def test_plugin_run_model_stream_finishes_after_timeout(monkeypatch, tmp_path) -
         ("text", {"delta": plugin_module._MODEL_TIMEOUT_MESSAGE}),
         ("final", {"text": plugin_module._MODEL_TIMEOUT_MESSAGE, "ok": False}),
     ]
+
+
+def test_langgraph_node_timeout_is_treated_as_model_timeout() -> None:
+    error = NodeTimeoutError("model", 60.0, kind="run", run_timeout=60.0)
+
+    assert plugin_module._is_timeout_exception(error)
 
 
 def test_plugin_run_model_stream_converts_provider_timeout_to_terminal_message(monkeypatch, tmp_path) -> None:

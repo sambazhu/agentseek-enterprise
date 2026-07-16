@@ -387,11 +387,11 @@ AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
 Ordinary AI Bot turns use one delivery path even when the callback contains
-`response_url`: the callback returns an unfinished `stream` with the acknowledgement
-or queue position, and WeCom polls that same stream until its terminal answer,
-rejection, or timeout. Queue status and rejection can finish immediately on the
-same stream. The one-shot `response_url` is reserved for explicitly asynchronous
-work such as a pending file extraction; it is never mixed into a normal chat turn.
+`response_url`: acknowledgement state, queue state, terminal answer, rejection,
+and timeout all remain on the callback `stream_id`. Queue status and rejection
+can finish immediately on that stream. The one-shot `response_url` is reserved
+for explicitly asynchronous work such as a pending file extraction; it is never
+mixed into an ordinary chat turn.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
@@ -408,21 +408,21 @@ Keep the WeCom timeout slightly above the LangChain timeout. A timed-out model
 turn is cancelled and receives a terminal stream response so the next queued
 message can continue. The queue limit counts pending messages, not the active
 turn: the default permits one active turn plus three waiting messages. Each
-accepted waiting stream immediately displays its queue position; further
-messages are rejected before they reach the agent. A pending message that does
-not start within the queue-wait timeout is finished as expired. Employees can
-send `查看消息队列` or `查看排队状态` for an immediate status response that does
-not enter the model queue. AI Bot callbacks carrying `response_url` receive a
-completed initial ACK/queue response; the final answer or queue-timeout notice
-uses that one-shot URL. This avoids relying on clients to render intermediate
-`finish=false` stream content. Callbacks without `response_url` retain legacy
-stream polling.
+accepted waiting message records its queue position in structured events;
+further messages are rejected before they reach the agent. A pending message
+that does not start within the queue-wait timeout is finished as expired.
+Employees can send `查看消息队列` or `查看排队状态` for an immediate status response that
+does not enter the model queue. WeCom AI Bot does not reliably render
+intermediate `finish=false` content, so unsolicited ACK and queue-position
+messages are best-effort diagnostics rather than a release requirement. The
+user-visible contract is one terminal answer/rejection/timeout plus on-demand
+queue status, without a second ordinary-chat delivery channel.
 
 Redacted `langchain_run_stage` events show time spent resolving the runnable,
 enriching prompt state, building invocation context, and entering/completing the
 model invocation. They record counts and durations, never prompt or reply text.
 `langchain_model_call` emits `started` before provider I/O and then a terminal
-status. Configure the inner provider boundary with
+status. Configure the inner provider and LangGraph model-node boundary with
 `AGENTSEEK_MODEL_REQUEST_TIMEOUT_SECONDS` and `AGENTSEEK_MODEL_MAX_RETRIES`.
 
 ### Enterprise Observability
@@ -494,6 +494,11 @@ reply and hide the relevant memory-enriched lines.
   `AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH` and
   `AGENTSEEK_ENTERPRISE_STORE_SQLITE_PATH`.
 - DeepAgents uses an isolated `CompositeBackend`: only `AGENTS.md` and `skills/` are copied into a read-only virtual filesystem. Durable `/memories` storage is mapped to a tenant-and-employee scoped `StoreBackend`, but only dedicated memory tools can access it. The agent cannot read the project directory, `.env`, or other host paths, and cannot write files or execute local commands.
+- The enterprise harness disables DeepAgents' implicit general-purpose
+  subagent and automatic conversational summarization. v0.1.0 uses
+  deterministic WorkItem orchestration, while AgentSeek supplies bounded,
+  persisted short-term context; hidden summary-model calls and the unused
+  `task` tool are therefore excluded.
 - ContextSeek only stores final conversation turns, not MCP calls or tool
   output. Retrieved history is marked as untrusted context and injected as a
   system message. PostgreSQL + pgvector is the production semantic backend when

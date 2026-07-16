@@ -14,10 +14,17 @@ from agentseek_enterprise.static_assets import StaticAgentAssets, load_static_ag
 from agentseek_files.analysis_tools import file_analysis_tools
 from agentseek_langchain import messages_spec
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
-from deepagents import FilesystemPermission, create_deep_agent
+from deepagents import (
+    FilesystemPermission,
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    create_deep_agent,
+    register_harness_profile,
+)
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import DeepAgentState
 from langchain_core.messages import SystemMessage
+from langgraph.types import TimeoutPolicy
 
 from {{ cookiecutter.project_slug }}.report_output_guard import enforce_m2_output_guard
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT, get_settings
@@ -55,6 +62,11 @@ Complete formal reports are durable WorkItems. When the employee explicitly asks
 """
 
 _STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
+_ENTERPRISE_HARNESS_PROFILE = HarnessProfile(
+    excluded_middleware=frozenset({"SummarizationMiddleware"}),
+    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+)
+_ENTERPRISE_HARNESS_REGISTERED = False
 _READ_ONLY_ENTERPRISE_FILESYSTEM = [
     FilesystemPermission(operations=["read", "write"], paths=["/.*", "/**/.*"], mode="deny"),
     FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
@@ -81,9 +93,20 @@ class EnterpriseAgentRuntimeContext:
     work: Mapping[str, object] | None = None
 
 
+def _register_enterprise_harness_profile() -> None:
+    """Keep the DeepAgents harness aligned with the deterministic v0.1 runtime."""
+
+    global _ENTERPRISE_HARNESS_REGISTERED
+    if _ENTERPRISE_HARNESS_REGISTERED:
+        return
+    register_harness_profile("openai", _ENTERPRISE_HARNESS_PROFILE)
+    _ENTERPRISE_HARNESS_REGISTERED = True
+
+
 def build_agent() -> Any:
     """Build the local DeepAgents runnable."""
 
+    _register_enterprise_harness_profile()
     settings = get_settings()
     store = build_langgraph_store(
         sqlalchemy_url=settings.enterprise_store_sqlalchemy_url,
@@ -99,7 +122,7 @@ def build_agent() -> Any:
         },
     )
     enabled_work_tools = work_tools(get_work_composition()) if settings.work_enabled else []
-    return create_deep_agent(
+    agent = create_deep_agent(
         model=settings.build_model(),
         tools=[
             describe_employee_context_contract,
@@ -117,6 +140,10 @@ def build_agent() -> Any:
         store=store,
         permissions=_READ_ONLY_ENTERPRISE_FILESYSTEM,
     )
+    model_node = agent.nodes["model"]
+    request_timeout = settings.openai_request_timeout_s
+    model_node.timeout = TimeoutPolicy.coerce(request_timeout if request_timeout > 0 else None)
+    return agent
 
 
 def build_spec():

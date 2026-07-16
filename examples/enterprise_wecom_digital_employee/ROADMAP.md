@@ -566,10 +566,12 @@ coverage/gap。M2-04 已实现版本绑定的缺口选择、外部检索授权�
 M3 先以运行时前置切片启动：
 
 1. **M3-00A 会话背压**：同一 WeCom session 保持一个 active turn，默认最多三个
-   pending；显示排队位置，超限不入 Agent，等待超过 TTL 自动结束；“查看消息队列”
-   绕过模型即时返回。不同 session 继续并发。事件层已通过 Mac mini
-   验证；用户面改为初始 `finish=true` 回执 + 一次性 `response_url`
-   终态投递，待活体复验排队、拒绝、状态、最终回复和 TTL 取消全部可见后关闭。
+   pending；记录排队位置，超限不入 Agent，等待超过 TTL 自动结束；“查看消息队列”
+   绕过模型即时返回。不同 session 继续并发。普通聊天回归单 stream，不再使用
+   `response_url`；由于 WeCom AI Bot 不稳定渲染 `finish=false`，未请求的 ACK 和排队位置
+   不再作为用户面发布门槛，可见验收收敛为单次终态拒绝、队列查询、TTL 取消和最终回复。
+   企业 harness 同时关闭 v0.1.0 未使用的默认自治 subagent 与隐式自动摘要，待 Mac mini
+   确认 pre-model 长延迟和 burst hang 消失后关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
 3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
