@@ -8,7 +8,9 @@ from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     CoveragePeriodSource,
     ReportBrief,
+    ResearchScope,
     explicitly_confirms_report_brief,
+    validate_report_brief_scope,
 )
 from enterprise_wecom_digital_employee.work_tools import work_tools
 from langchain_core.tools import StructuredTool
@@ -59,7 +61,50 @@ def test_report_brief_round_trips_through_generic_work_contract() -> None:
 
     assert contract.contract_type == REPORT_BRIEF_CONTRACT_TYPE
     assert contract.status is WorkContractStatus.PROVISIONAL
+    assert contract.payload["schema_version"] == 2
+    assert contract.payload["research_scope"] == "securities_industry"
     assert ReportBrief.from_contract(contract) == brief
+
+
+def test_report_brief_reads_legacy_schema_one_as_securities_industry() -> None:
+    contract = ReportBrief(title="证券行业报告", target_audience=("管理层",)).to_contract(
+        work_id="work_legacy",
+        tenant_id="tenant_001",
+        contract_version=1,
+        created_by="employee_001",
+        created_at=NOW,
+    )
+    legacy = replace(
+        contract,
+        payload={
+            key: value
+            for key, value in contract.payload.items()
+            if key != "research_scope"
+        }
+        | {"schema_version": 1},
+    )
+
+    assert ReportBrief.from_contract(legacy).research_scope is ResearchScope.SECURITIES_INDUSTRY
+
+
+def test_report_brief_scope_is_deterministic_and_fails_closed() -> None:
+    scopes = tuple(scope.value for scope in ResearchScope)
+    anchors = ("证券", "券商", "资本市场")
+    validate_report_brief_scope(
+        ReportBrief(
+            title="美联储政策对国内证券行业的影响",
+            research_scope=ResearchScope.EXTERNAL_FACTOR_ON_SECURITIES,
+        ),
+        allowed_scopes=scopes,
+        topic_anchor_terms=anchors,
+    )
+
+    with pytest.raises(ValueError, match="SCOPE_MISMATCH"):
+        validate_report_brief_scope(
+            ReportBrief(title="新能源汽车行业研究报告"),
+            allowed_scopes=scopes,
+            topic_anchor_terms=anchors,
+        )
 
 
 @pytest.mark.parametrize(
@@ -98,6 +143,7 @@ def test_save_report_brief_tool_constrains_formats_and_isolates_invalid_values()
     array_schema = next(item for item in format_variants if item.get("type") == "array")
 
     assert array_schema["items"]["enum"] == ["markdown", "docx", "pdf"]
+    assert schema["$defs"]["ResearchScope"]["enum"] == [scope.value for scope in ResearchScope]
     assert "Summary, report, and outline describe content" in save_tool.description
 
     save_func = save_tool.func
@@ -131,7 +177,7 @@ def test_report_brief_parser_fails_closed_on_wrong_contract_or_schema() -> None:
         created_by=valid.created_by,
         created_at=valid.created_at,
     )
-    wrong_schema = replace(valid, payload={**valid.payload, "schema_version": 2})
+    wrong_schema = replace(valid, payload={**valid.payload, "schema_version": 99})
 
     with pytest.raises(ValueError, match="not a report brief"):
         ReportBrief.from_contract(wrong_type)

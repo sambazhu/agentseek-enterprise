@@ -598,6 +598,10 @@ M3 先以运行时前置切片启动：
      `GAP`；证据充足标记 `COVERED`。不得仅因为全部检索低分就把数据缺口判成主题错配。
    - 通用多行业能力留到后续 v0.1.x，通过多份经审核模板路由实现；不在生产运行时
      让 LLM 临时生成整套研究问题。
+
+   当前实现基线已升级为 Pack `1.3.0` / Profile `1.2.0` / ReportBrief schema v2 / 研究模板
+   schema v2，等待 Mac mini 活体复核。旧 ReportBrief schema v1 继续只读兼容，并明确映射为
+   `securities_industry`；不执行存量数据迁移。
 4. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed

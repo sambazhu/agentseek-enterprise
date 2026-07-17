@@ -17,6 +17,7 @@ from {{ cookiecutter.project_slug }}.report_brief import (
     CoveragePeriodSource,
     ReportBrief,
     ReportOutputFormat,
+    ResearchScope,
 )
 from {{ cookiecutter.project_slug }}.report_research import (
     load_current_research_result as _load_current_research_result,
@@ -25,21 +26,10 @@ from {{ cookiecutter.project_slug }}.report_research import (
     run_internal_research as _run_internal_research,
 )
 from {{ cookiecutter.project_slug }}.research_gap_decision import ResearchGapAction
-from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT
 from {{ cookiecutter.project_slug }}.tools import call_mcp_tool
 from {{ cookiecutter.project_slug }}.work_composition import (
     IndustryReportWorkComposition,
     WorkCompositionError,
-)
-
-_RESEARCH_TEMPLATE = (
-    PROJECT_ROOT
-    / "digital_employees"
-    / "industry-report"
-    / "skills"
-    / "report-intake"
-    / "references"
-    / "internal-research-template.yaml"
 )
 
 
@@ -111,6 +101,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         coverage_period: str = "",
         output_formats: list[ReportOutputFormat] | None = None,
         confidentiality_level: str = "internal",
+        research_scope: ResearchScope = ResearchScope.SECURITIES_INDUSTRY,
     ) -> str:
         """Save or revise the lightweight ReportBrief for the current report WorkItem.
 
@@ -122,13 +113,18 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         not file formats; omit output_formats to use the default docx format.
         You must call this tool for every save or revision. Never narrate that a
         ReportBrief was saved, revised, or reformatted unless this tool returns a
-        successful ledger version in the same turn.
+        successful ledger version in the same turn. research_scope must describe
+        one securities role boundary: securities_industry, securities_company,
+        securities_business_line, or external_factor_on_securities. A report about
+        another industry is allowed only when its title explicitly states the impact
+        on securities; otherwise ask for clarification and do not save the Brief.
         """
 
         try:
             clean_period = coverage_period.strip()
             brief = ReportBrief(
                 title=title.strip(),
+                research_scope=research_scope,
                 target_audience=tuple(value.strip() for value in target_audience if value.strip()),
                 coverage_period=clean_period or "截至请求时间的最新可得数据",
                 coverage_period_source=(
@@ -142,7 +138,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return str(exc)
         return (
             f"ReportBrief v{contract.contract_version} 已保存，状态={contract.status.value}。"
-            f"主题：{brief.title}；目标受众：{'、'.join(brief.target_audience)}；"
+            f"主题：{brief.title}；研究范围：{brief.research_scope.value}；"
+            f"目标受众：{'、'.join(brief.target_audience)}；"
             f"报告覆盖期：{brief.coverage_period}；输出：{','.join(brief.output_formats)}。"
             "请员工确认上述版本；未确认前不得启动正式知识检索。"
         )
@@ -187,7 +184,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 composition=composition,
                 state=runtime.state,
                 runtime_context=runtime.context,
-                template_path=_RESEARCH_TEMPLATE,
+                template_path=composition.research_template_path,
                 invoke_mcp=invoke,
             )
         except (RuntimeError, ValueError, WorkCompositionError) as exc:
@@ -207,7 +204,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 composition=composition,
                 state=runtime.state,
                 runtime_context=runtime.context,
-                template_path=_RESEARCH_TEMPLATE,
+                template_path=composition.research_template_path,
             )
         except (RuntimeError, ValueError, WorkCompositionError) as exc:
             return str(exc)
@@ -234,7 +231,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 composition=composition,
                 state=runtime.state,
                 runtime_context=runtime.context,
-                template_path=_RESEARCH_TEMPLATE,
+                template_path=composition.research_template_path,
                 action=action,
                 latest_user_message=_latest_user_message_text(runtime),
                 invoke_mcp=invoke,

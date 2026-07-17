@@ -14,6 +14,13 @@ from typing import Any
 import yaml
 from agentseek_work import PackSnapshot
 
+_ALLOWED_RESEARCH_SCOPES = frozenset({
+    "securities_industry",
+    "securities_company",
+    "securities_business_line",
+    "external_factor_on_securities",
+})
+
 
 class PackLoadError(RuntimeError):
     """Raised when a role pack violates its frozen manifest or trust boundary."""
@@ -32,6 +39,10 @@ class PlaybookSpec:
     playbook_id: str
     version: str
     entrypoint: str
+    research_template_ref: str
+    research_template_path: str
+    allowed_research_scopes: tuple[str, ...]
+    topic_anchor_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +141,7 @@ class RestrictedPackLoader:
         pack_version = _required_text(manifest, "pack_version")
         profile_path = _required_text(manifest, "profile")
         skills = self._load_skills(manifest.get("skills", []))
-        playbooks = self._load_playbooks(manifest.get("playbooks", []))
+        playbooks = self._load_playbooks(manifest.get("playbooks", []), skills=skills)
         assets = self._load_assets(manifest.get("assets", []))
         policies = self._load_policy_paths(manifest.get("policies", []))
         eval_manifest = self._load_eval_manifest(manifest.get("evals"))
@@ -180,21 +191,74 @@ class RestrictedPackLoader:
         _require_unique((skill.skill_id for skill in skills), "skill id")
         return tuple(skills)
 
-    def _load_playbooks(self, value: Any) -> tuple[PlaybookSpec, ...]:
+    def _load_playbooks(
+        self,
+        value: Any,
+        *,
+        skills: Sequence[SkillSpec],
+    ) -> tuple[PlaybookSpec, ...]:
         entries = _mapping_sequence(value, "playbooks")
         playbooks: list[PlaybookSpec] = []
         for entry in entries:
             entrypoint = _required_text(entry, "entrypoint")
             _validate_entrypoint(entrypoint, self._allowed_entrypoint_package)
+            template_ref = _required_text(entry, "research_template_ref")
+            template_path = self._resolve_skill_file_ref(template_ref, skills=skills)
+            template = _yaml_mapping(self._local_file(template_path).read_bytes(), template_path)
+            if _required_int(template, "schema_version") != 2:
+                raise PackLoadError("research template schema_version must be 2")
+            allowed_scopes = _text_sequence(
+                template.get("allowed_research_scopes"),
+                "allowed_research_scopes",
+            )
+            topic_anchor_terms = _text_sequence(
+                template.get("topic_anchor_terms"),
+                "topic_anchor_terms",
+            )
+            _require_unique(allowed_scopes, "allowed research scope")
+            _require_unique(topic_anchor_terms, "topic anchor term")
+            unsupported_scopes = sorted(set(allowed_scopes) - _ALLOWED_RESEARCH_SCOPES)
+            if unsupported_scopes:
+                raise PackLoadError(
+                    "research template contains unsupported allowed_research_scopes: "
+                    + ", ".join(unsupported_scopes)
+                )
             playbooks.append(
                 PlaybookSpec(
                     playbook_id=_required_text(entry, "id"),
                     version=_required_text(entry, "version"),
                     entrypoint=entrypoint,
+                    research_template_ref=template_ref,
+                    research_template_path=template_path,
+                    allowed_research_scopes=allowed_scopes,
+                    topic_anchor_terms=topic_anchor_terms,
                 )
             )
         _require_unique((playbook.playbook_id for playbook in playbooks), "playbook id")
         return tuple(playbooks)
+
+    def _resolve_skill_file_ref(
+        self,
+        reference: str,
+        *,
+        skills: Sequence[SkillSpec],
+    ) -> str:
+        prefix = "skill://"
+        if not reference.startswith(prefix):
+            raise PackLoadError("research_template_ref must use skill://")
+        skill_ref, separator, child_path = reference.removeprefix(prefix).partition("/")
+        if separator != "/" or not child_path:
+            raise PackLoadError("research_template_ref must name a file inside a declared skill")
+        skill_by_ref = {f"{skill.skill_id}@{skill.version}": skill for skill in skills}
+        skill = skill_by_ref.get(skill_ref)
+        if skill is None:
+            raise PackLoadError("research_template_ref points to an undeclared skill version")
+        child = PurePosixPath(child_path)
+        _validate_relative_parts(child.parts, child_path)
+        skill_root = PurePosixPath(skill.path).parent
+        resolved = skill_root.joinpath(child).as_posix()
+        self._local_file(resolved)
+        return resolved
 
     def _load_assets(self, value: Any) -> tuple[AssetSpec, ...]:
         entries = _mapping_sequence(value, "assets")

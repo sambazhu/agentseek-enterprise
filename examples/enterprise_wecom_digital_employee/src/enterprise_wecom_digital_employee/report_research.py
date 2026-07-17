@@ -24,6 +24,8 @@ from agentseek_work import (
 from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     ReportBrief,
+    ResearchScope,
+    validate_report_brief_scope,
 )
 from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
@@ -37,6 +39,7 @@ class CoverageStatus(StrEnum):
     COVERED = "covered"
     PARTIAL = "partial"
     GAP = "gap"
+    NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,7 @@ class ResearchQuestion:
     minimum_fused_score: float
     minimum_keyword_score: float
     minimum_semantic_score: float
+    applies_to: tuple[ResearchScope, ...]
 
     def __post_init__(self) -> None:
         _require_text(self.question_id, "question_id")
@@ -59,6 +63,9 @@ class ResearchQuestion:
             raise ValueError("search_mode is unsupported")
         if not 1 <= self.top_k <= 20:
             raise ValueError("top_k must be between 1 and 20")
+        if not self.applies_to:
+            raise ValueError("research question requires applies_to scopes")
+        _require_unique((item.value for item in self.applies_to), "applies_to")
         for field_name in (
             "minimum_fused_score",
             "minimum_keyword_score",
@@ -87,6 +94,8 @@ class ReportResearchTemplate:
     template_id: str
     template_version: str
     report_asset_ref: str
+    allowed_research_scopes: tuple[ResearchScope, ...]
+    topic_anchor_terms: tuple[str, ...]
     sections: tuple[ResearchSection, ...]
 
     def __post_init__(self) -> None:
@@ -94,7 +103,17 @@ class ReportResearchTemplate:
             _require_text(getattr(self, field_name), field_name)
         if not self.sections:
             raise ValueError("research template requires sections")
+        if not self.allowed_research_scopes:
+            raise ValueError("research template requires allowed_research_scopes")
+        if not self.topic_anchor_terms:
+            raise ValueError("research template requires topic_anchor_terms")
+        _require_unique((item.value for item in self.allowed_research_scopes), "allowed_research_scopes")
+        _require_unique(self.topic_anchor_terms, "topic_anchor_terms")
         _require_unique((item.section_id for item in self.sections), "section_id")
+        questions = tuple(question for section in self.sections for question in section.questions)
+        for scope in self.allowed_research_scopes:
+            if not any(scope in question.applies_to for question in questions):
+                raise ValueError(f"research template has no applicable questions for {scope.value}")
 
     @property
     def digest(self) -> str:
@@ -105,6 +124,8 @@ class ReportResearchTemplate:
             "template_id": self.template_id,
             "template_version": self.template_version,
             "report_asset_ref": self.report_asset_ref,
+            "allowed_research_scopes": [scope.value for scope in self.allowed_research_scopes],
+            "topic_anchor_terms": list(self.topic_anchor_terms),
             "sections": [
                 {
                     "section_id": section.section_id,
@@ -119,6 +140,7 @@ class ReportResearchTemplate:
                             "minimum_fused_score": question.minimum_fused_score,
                             "minimum_keyword_score": question.minimum_keyword_score,
                             "minimum_semantic_score": question.minimum_semantic_score,
+                            "applies_to": [scope.value for scope in question.applies_to],
                         }
                         for question in section.questions
                     ],
@@ -134,6 +156,7 @@ class ReportResearchPlan:
     report_brief_version: int
     report_title: str
     coverage_period: str
+    research_scope: ResearchScope
     template: ReportResearchTemplate
 
     @property
@@ -143,6 +166,7 @@ class ReportResearchPlan:
             "report_brief_version": self.report_brief_version,
             "report_title": self.report_title,
             "coverage_period": self.coverage_period,
+            "research_scope": self.research_scope.value,
             "template_digest": self.template.digest,
         })
 
@@ -199,6 +223,7 @@ class InternalResearchResult:
         return {
             "work_id": self.plan.work_id,
             "report_brief_version": self.plan.report_brief_version,
+            "research_scope": self.plan.research_scope.value,
             "template_id": self.plan.template.template_id,
             "template_version": self.plan.template.template_version,
             "research_plan_digest": self.plan.digest,
@@ -208,6 +233,12 @@ class InternalResearchResult:
                 "total_questions": self.coverage.total_questions,
                 "ratio": self.coverage.ratio,
                 "gaps": list(self.coverage.gaps),
+                "not_applicable_questions": [
+                    question.question_id
+                    for section in self.coverage.sections
+                    for question in section.questions
+                    if question.status is CoverageStatus.NOT_APPLICABLE
+                ],
                 "sections": [
                     {
                         "section_id": section.section_id,
@@ -232,7 +263,7 @@ class InternalResearchResult:
 def load_research_template(path: Path) -> ReportResearchTemplate:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     root = _mapping(loaded, "research template")
-    if root.get("schema_version") != 1:
+    if root.get("schema_version") != 2:
         raise ValueError("unsupported research template schema_version")
     sections: list[ResearchSection] = []
     for raw_section in _sequence(root.get("sections"), "sections"):
@@ -249,6 +280,10 @@ def load_research_template(path: Path) -> ReportResearchTemplate:
                 minimum_fused_score=float(question.get("minimum_fused_score", 0.02)),
                 minimum_keyword_score=float(question.get("minimum_keyword_score", 0.08)),
                 minimum_semantic_score=float(question.get("minimum_semantic_score", 0.7)),
+                applies_to=tuple(
+                    ResearchScope(value)
+                    for value in _text_sequence(question.get("applies_to"), "applies_to")
+                ),
             ))
         sections.append(ResearchSection(
             section_id=_text(section, "section_id"),
@@ -259,6 +294,11 @@ def load_research_template(path: Path) -> ReportResearchTemplate:
         template_id=_text(root, "template_id"),
         template_version=_text(root, "template_version"),
         report_asset_ref=_text(root, "report_asset_ref"),
+        allowed_research_scopes=tuple(
+            ResearchScope(value)
+            for value in _text_sequence(root.get("allowed_research_scopes"), "allowed_research_scopes")
+        ),
+        topic_anchor_terms=_text_sequence(root.get("topic_anchor_terms"), "topic_anchor_terms"),
         sections=tuple(sections),
     )
 
@@ -269,11 +309,17 @@ def build_research_plan(contract: Any, template: ReportResearchTemplate) -> Repo
     if contract.status is not WorkContractStatus.CONFIRMED:
         raise ValueError("formal research requires a confirmed ReportBrief")
     brief = ReportBrief.from_contract(contract)
+    validate_report_brief_scope(
+        brief,
+        allowed_scopes=tuple(scope.value for scope in template.allowed_research_scopes),
+        topic_anchor_terms=template.topic_anchor_terms,
+    )
     return ReportResearchPlan(
         work_id=contract.work_id,
         report_brief_version=contract.contract_version,
         report_title=brief.title,
         coverage_period=brief.coverage_period,
+        research_scope=brief.research_scope,
         template=template,
     )
 
@@ -393,6 +439,8 @@ async def _search_plan(
     query_by_question: dict[str, str] = {}
     for section in plan.template.sections:
         for question in section.questions:
+            if plan.research_scope not in question.applies_to:
+                continue
             query = build_research_query(plan, question)
             query_by_question[question.question_id] = query
             raw = await invoke_mcp(
@@ -431,7 +479,7 @@ def _index_selected_hits(
     hit_by_chunk: dict[str, KnowledgeHit] = {}
     for section in plan.template.sections:
         for question in section.questions:
-            for hit in hits_by_question[question.question_id][:2]:
+            for hit in hits_by_question.get(question.question_id, ())[:2]:
                 if hit.chunk_id not in chunks_by_id:
                     continue
                 questions_by_chunk.setdefault(hit.chunk_id, set()).add(question.question_id)
@@ -528,14 +576,27 @@ def _coverage(plan: ReportResearchPlan, sources: Sequence[SourceRecord]) -> Rese
     for section in plan.template.sections:
         questions: list[QuestionCoverage] = []
         for question in section.questions:
+            if plan.research_scope not in question.applies_to:
+                questions.append(QuestionCoverage(
+                    question.question_id,
+                    CoverageStatus.NOT_APPLICABLE,
+                    (),
+                ))
+                continue
             total += 1
             source_ids = tuple(dict.fromkeys(source_ids_by_question.get(question.question_id, [])))
             status = CoverageStatus.COVERED if source_ids else CoverageStatus.GAP
             covered += int(bool(source_ids))
             questions.append(QuestionCoverage(question.question_id, status, source_ids))
-        statuses = {question.status for question in questions}
+        statuses = {
+            question.status
+            for question in questions
+            if question.status is not CoverageStatus.NOT_APPLICABLE
+        }
         section_status = (
-            CoverageStatus.COVERED
+            CoverageStatus.NOT_APPLICABLE
+            if not statuses
+            else CoverageStatus.COVERED
             if statuses == {CoverageStatus.COVERED}
             else CoverageStatus.GAP
             if statuses == {CoverageStatus.GAP}
@@ -632,6 +693,13 @@ def _text(value: Mapping[str, Any], field_name: str) -> str:
     result = str(value.get(field_name, "")).strip()
     _require_text(result, field_name)
     return result
+
+
+def _text_sequence(value: object, field_name: str) -> tuple[str, ...]:
+    values = tuple(str(item).strip() for item in _sequence(value, field_name))
+    if not values or any(not item for item in values):
+        raise ValueError(f"{field_name} must contain non-blank text values")
+    return values
 
 
 def _require_text(value: str, field_name: str) -> None:

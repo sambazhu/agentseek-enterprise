@@ -124,7 +124,7 @@ def test_template_renders_without_unrendered_jinja(
             / "skills"
             / "report-intake"
             / "references"
-            / "internal-research-template.yaml"
+            / "securities-industry-internal-research.yaml"
         )
         assert pack_manifest.is_file()
         assert agent_module.is_file()

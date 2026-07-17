@@ -1,13 +1,40 @@
-schema_version: 1
-template_id: neutral-industry-report-internal-research
-template_version: 1.1.0
+schema_version: 2
+template_id: securities-industry-internal-research
+template_version: 2.0.0
 report_asset_ref: strategic-report-docx@1.0.0
+allowed_research_scopes:
+  - securities_industry
+  - securities_company
+  - securities_business_line
+  - external_factor_on_securities
+topic_anchor_terms:
+  - 证券
+  - 券商
+  - 资本市场
+  - 投行业务
+  - 经纪业务
+  - 财富管理
+  - 自营业务
+  - 资产管理
+  - 资管
+  - 两融
+  - 保荐
+  - A股
+  - 股票市场
+  - 债券市场
+  - IPO
+  - 上市公司
 sections:
   - section_id: executive-summary
     title: 执行摘要
     questions:
       - question_id: executive-summary.topic-specific-evidence
         prompt: 内部知识库是否包含本报告主题直接点名的机构、政策、事件、时间和量化数据？
+        applies_to:
+          - securities_industry
+          - securities_company
+          - securities_business_line
+          - external_factor_on_securities
         query_strategy: report_topic
         search_mode: keyword
         top_k: 4
@@ -16,6 +43,11 @@ sections:
         minimum_semantic_score: 0.70
       - question_id: executive-summary.core-trends
         prompt: 证券行业当前核心趋势、主要变化和重大不确定性是什么？
+        applies_to:
+          - securities_industry
+          - securities_company
+          - securities_business_line
+          - external_factor_on_securities
         query_strategy: full_context
         search_mode: hybrid
         top_k: 4
@@ -27,6 +59,9 @@ sections:
     questions:
       - question_id: industry-overview.digital-transformation
         prompt: 证券行业数字化转型的目标、重点任务和实施路径是什么？
+        applies_to:
+          - securities_industry
+          - securities_company
         query_strategy: full_context
         search_mode: hybrid
         top_k: 4
@@ -38,6 +73,9 @@ sections:
     questions:
       - question_id: operating-benchmark.roe-and-structure
         prompt: 证券公司的收入利润、ROE、资本效率和业务结构有哪些可比目标？
+        applies_to:
+          - securities_industry
+          - securities_company
         query_strategy: full_context
         search_mode: hybrid
         top_k: 4
@@ -45,10 +83,14 @@ sections:
         minimum_keyword_score: 0.08
         minimum_semantic_score: 0.70
   - section_id: business-line-benchmark
-    title: 五矿证券业务线对标
+    title: 证券公司业务线对标
     questions:
       - question_id: business-line-benchmark.five-lines
         prompt: 财富、投行、自营权益、自营固收、资管五条业务线应如何对标分析？
+        applies_to:
+          - securities_industry
+          - securities_company
+          - securities_business_line
         query_strategy: full_context
         search_mode: hybrid
         top_k: 4
@@ -60,6 +102,11 @@ sections:
     questions:
       - question_id: action-recommendations.priorities
         prompt: 战略行动建议的优先级、适用条件、依赖、风险和验证指标是什么？
+        applies_to:
+          - securities_industry
+          - securities_company
+          - securities_business_line
+          - external_factor_on_securities
         query_strategy: full_context
         search_mode: hybrid
         top_k: 4

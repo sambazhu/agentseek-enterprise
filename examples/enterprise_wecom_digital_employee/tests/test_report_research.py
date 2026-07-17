@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from agentseek_work import (
@@ -25,10 +25,11 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
-from enterprise_wecom_digital_employee.report_brief import ReportBrief
+from enterprise_wecom_digital_employee.report_brief import ReportBrief, ResearchScope
 from enterprise_wecom_digital_employee.report_research import (
     CoverageStatus,
     ResearchCoverage,
+    _coverage,
     build_research_plan,
     build_research_query,
     load_current_research_result,
@@ -56,7 +57,7 @@ TEMPLATE_PATH = (
     / "skills"
     / "report-intake"
     / "references"
-    / "internal-research-template.yaml"
+    / "securities-industry-internal-research.yaml"
 )
 ASSET_REF = "trusted-asset://strategic-report-docx/1.0.0"
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
@@ -65,8 +66,11 @@ NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 def test_research_template_has_stable_unique_sections_and_questions() -> None:
     template = load_research_template(TEMPLATE_PATH)
 
-    assert template.template_id == "neutral-industry-report-internal-research"
-    assert template.template_version == "1.1.0"
+    assert template.template_id == "securities-industry-internal-research"
+    assert template.template_version == "2.0.0"
+    assert tuple(scope.value for scope in template.allowed_research_scopes) == tuple(
+        scope.value for scope in ResearchScope
+    )
     assert template.report_asset_ref == "strategic-report-docx@1.0.0"
     assert len(template.sections) == 5
     assert sum(len(section.questions) for section in template.sections) == 6
@@ -78,6 +82,40 @@ def test_research_template_has_stable_unique_sections_and_questions() -> None:
         for question in section.questions
     )
     assert template.digest.startswith("sha256:")
+
+
+def test_external_factor_scope_marks_inapplicable_questions_without_false_gaps() -> None:
+    brief = ReportBrief(
+        title="美联储货币政策对国内证券行业的影响",
+        research_scope=ResearchScope.EXTERNAL_FACTOR_ON_SECURITIES,
+        target_audience=("公司管理层",),
+    )
+    contract = replace(
+        brief.to_contract(
+            work_id="work_scope",
+            tenant_id="tenant_001",
+            contract_version=1,
+            created_by="employee_001",
+            created_at=NOW,
+        ),
+        status=WorkContractStatus.CONFIRMED,
+        confirmed_by="employee_001",
+        confirmed_at=NOW,
+    )
+    plan = build_research_plan(contract, load_research_template(TEMPLATE_PATH))
+    coverage = _coverage(plan, ())
+
+    assert coverage.total_questions == 3
+    assert coverage.gaps == (
+        "executive-summary.topic-specific-evidence",
+        "executive-summary.core-trends",
+        "action-recommendations.priorities",
+    )
+    assert sum(
+        question.status is CoverageStatus.NOT_APPLICABLE
+        for section in coverage.sections
+        for question in section.questions
+    ) == 3
 
 
 def test_topic_specific_question_searches_only_the_report_title() -> None:
@@ -123,6 +161,28 @@ def test_research_plan_requires_confirmed_report_brief() -> None:
         build_research_plan(provisional, load_research_template(TEMPLATE_PATH))
 
 
+def test_research_plan_rechecks_scope_before_any_retrieval() -> None:
+    provisional = ReportBrief(
+        title="新能源汽车行业研究报告",
+        target_audience=("公司管理层",),
+    ).to_contract(
+        work_id="work_scope_mismatch",
+        tenant_id="tenant_001",
+        contract_version=1,
+        created_by="employee_001",
+        created_at=NOW,
+    )
+    confirmed = replace(
+        provisional,
+        status=WorkContractStatus.CONFIRMED,
+        confirmed_by="employee_001",
+        confirmed_at=NOW,
+    )
+
+    with pytest.raises(ValueError, match="SCOPE_MISMATCH"):
+        build_research_plan(confirmed, load_research_template(TEMPLATE_PATH))
+
+
 def test_confirmation_guard_reads_latest_human_message_from_tool_runtime_state() -> None:
     runtime = SimpleNamespace(state={
         "messages": [
@@ -131,7 +191,7 @@ def test_confirmation_guard_reads_latest_human_message_from_tool_runtime_state()
         ]
     })
 
-    assert _latest_user_message_text(runtime) == "确认 ReportBrief v3，按这个版本开始。"
+    assert _latest_user_message_text(cast(Any, runtime)) == "确认 ReportBrief v3，按这个版本开始。"
 
 
 def test_report_brief_revision_requires_exact_reconfirmation(tmp_path: Path) -> None:

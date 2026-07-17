@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -35,9 +35,17 @@ class CoveragePeriodSource(StrEnum):
     PLAYBOOK_DEFAULT = "playbook_default"
 
 
+class ResearchScope(StrEnum):
+    SECURITIES_INDUSTRY = "securities_industry"
+    SECURITIES_COMPANY = "securities_company"
+    SECURITIES_BUSINESS_LINE = "securities_business_line"
+    EXTERNAL_FACTOR_ON_SECURITIES = "external_factor_on_securities"
+
+
 @dataclass(frozen=True, slots=True)
 class ReportBrief:
     title: str
+    research_scope: ResearchScope = ResearchScope.SECURITIES_INDUSTRY
     target_audience: tuple[str, ...] = ()
     coverage_period: str = _DEFAULT_COVERAGE_PERIOD
     coverage_period_source: CoveragePeriodSource = CoveragePeriodSource.PLAYBOOK_DEFAULT
@@ -48,6 +56,8 @@ class ReportBrief:
     def __post_init__(self) -> None:
         if not self.title.strip():
             raise ValueError("title must not be blank")
+        if not isinstance(self.research_scope, ResearchScope):
+            raise TypeError("research_scope must be a ResearchScope")
         if not self.coverage_period.strip():
             raise ValueError("coverage_period must not be blank")
         if not isinstance(self.coverage_period_source, CoveragePeriodSource):
@@ -76,8 +86,9 @@ class ReportBrief:
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "title": self.title,
+            "research_scope": self.research_scope.value,
             "target_audience": list(self.target_audience),
             "coverage_period": self.coverage_period,
             "coverage_period_source": self.coverage_period_source.value,
@@ -111,16 +122,44 @@ class ReportBrief:
         if contract.contract_type != REPORT_BRIEF_CONTRACT_TYPE:
             raise ValueError("contract is not a report brief")
         payload = contract.payload
-        if payload.get("schema_version") != 1:
+        schema_version = payload.get("schema_version")
+        if schema_version not in {1, 2}:
             raise ValueError("unsupported report brief schema_version")
         return cls(
             title=_required_text(payload, "title"),
+            research_scope=(
+                ResearchScope.SECURITIES_INDUSTRY
+                if schema_version == 1
+                else ResearchScope(_required_text(payload, "research_scope"))
+            ),
             target_audience=_text_tuple(payload, "target_audience"),
             coverage_period=_required_text(payload, "coverage_period"),
             coverage_period_source=CoveragePeriodSource(_required_text(payload, "coverage_period_source")),
             output_formats=_text_tuple(payload, "output_formats"),
             delivery_sla_minutes=_required_int(payload, "delivery_sla_minutes"),
             confidentiality_level=_required_text(payload, "confidentiality_level"),
+        )
+
+
+def validate_report_brief_scope(
+    brief: ReportBrief,
+    *,
+    allowed_scopes: Sequence[str],
+    topic_anchor_terms: Sequence[str],
+) -> None:
+    """Fail closed when a ReportBrief falls outside the declared Playbook role."""
+
+    allowed = {str(value).strip() for value in allowed_scopes if str(value).strip()}
+    if brief.research_scope.value not in allowed:
+        raise ValueError(
+            f"研究范围 {brief.research_scope.value} 不在当前证券研究 Playbook 的允许范围内。"
+        )
+    title = brief.title.casefold()
+    anchors = tuple(str(value).strip().casefold() for value in topic_anchor_terms if str(value).strip())
+    if not anchors or not any(anchor in title for anchor in anchors):
+        raise ValueError(
+            "SCOPE_MISMATCH：当前数字员工仅承担证券行业、证券公司、证券业务线，"
+            "以及外部因素对证券行业影响的研究。请在报告主题中明确证券研究对象或影响关系。"
         )
 
 

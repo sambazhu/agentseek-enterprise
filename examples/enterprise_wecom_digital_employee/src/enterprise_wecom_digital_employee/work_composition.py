@@ -47,6 +47,7 @@ from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     ReportBrief,
     explicitly_confirms_report_brief,
+    validate_report_brief_scope,
 )
 from enterprise_wecom_digital_employee.research_gap_decision import (
     RESEARCH_GAP_DECISION_CONTRACT_TYPE,
@@ -133,6 +134,7 @@ class IndustryReportWorkComposition:
         loaded_pack: LoadedPackManifest,
         pack_snapshot_id: str,
         runtime_release: str,
+        pack_artifact_root: Path | None = None,
         budget_id: str = _BUDGET_ID,
         budget: WorkBudget = _DEFAULT_BUDGET,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -141,7 +143,14 @@ class IndustryReportWorkComposition:
         self.repository = repository
         self.loaded_pack = loaded_pack
         self.profile = loaded_pack.profile
-        self.playbook_id, _ = _single_playbook_ref(self.profile)
+        self.playbook_id, playbook_version = _single_playbook_ref(self.profile)
+        self.playbook = next(
+            playbook
+            for playbook in loaded_pack.playbooks
+            if playbook.playbook_id == self.playbook_id and playbook.version == playbook_version
+        )
+        self.pack_artifact_root = pack_artifact_root or loaded_pack.pack_root
+        self.research_template_path = self.pack_artifact_root / self.playbook.research_template_path
         self.pack_snapshot_id = pack_snapshot_id
         self.permissions_digest = _permissions_digest(self.profile)
         self.skill_set_digest = _skill_set_digest(loaded_pack)
@@ -280,6 +289,7 @@ class IndustryReportWorkComposition:
         item = self.current_work(state, runtime_context)
         if item is None:
             raise WorkCompositionError("当前员工没有可绑定 ReportBrief 的进行中报告任务。")
+        self._validate_report_brief_scope(brief)
         current = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,
@@ -324,6 +334,7 @@ class IndustryReportWorkComposition:
         if current is None:
             raise WorkCompositionError("当前任务尚未形成 ReportBrief。")
         brief = ReportBrief.from_contract(current)
+        self._validate_report_brief_scope(brief)
         if not brief.is_confirmable:
             raise WorkCompositionError("ReportBrief 仍缺少目标受众，不能确认。")
         if current.contract_version != expected_version:
@@ -346,6 +357,16 @@ class IndustryReportWorkComposition:
         if isinstance(state, dict):
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return confirmed
+
+    def _validate_report_brief_scope(self, brief: ReportBrief) -> None:
+        try:
+            validate_report_brief_scope(
+                brief,
+                allowed_scopes=self.playbook.allowed_research_scopes,
+                topic_anchor_terms=self.playbook.topic_anchor_terms,
+            )
+        except ValueError as exc:
+            raise WorkCompositionError(str(exc)) from exc
 
     def confirm_research_gap_decision(
         self,
@@ -542,6 +563,7 @@ def get_work_composition() -> IndustryReportWorkComposition:
         loaded_pack=loaded,
         pack_snapshot_id=snapshot.pack_snapshot_id,
         runtime_release=settings.require_work_runtime_release(),
+        pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
     )
 
 

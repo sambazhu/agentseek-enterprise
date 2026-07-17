@@ -17,8 +17,11 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
-from enterprise_wecom_digital_employee.report_brief import ReportBrief
-from enterprise_wecom_digital_employee.work_composition import IndustryReportWorkComposition
+from enterprise_wecom_digital_employee.report_brief import ReportBrief, ResearchScope
+from enterprise_wecom_digital_employee.work_composition import (
+    IndustryReportWorkComposition,
+    WorkCompositionError,
+)
 from sqlalchemy import create_engine
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -41,9 +44,10 @@ def build_composition(tmp_path: Path) -> IndustryReportWorkComposition:
         allowed_entrypoint_package="enterprise_wecom_digital_employee",
         asset_resolver=resolve_asset,
     ).load()
+    snapshot_store = FilesystemPackSnapshotStore(tmp_path / "snapshots")
     snapshot = build_pack_snapshot(
         loaded,
-        store=FilesystemPackSnapshotStore(tmp_path / "snapshots"),
+        store=snapshot_store,
         created_at=NOW,
     )
     repository.put_pack_snapshot(snapshot)
@@ -52,6 +56,7 @@ def build_composition(tmp_path: Path) -> IndustryReportWorkComposition:
         loaded_pack=loaded,
         pack_snapshot_id=snapshot.pack_snapshot_id,
         runtime_release="enterprise-wecom-v0.1.0-m1",
+        pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
         clock=lambda: NOW,
         id_factory=lambda: "work_live_001",
     )
@@ -133,9 +138,10 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.1.0"
-    assert first.item.digital_employee_profile_version == "1.1.0"
-    assert first.item.pack_version == "1.2.0"
+    assert first.item.skill_set_version == "1.2.0"
+    assert first.item.digital_employee_profile_version == "1.2.0"
+    assert first.item.pack_version == "1.3.0"
+    assert composition.research_template_path.is_relative_to(tmp_path / "snapshots")
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests
     assert first.item.input_file_ids == ("file_001",)
@@ -198,6 +204,37 @@ def test_current_work_summary_publishes_current_report_brief_as_distinct_ledger_
         "status": "confirmed",
     }
     assert "current_report_brief: v1 status=confirmed" in follow_up["current_work_context"]
+
+
+def test_report_brief_scope_is_enforced_at_save_and_confirm(tmp_path: Path) -> None:
+    composition = build_composition(tmp_path)
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    composition.create_report_work(state)
+
+    with pytest.raises(WorkCompositionError, match="SCOPE_MISMATCH"):
+        composition.save_report_brief(
+            state,
+            None,
+            ReportBrief(title="新能源汽车行业研究报告", target_audience=("公司管理层",)),
+        )
+
+    saved = composition.save_report_brief(
+        state,
+        None,
+        ReportBrief(
+            title="新能源汽车对证券行业的影响",
+            research_scope=ResearchScope.EXTERNAL_FACTOR_ON_SECURITIES,
+            target_audience=("公司管理层",),
+        ),
+    )
+    assert saved.payload["research_scope"] == "external_factor_on_securities"
+    assert composition.confirm_report_brief(
+        state,
+        None,
+        expected_version=saved.contract_version,
+        latest_user_message=f"确认 ReportBrief v{saved.contract_version}。",
+    ).status.value == "confirmed"
 
 
 def test_distinct_wecom_message_ids_do_not_collapse_identical_content(tmp_path: Path) -> None:
