@@ -39,6 +39,35 @@ _REPORT_BRIEF_WRITE_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_BRIEF_SAVE_SUCCESS_RE = re.compile(r"ReportBrief\s+v(\d+)\s+已保存")
+_REPORT_OUTLINE_REF_RE = re.compile(
+    r"(?:report\s*outline|reportoutline|报告提纲)\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_LEDGER_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:生成|创建|保存|更新|修改|修订)|"
+    r"(?:已|已经)(?:由.{0,24})?确认|"
+    r"status\s*[=:：]\s*(?:provisional|confirmed)|"
+    r"状态\s*[=:：]?\s*(?:provisional|confirmed|待确认|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_CONFIRMED_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:由.{0,24})?确认|status\s*[=:：]\s*confirmed|"
+    r"状态\s*[=:：]?\s*(?:confirmed|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_STATUS_SUCCESS_RE = re.compile(
+    r"ReportOutline\s+v(\d+)[，,]\s*status=(provisional|confirmed)",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_CONFIRM_SUCCESS_RE = re.compile(
+    r"ReportOutline\s+v(\d+)\s+已由任务委派人确认",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_LEDGER_TOOLS = frozenset({
+    "build_report_outline",
+    "get_current_report_outline",
+    "confirm_report_outline",
+})
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "当前任务仍处于 M2 需求确认、内部研究和来源登记阶段，尚未启用报告正文生成。"
@@ -50,6 +79,11 @@ REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "未检测到本轮 save_report_brief 的成功账本写入，因此不能声称 ReportBrief "
     "已保存、修订或更改输出格式。当前账本版本保持不变；请重新调用保存工具，"
     "并以工具返回的版本为准。"
+)
+REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到本轮 ReportOutline 工具返回的匹配账本状态，因此不能声称报告提纲已生成、"
+    "保存或确认。当前提纲账本保持不变；请调用 build_report_outline、"
+    "get_current_report_outline 或 confirm_report_outline，并以工具返回的版本和状态为准。"
 )
 
 
@@ -74,6 +108,8 @@ def enforce_m2_output_guard(
         if _looks_like_report_body(output, signals=signals)
         else "unverified_report_brief_write"
         if _claims_unverified_report_brief_write(result, output)
+        else "unverified_report_outline_write"
+        if _claims_unverified_report_outline_write(result, output)
         else ""
     )
     _emit_guard_event(
@@ -87,6 +123,8 @@ def enforce_m2_output_guard(
     )
     if reason == "unverified_report_brief_write":
         return REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_outline_write":
+        return REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
     return M2_OUTPUT_BLOCKED_MESSAGE if reason else output
 
 
@@ -238,6 +276,73 @@ def _successful_report_brief_save_versions(result: object) -> set[int]:
             continue
         versions.update(int(value) for value in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content))
     return versions
+
+
+def _claims_unverified_report_outline_write(result: object, output: str) -> bool:
+    claims = _report_outline_claims(output)
+    if not claims:
+        return False
+    ledger_states = _successful_report_outline_states(result)
+    return any(
+        version not in ledger_states
+        or (required_status == "confirmed" and "confirmed" not in ledger_states[version])
+        for version, required_status in claims
+    )
+
+
+def _report_outline_claims(output: str) -> tuple[tuple[int, str], ...]:
+    matches = tuple(_REPORT_OUTLINE_REF_RE.finditer(output))
+    claims: list[tuple[int, str]] = []
+    for index, match in enumerate(matches):
+        start = max(0, match.start() - 32)
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+        segment = output[start:end]
+        if not _REPORT_OUTLINE_LEDGER_CLAIM_RE.search(segment):
+            continue
+        status = "confirmed" if _REPORT_OUTLINE_CONFIRMED_CLAIM_RE.search(segment) else "recorded"
+        claims.append((int(match.group(1)), status))
+    return tuple(claims)
+
+
+def _successful_report_outline_states(result: object) -> dict[int, set[str]]:
+    if not isinstance(result, Mapping):
+        return {}
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return {}
+    outline_call_ids: set[str] = set()
+    states: dict[int, set[str]] = {}
+    for message in messages:
+        if _is_human_message(message):
+            outline_call_ids.clear()
+            states.clear()
+            continue
+        outline_call_ids.update(_report_outline_call_ids(message))
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name not in _REPORT_OUTLINE_LEDGER_TOOLS and tool_call_id not in outline_call_ids:
+            continue
+        _record_report_outline_states(states, content)
+    return states
+
+
+def _report_outline_call_ids(message: object) -> tuple[str, ...]:
+    raw_calls = _message_tool_calls(message)
+    if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
+        return ()
+    return tuple(
+        call_id
+        for call in raw_calls
+        if isinstance(call, Mapping)
+        and str(call.get("name") or "") in _REPORT_OUTLINE_LEDGER_TOOLS
+        and (call_id := str(call.get("id") or "").strip())
+    )
+
+
+def _record_report_outline_states(states: dict[int, set[str]], content: str) -> None:
+    for version, status in _REPORT_OUTLINE_STATUS_SUCCESS_RE.findall(content):
+        states.setdefault(int(version), set()).add(status.lower())
+    for version in _REPORT_OUTLINE_CONFIRM_SUCCESS_RE.findall(content):
+        states.setdefault(int(version), set()).add("confirmed")
 
 
 def _tool_result_parts(message: object) -> tuple[str, str, str]:

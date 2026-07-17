@@ -5,6 +5,7 @@ from typing import Any
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
+    REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
     enforce_m2_output_guard,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -174,6 +175,125 @@ def test_report_brief_save_claim_rejects_mismatched_tool_result_version() -> Non
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_unverified_report_outline_generation_claim_is_blocked_and_audited() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    output = "ReportOutline v2 已生成并保存，状态=provisional。"
+
+    guarded = enforce_m2_output_guard(
+        _result("生成报告提纲", output),
+        output,
+        event_sink=lambda event, **fields: events.append((event, fields)),
+    )
+
+    assert guarded == REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+    assert events[0][1]["reason"] == "unverified_report_outline_write"
+    assert output not in str(events[0][1])
+
+
+def test_report_outline_generation_claim_requires_matching_build_result() -> None:
+    output = "ReportOutline v2 已生成并保存，状态=provisional。"
+    result = _result("生成报告提纲", output)
+    result["messages"] = [
+        HumanMessage(content="生成报告提纲"),
+        AIMessage(content="", tool_calls=[{
+            "name": "build_report_outline",
+            "args": {},
+            "id": "call_build",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportOutline v2，status=provisional，绑定 ReportBrief v6。",
+            name="build_report_outline",
+            tool_call_id="call_build",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_report_outline_confirmation_claim_rejects_only_provisional_build_result() -> None:
+    output = "ReportOutline v2 已由任务委派人确认。"
+    result = _result("确认 ReportOutline v2", output)
+    result["messages"] = [
+        HumanMessage(content="确认 ReportOutline v2"),
+        AIMessage(content="", tool_calls=[{
+            "name": "build_report_outline",
+            "args": {},
+            "id": "call_build",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportOutline v2，status=provisional，绑定 ReportBrief v6。",
+            name="build_report_outline",
+            tool_call_id="call_build",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_report_outline_confirmation_claim_allows_matching_confirm_result() -> None:
+    output = "ReportOutline v2 已由任务委派人确认。"
+    result = _result("确认 ReportOutline v2", output)
+    result["messages"] = [
+        HumanMessage(content="确认 ReportOutline v2"),
+        AIMessage(content="", tool_calls=[{
+            "name": "confirm_report_outline",
+            "args": {"expected_version": 2},
+            "id": "call_confirm",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportOutline v2 已由任务委派人确认。",
+            name="confirm_report_outline",
+            tool_call_id="call_confirm",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_report_outline_read_claim_allows_matching_current_ledger_result() -> None:
+    output = "当前 ReportOutline v2 状态=confirmed，绑定 ReportBrief v6。"
+    result = _result("查看当前报告提纲", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前报告提纲"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_report_outline",
+            "args": {},
+            "id": "call_get",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportOutline v2，status=confirmed，绑定 ReportBrief v6。",
+            name="get_current_report_outline",
+            tool_call_id="call_get",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
 
 
 def test_coverage_table_and_section_labels_are_allowed_with_safe_diagnostics() -> None:

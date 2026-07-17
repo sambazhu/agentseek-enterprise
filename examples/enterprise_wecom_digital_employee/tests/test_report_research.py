@@ -305,6 +305,10 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
     assert first.coverage.sections[1].status is CoverageStatus.COVERED
     assert len(first.coverage.gaps) == 5
     assert len(first.sources) == 1
+    assert first.sources[0].metadata["question_ids"] == [
+        "industry-overview.digital-transformation"
+    ]
+    assert "question_id" not in first.sources[0].metadata
     assert replay.sources == first.sources
     assert len(composition.repository.list_source_records(
         tenant_id="tenant-test",

@@ -18,6 +18,8 @@ from agentseek_work import (
     InteractionRoute,
     RouteRequest,
     SideEffect,
+    SourceRecord,
+    SourceType,
     SQLAlchemyWorkRepository,
     ToolContract,
     ToolContractRegistry,
@@ -48,6 +50,12 @@ from enterprise_wecom_digital_employee.report_brief import (
     ReportBrief,
     explicitly_confirms_report_brief,
     validate_report_brief_scope,
+)
+from enterprise_wecom_digital_employee.report_outline import (
+    REPORT_OUTLINE_CONTRACT_TYPE,
+    ReportOutline,
+    explicitly_confirms_report_outline,
+    source_set_digest,
 )
 from enterprise_wecom_digital_employee.research_gap_decision import (
     RESEARCH_GAP_DECISION_CONTRACT_TYPE,
@@ -368,6 +376,127 @@ class IndustryReportWorkComposition:
         except ValueError as exc:
             raise WorkCompositionError(str(exc)) from exc
 
+    def save_report_outline(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        outline: ReportOutline,
+    ) -> WorkContractSnapshot:
+        """Persist one deterministic, source-backed outline as a provisional contract."""
+
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可绑定 ReportOutline 的进行中报告任务。")
+        self._require_outline_brief_binding(item, outline)
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        if current is not None and dict(current.payload) == outline.to_payload():
+            saved = current
+        else:
+            version = 1 if current is None else current.contract_version + 1
+            candidate = outline.to_contract(
+                work_id=item.work_id,
+                tenant_id=item.tenant_id,
+                contract_version=version,
+                created_by=item.requester_id,
+                created_at=self._factory.clock(),
+            )
+            saved = (
+                self.repository.create_work_contract(candidate)
+                if current is None
+                else self.repository.revise_work_contract(candidate)
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return saved
+
+    def confirm_report_outline(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> WorkContractSnapshot:
+        """Confirm an outline only while its Brief, evidence set, and decision remain current."""
+
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可确认 ReportOutline 的进行中报告任务。")
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        if current is None:
+            raise WorkCompositionError("当前任务尚未形成 ReportOutline。")
+        if current.contract_version != expected_version:
+            raise WorkCompositionError("ReportOutline 版本不匹配，请重新展示当前版本后再确认。")
+        try:
+            outline = ReportOutline.from_contract(current)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportOutline 合同无效，不能确认。") from exc
+        self._require_outline_brief_binding(item, outline)
+        self._require_outline_evidence_current(item, outline)
+        if current.status is WorkContractStatus.CONFIRMED:
+            confirmed = current
+        else:
+            if not explicitly_confirms_report_outline(latest_user_message, expected_version=expected_version):
+                raise WorkCompositionError(
+                    f"员工最新消息未显式确认 ReportOutline v{expected_version}，不能进入初稿阶段。"
+                )
+            confirmed = self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+                expected_contract_version=expected_version,
+                confirmed_by=item.requester_id,
+                confirmed_at=self._factory.clock(),
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return confirmed
+
+    def _require_outline_brief_binding(self, item: WorkItem, outline: ReportOutline) -> None:
+        brief_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_BRIEF_CONTRACT_TYPE,
+        )
+        if brief_contract is None or brief_contract.status is not WorkContractStatus.CONFIRMED:
+            raise WorkCompositionError("当前任务没有已确认的 ReportBrief，不能形成或确认提纲。")
+        if brief_contract.contract_version != outline.report_brief_version:
+            raise WorkCompositionError(
+                f"ReportOutline 绑定的 ReportBrief v{outline.report_brief_version} 已失效；"
+                f"当前已确认版本为 ReportBrief v{brief_contract.contract_version}。"
+            )
+        brief = ReportBrief.from_contract(brief_contract)
+        if brief.title != outline.report_title or brief.research_scope.value != outline.research_scope:
+            raise WorkCompositionError("ReportOutline 与当前 ReportBrief 的主题或研究范围不一致。")
+
+    def _require_outline_evidence_current(self, item: WorkItem, outline: ReportOutline) -> None:
+        if outline.gap_decision_contract_version is not None:
+            decision = self.repository.get_current_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+            )
+            if (
+                decision is None
+                or decision.status is not WorkContractStatus.CONFIRMED
+                or decision.contract_version != outline.gap_decision_contract_version
+            ):
+                raise WorkCompositionError("ReportOutline 绑定的研究缺口决策已失效，请重新生成提纲。")
+        sources = _outline_sources(self.repository.list_source_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        ), outline)
+        if source_set_digest(sources) != outline.source_set_digest:
+            raise WorkCompositionError("ReportOutline 绑定的来源集合已变化，请重新生成提纲。")
+
     def confirm_research_gap_decision(
         self,
         state: Mapping[str, object],
@@ -522,6 +651,24 @@ class IndustryReportWorkComposition:
                     "report_brief_version": decision.report_brief_version,
                     "action": decision.action.value,
                 }
+        outline_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        if outline_contract is not None:
+            try:
+                outline = ReportOutline.from_contract(outline_contract)
+            except (TypeError, ValueError):
+                pass
+            else:
+                summary["report_outline"] = {
+                    "contract_version": outline_contract.contract_version,
+                    "status": outline_contract.status.value,
+                    "report_brief_version": outline.report_brief_version,
+                    "source_set_digest": outline.source_set_digest,
+                    "unresolved_question_count": len(outline.unresolved_question_ids),
+                }
         return summary
 
 
@@ -607,6 +754,26 @@ def _same_gap_decision(contract: WorkContractSnapshot, decision: ResearchGapDeci
         and stored.gap_digest == decision.gap_digest
         and stored.gap_question_ids == decision.gap_question_ids
         and stored.action is decision.action
+    )
+
+
+def _outline_sources(
+    sources: Sequence[SourceRecord],
+    outline: ReportOutline,
+) -> tuple[SourceRecord, ...]:
+    return tuple(
+        source
+        for source in sources
+        if source.metadata.get("report_brief_version") == outline.report_brief_version
+        and source.metadata.get("research_plan_digest") == outline.research_plan_digest
+        and (
+            source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+            or (
+                outline.gap_decision_contract_version is not None
+                and source.metadata.get("gap_decision_contract_version")
+                == outline.gap_decision_contract_version
+            )
+        )
     )
 
 
@@ -797,6 +964,14 @@ def _current_work_context(summary: Mapping[str, object]) -> str:
         lines.append(
             "gap-decision 的 contract_version 和 bound_report_brief_version 不是当前 ReportBrief 版本；"
             "当前版本只能以 current_report_brief 为准。"
+        )
+    outline = summary.get("report_outline")
+    if isinstance(outline, Mapping):
+        lines.append(
+            "current_report_outline: "
+            f"v{outline.get('contract_version')} status={outline.get('status')} "
+            f"bound_report_brief_v{outline.get('report_brief_version')} "
+            f"unresolved={outline.get('unresolved_question_count')}"
         )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",

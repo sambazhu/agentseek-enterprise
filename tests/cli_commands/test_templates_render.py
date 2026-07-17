@@ -107,6 +107,7 @@ def test_template_renders_without_unrendered_jinja(
         agent_module = generated / "src" / generated.name / "agent.py"
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
         report_brief = generated / "src" / generated.name / "report_brief.py"
+        report_outline = generated / "src" / generated.name / "report_outline.py"
         report_research = generated / "src" / generated.name / "report_research.py"
         report_output_guard = generated / "src" / generated.name / "report_output_guard.py"
         external_research = generated / "src" / generated.name / "external_research.py"
@@ -130,6 +131,7 @@ def test_template_renders_without_unrendered_jinja(
         assert agent_module.is_file()
         assert pack_loader.is_file()
         assert report_brief.is_file()
+        assert report_outline.is_file()
         assert report_research.is_file()
         assert report_output_guard.is_file()
         assert external_research.is_file()
@@ -142,11 +144,21 @@ def test_template_renders_without_unrendered_jinja(
         assert knowledge_config.is_file()
         assert research_template.is_file()
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
+        rendered_python_modules = (
+            agent_module,
+            report_outline,
+            report_output_guard,
+            work_composition,
+            work_tools,
+        )
+        for module_path in rendered_python_modules:
+            source = module_path.read_text(encoding="utf-8")
+            compile(source, str(module_path), "exec")
         agent_source = agent_module.read_text(encoding="utf-8")
-        compile(agent_source, str(agent_module), "exec")
         assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
         assert "GeneralPurposeSubagentProfile" not in agent_source
         assert "{{" not in report_brief.read_text(encoding="utf-8")
+        assert "{{" not in report_outline.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
         assert "{{" not in report_output_guard.read_text(encoding="utf-8")
         assert "{{" not in external_research.read_text(encoding="utf-8")

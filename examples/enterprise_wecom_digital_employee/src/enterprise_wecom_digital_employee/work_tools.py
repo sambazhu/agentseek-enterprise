@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from agentseek_work import ActiveWorkConflictError
+from agentseek_work import (
+    ActiveWorkConflictError,
+    SourceRecord,
+    SourceType,
+    WorkContractStatus,
+    WorkItem,
+)
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
@@ -19,13 +25,28 @@ from enterprise_wecom_digital_employee.report_brief import (
     ReportOutputFormat,
     ResearchScope,
 )
+from enterprise_wecom_digital_employee.report_outline import (
+    REPORT_OUTLINE_CONTRACT_TYPE,
+    OutlineQuestion,
+    OutlineSection,
+    ReportOutline,
+    source_set_digest,
+)
+from enterprise_wecom_digital_employee.report_research import (
+    InternalResearchResult,
+)
 from enterprise_wecom_digital_employee.report_research import (
     load_current_research_result as _load_current_research_result,
 )
 from enterprise_wecom_digital_employee.report_research import (
     run_internal_research as _run_internal_research,
 )
-from enterprise_wecom_digital_employee.research_gap_decision import ResearchGapAction
+from enterprise_wecom_digital_employee.research_gap_decision import (
+    RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    ResearchGapAction,
+    ResearchGapDecision,
+    gap_digest,
+)
 from enterprise_wecom_digital_employee.tools import call_mcp_tool
 from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
@@ -91,6 +112,14 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 f"status={decision.get('status')}，action={decision.get('action')}。"
             )
             lines.append("缺口决策绑定版本是历史决策字段，不代表当前 ReportBrief 版本。")
+        outline = summary.get("report_outline")
+        if isinstance(outline, Mapping):
+            lines.append(
+                "当前 ReportOutline："
+                f"v{outline.get('contract_version')}，status={outline.get('status')}，"
+                f"bound_report_brief_v{outline.get('report_brief_version')}，"
+                f"unresolved={outline.get('unresolved_question_count')}。"
+            )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -240,6 +269,69 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return str(exc)
         return json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
 
+    @tool("build_report_outline")
+    def build_report_outline(runtime: ToolRuntime) -> str:
+        """Build and save a deterministic source-backed ReportOutline contract.
+
+        Requires a confirmed current ReportBrief and completed internal research.
+        If internal gaps remain, the employee must first confirm one exact current
+        gap action. External-search decisions must have a SourceRecord for every
+        gap; upload-materials remains waiting, while continue-with-gaps preserves
+        unresolved question IDs. This tool stores only section/question/source
+        bindings. It never writes report prose, Markdown, DOCX, Evidence, or Claims.
+        """
+
+        try:
+            outline = _build_current_report_outline(composition, runtime.state, runtime.context)
+            contract = composition.save_report_outline(runtime.state, runtime.context, outline)
+        except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return _format_outline(contract.contract_version, contract.status.value, outline)
+
+    @tool("get_current_report_outline")
+    def get_current_report_outline(runtime: ToolRuntime) -> str:
+        """Read the current ReportOutline ledger contract without generating report prose."""
+
+        item = composition.current_work(runtime.state, runtime.context)
+        if item is None:
+            return "当前员工没有可见的进行中报告任务。"
+        contract = composition.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        if contract is None:
+            return "当前任务尚未形成 ReportOutline。"
+        try:
+            outline = ReportOutline.from_contract(contract)
+        except (TypeError, ValueError) as exc:
+            return f"当前 ReportOutline 合同无效：{exc}"
+        return _format_outline(contract.contract_version, contract.status.value, outline)
+
+    @tool("confirm_report_outline")
+    def confirm_report_outline(expected_version: int, runtime: ToolRuntime) -> str:
+        """Confirm the exact current ReportOutline after explicit requester approval.
+
+        Call only when the employee's latest message explicitly confirms the exact
+        ReportOutline version. The server rechecks the current ReportBrief, gap
+        decision, and source-set digest before confirmation. Confirmation permits
+        the later draft slice; this tool itself never creates report prose.
+        """
+
+        try:
+            contract = composition.confirm_report_outline(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportOutline v{contract.contract_version} 已由任务委派人确认。"
+            "提纲账本已冻结；M3-01 尚未启用报告正文或文件生成。"
+        )
+
     return [
         create_industry_report_work,
         get_current_work_status,
@@ -248,7 +340,159 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         run_internal_report_research,
         get_report_research_gaps,
         resolve_report_research_gaps,
+        build_report_outline,
+        get_current_report_outline,
+        confirm_report_outline,
     ]
+
+
+def _build_current_report_outline(
+    composition: IndustryReportWorkComposition,
+    state: Mapping[str, object],
+    runtime_context: object | None,
+) -> ReportOutline:
+    internal = _load_current_research_result(
+        composition=composition,
+        state=state,
+        runtime_context=runtime_context,
+        template_path=composition.research_template_path,
+    )
+    item = composition.current_work(state, runtime_context)
+    if item is None:
+        raise WorkCompositionError("当前员工没有可形成提纲的进行中报告任务。")
+    gaps = internal.coverage.gaps
+    gap_contract_version = _require_outline_gap_decision(composition, item, internal) if gaps else None
+    sources = _current_outline_sources(
+        composition=composition,
+        tenant_id=item.tenant_id,
+        work_id=item.work_id,
+        report_brief_version=internal.plan.report_brief_version,
+        research_plan_digest=internal.plan.digest,
+        gap_decision_contract_version=gap_contract_version,
+    )
+    source_ids_by_question: dict[str, list[str]] = {}
+    for source in sources:
+        question_ids = source.metadata.get("question_ids")
+        if not isinstance(question_ids, list):
+            continue
+        for question_id in question_ids:
+            source_ids_by_question.setdefault(str(question_id), []).append(source.source_id)
+    sections: list[OutlineSection] = []
+    for section in internal.plan.template.sections:
+        questions = tuple(
+            OutlineQuestion(
+                question_id=question.question_id,
+                prompt=question.prompt,
+                source_ids=tuple(dict.fromkeys(source_ids_by_question.get(question.question_id, []))),
+            )
+            for question in section.questions
+            if internal.plan.research_scope in question.applies_to
+        )
+        if questions:
+            sections.append(OutlineSection(section.section_id, section.title, questions))
+    return ReportOutline(
+        report_brief_version=internal.plan.report_brief_version,
+        research_plan_digest=internal.plan.digest,
+        research_scope=internal.plan.research_scope.value,
+        report_title=internal.plan.report_title,
+        template_id=internal.plan.template.template_id,
+        template_version=internal.plan.template.template_version,
+        source_set_digest=source_set_digest(sources),
+        sections=tuple(sections),
+        gap_decision_contract_version=gap_contract_version,
+    )
+
+
+def _require_outline_gap_decision(
+    composition: IndustryReportWorkComposition,
+    item: WorkItem,
+    internal: InternalResearchResult,
+) -> int:
+    tenant_id = item.tenant_id
+    work_id = item.work_id
+    contract = composition.repository.get_current_work_contract(
+        tenant_id=tenant_id,
+        work_id=work_id,
+        contract_type=RESEARCH_GAP_DECISION_CONTRACT_TYPE,
+    )
+    if contract is None or contract.status is not WorkContractStatus.CONFIRMED:
+        raise WorkCompositionError("内部研究仍有缺口；请先对当前 ReportBrief 明确选择并确认缺口处理方式。")
+    decision = ResearchGapDecision.from_contract(contract)
+    plan = internal.plan
+    gaps = internal.coverage.gaps
+    if (
+        decision.report_brief_version != plan.report_brief_version
+        or decision.research_plan_digest != plan.digest
+        or decision.gap_question_ids != gaps
+        or decision.gap_digest != gap_digest(gaps)
+    ):
+        raise WorkCompositionError("当前研究缺口决策与最新 ReportBrief 或研究计划不一致，请重新选择。")
+    if decision.action is ResearchGapAction.UPLOAD_MATERIALS:
+        raise WorkCompositionError("当前缺口决策正在等待员工上传材料；材料入账并重新研究前不能形成提纲。")
+    if decision.action in {ResearchGapAction.GILDATA, ResearchGapAction.PUBLIC_WEB}:
+        sources = _current_outline_sources(
+            composition=composition,
+            tenant_id=tenant_id,
+            work_id=work_id,
+            report_brief_version=plan.report_brief_version,
+            research_plan_digest=plan.digest,
+            gap_decision_contract_version=contract.contract_version,
+        )
+        externally_supported: set[str] = set()
+        for source in sources:
+            if source.source_type is SourceType.DEPARTMENT_KNOWLEDGE:
+                continue
+            question_ids = source.metadata.get("question_ids")
+            if isinstance(question_ids, list):
+                externally_supported.update(str(question_id) for question_id in question_ids)
+        missing = tuple(question_id for question_id in gaps if question_id not in externally_supported)
+        if missing:
+            raise WorkCompositionError(
+                "外部检索决策尚未为全部缺口登记 SourceRecord，不能形成提纲："
+                + "、".join(missing)
+            )
+    return contract.contract_version
+
+
+def _current_outline_sources(
+    *,
+    composition: IndustryReportWorkComposition,
+    tenant_id: str,
+    work_id: str,
+    report_brief_version: int,
+    research_plan_digest: str,
+    gap_decision_contract_version: int | None,
+) -> tuple[SourceRecord, ...]:
+    return tuple(
+        source
+        for source in composition.repository.list_source_records(tenant_id=tenant_id, work_id=work_id)
+        if source.metadata.get("report_brief_version") == report_brief_version
+        and source.metadata.get("research_plan_digest") == research_plan_digest
+        and (
+            source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+            or (
+                gap_decision_contract_version is not None
+                and source.metadata.get("gap_decision_contract_version") == gap_decision_contract_version
+            )
+        )
+    )
+
+
+def _format_outline(contract_version: int, status: str, outline: ReportOutline) -> str:
+    lines = [
+        f"ReportOutline v{contract_version}，status={status}，"
+        f"bound_report_brief_v{outline.report_brief_version}，"
+        f"sources={len(outline.source_ids)}，unresolved={len(outline.unresolved_question_ids)}。"
+    ]
+    lines.extend(
+        f"- {section.section_id}｜{section.title}｜{section.status.value}｜"
+        f"sources={len(section.source_ids)}｜unresolved={len(section.unresolved_question_ids)}"
+        for section in outline.sections
+    )
+    lines.append("该提纲仅含章节、研究问题和 SourceRecord 绑定，不含报告正文。")
+    if status == WorkContractStatus.PROVISIONAL.value:
+        lines.append(f"如认可，请明确回复“确认 ReportOutline v{contract_version}”。")
+    return "\n".join(lines)
 
 
 def _latest_user_message_text(runtime: ToolRuntime) -> str:

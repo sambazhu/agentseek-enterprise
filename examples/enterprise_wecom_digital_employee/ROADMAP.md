@@ -578,7 +578,7 @@ M3 先以运行时前置切片启动：
    Langfuse 不可达和 response_url exactly-once 全部通过，M3-00A 正式关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
-3. **M3-00C Research Scope Contract**：在报告提纲与正文生成前收口研究适用域。
+3. **M3-00C Research Scope Contract（已完成）**：在报告提纲与正文生成前收口研究适用域。
    v0.1.0 将当前角色定位为“证券行业研究与报告数字员工”，而不是任意行业的通用
    报告生成器。允许证券行业、证券公司、证券业务线，以及外部因素对证券行业的影响；
    纯非证券主题在 ReportBrief 保存/确认前要求员工澄清，不得进入证券专属研究模板。
@@ -600,9 +600,23 @@ M3 先以运行时前置切片启动：
      让 LLM 临时生成整套研究问题。
 
    当前实现基线已升级为 Pack `1.3.0` / Profile `1.2.0` / ReportBrief schema v2 / 研究模板
-   schema v2，等待 Mac mini 活体复核。旧 ReportBrief schema v1 继续只读兼容，并明确映射为
-   `securities_industry`；不执行存量数据迁移。
-4. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
+   schema v2。Mac mini 已验证证券正常路径、越界 fail-closed、外部因素 `3 applicable + 3
+   not_applicable`、旧 schema v1 只读兼容、PackSnapshot 注册和 M3-00A burst，M3-00C 正式关闭。
+4. **M3-01 ReportOutline 合同（开发完成，待 Mac mini 活体验证）**：从冻结研究模板和当前 SourceRecord 账本确定性生成
+   `report-outline` 通用版本合同。章节使用稳定 `section_id`，每个适用研究问题绑定复数
+   `source_ids`，未覆盖问题显式进入 `unresolved_question_ids`；不适用问题不进入提纲。
+
+   - 提纲精确绑定当前 confirmed ReportBrief 版本、研究计划 digest、research scope、模板版本、
+     来源集合 digest，以及必要时的 gap-decision contract 版本。
+   - 内部研究存在缺口时，必须先完成当前版本的显式缺口决策。`upload_materials` 继续等待材料；
+     Gildata/Tavily 必须已为每个缺口登记 SourceRecord；`continue_with_gaps` 可以形成提纲，但
+     未解决问题必须原样保留。
+   - 提纲先保存为 provisional；只有员工最新消息明确确认准确的 `ReportOutline vN` 才能确认。
+     ReportBrief、gap decision 或来源集合变化后，旧提纲 fail-closed，必须重新生成版本。
+   - 运行时守卫要求模型对提纲“已生成/保存/确认”的声明必须有本轮同版本
+     `build/get/confirm_report_outline` 工具结果作为账本证据，阻止只在回复中虚构版本或状态。
+   - M3-01 只交付提纲合同，不生成报告正文、Markdown、DOCX、PDF、Evidence 或 Claim。
+5. **M3-02 及以后**：基于 confirmed ReportOutline 和 SourceRecord 的初稿、质量门与 Markdown。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化
