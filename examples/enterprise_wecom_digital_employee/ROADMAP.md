@@ -578,7 +578,27 @@ M3 先以运行时前置切片启动：
    Langfuse 不可达和 response_url exactly-once 全部通过，M3-00A 正式关闭。
 2. **M3-00B 控制与硬抢占**：取消当前处理、清空等待消息、阻塞 LLM 的硬超时和
    under-load SIGTERM 兜底。
-3. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
+3. **M3-00C Research Scope Contract**：在报告提纲与正文生成前收口研究适用域。
+   v0.1.0 将当前角色定位为“证券行业研究与报告数字员工”，而不是任意行业的通用
+   报告生成器。允许证券行业、证券公司、证券业务线，以及外部因素对证券行业的影响；
+   纯非证券主题在 ReportBrief 保存/确认前要求员工澄清，不得进入证券专属研究模板。
+
+   - ReportBrief 增加可版本化的 `research_scope`，首版只接受
+     `securities_industry` / `securities_company` / `securities_business_line` /
+     `external_factor_on_securities`；范围与其他 Brief 字段一起由员工显式确认。
+   - 不使用 embedding 或检索低分来自动授权研究域；服务端使用结构化范围、确定性规则和
+     员工确认，以便审计与重放。
+   - Pack/Playbook 显式声明版本化 `research_template_ref`，Loader 校验它属于已声明 Skill
+     并纳入 PackSnapshot；运行时从已加载 Pack 解析，移除 `_RESEARCH_TEMPLATE` 的字面路径。
+     `skill_refs` 继续承担完整性和能力声明，不再被误当作隐式模板路由。
+   - 当前 `neutral-industry-report-internal-research` 不再声称中性通用；模板改为证券公司
+     研究模板，将具体公司名改为可审计的组织上下文或“本公司”。
+   - 计划编译阶段先判断问题适用性。整份 Brief 越界标记 `SCOPE_MISMATCH`；单个问题
+     不适用标记 `NOT_APPLICABLE` 且不计入 coverage 分母；问题适用但证据不足才标记
+     `GAP`；证据充足标记 `COVERED`。不得仅因为全部检索低分就把数据缺口判成主题错配。
+   - 通用多行业能力留到后续 v0.1.x，通过多份经审核模板路由实现；不在生产运行时
+     让 LLM 临时生成整套研究问题。
+4. **M3-01 及以后**：ReportOutline 合同、基于 SourceRecord 的初稿、质量门与 Markdown。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化
