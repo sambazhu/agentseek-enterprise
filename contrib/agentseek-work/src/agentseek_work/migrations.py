@@ -5,9 +5,18 @@ from datetime import UTC, datetime
 from sqlalchemy import Connection, Engine, func, insert, inspect, select
 
 from agentseek_work.models import TERMINAL_WORK_STATUSES
-from agentseek_work.schema import metadata, schema_versions, work_contracts, work_items, work_sources
+from agentseek_work.schema import (
+    metadata,
+    schema_versions,
+    work_claim_evidence,
+    work_claims,
+    work_contracts,
+    work_evidence,
+    work_items,
+    work_sources,
+)
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
 _CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
@@ -50,6 +59,8 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_six(connection)
     elif version == 7:
         _apply_revision_seven(connection)
+    elif version == 8:
+        _apply_revision_eight(connection)
 
 
 def _apply_revision_four(connection: Connection) -> None:
@@ -182,3 +193,45 @@ def _apply_revision_seven(connection: Connection) -> None:
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(f"cannot apply work schema revision 7; enterprise_work_sources is missing: {joined}")
+
+
+def _apply_revision_eight(connection: Connection) -> None:
+    required_tables = {
+        work_evidence.name: {
+            "evidence_id",
+            "work_id",
+            "tenant_id",
+            "source_id",
+            "locator",
+            "excerpt",
+            "structured_value",
+            "unit",
+            "period",
+            "confidence",
+            "extraction_method",
+            "created_at",
+            "metadata",
+        },
+        work_claims.name: {
+            "claim_id",
+            "work_id",
+            "tenant_id",
+            "section_id",
+            "statement",
+            "claim_type",
+            "verification_status",
+            "reviewer_status",
+            "created_at",
+            "metadata",
+        },
+        work_claim_evidence.name: {"claim_id", "evidence_id", "ordinal"},
+    }
+    inspector = inspect(connection)
+    for table_name, required_columns in required_tables.items():
+        if not inspector.has_table(table_name):
+            raise RuntimeError(f"cannot apply work schema revision 8; {table_name} is missing")
+        existing = {str(column["name"]) for column in inspector.get_columns(table_name)}
+        missing = sorted(required_columns - existing)
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(f"cannot apply work schema revision 8; {table_name} is missing: {joined}")

@@ -10,11 +10,12 @@ responsibilities:
   - 报告版本修改和质量检查
   - 研究底稿与引用归档
 pack_id: industry-report
-pack_version: 1.3.0
+pack_version: 1.4.0
 supported_playbooks:
   - securities-industry-report@1
 skill_refs:
   - report-intake@1.1.0
+  - report-writing@1.0.0
 asset_refs:
   - strategic-report-docx@1.0.0
 knowledge_refs:
@@ -49,4 +50,4 @@ escalation_policy:
   budget_exhausted: waiting_approval
   policy_denied: failed
 service_status: enabled
-profile_version: 1.2.0
+profile_version: 1.3.0

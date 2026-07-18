@@ -6,12 +6,14 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
     MetaData,
     String,
     Table,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -19,6 +21,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from agentseek_work.models import (
     ActorType,
     BudgetReservationStatus,
+    ClaimReviewerStatus,
+    ClaimType,
+    ClaimVerificationStatus,
     ExcerptStatus,
     SnapshotStatus,
     SourceType,
@@ -41,6 +46,9 @@ work_contract_status_values = _sql_values([status.value for status in WorkContra
 source_type_values = _sql_values([source_type.value for source_type in SourceType])
 snapshot_status_values = _sql_values([status.value for status in SnapshotStatus])
 excerpt_status_values = _sql_values([status.value for status in ExcerptStatus])
+claim_type_values = _sql_values([claim_type.value for claim_type in ClaimType])
+claim_verification_status_values = _sql_values([status.value for status in ClaimVerificationStatus])
+claim_reviewer_status_values = _sql_values([status.value for status in ClaimReviewerStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -197,6 +205,96 @@ work_sources = Table(
 )
 
 Index("ix_work_sources_tenant_work", work_sources.c.tenant_id, work_sources.c.work_id)
+
+work_evidence = Table(
+    "enterprise_work_evidence",
+    metadata,
+    Column("evidence_id", String(160), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column(
+        "source_id",
+        String(160),
+        ForeignKey("enterprise_work_sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("locator", String(2048), nullable=False),
+    Column("excerpt", Text),
+    Column("structured_value", json_document),
+    Column("unit", String(128)),
+    Column("period", String(256)),
+    Column("confidence", Float, nullable=False),
+    Column("extraction_method", String(128), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_work_evidence_confidence"),
+    CheckConstraint(
+        "excerpt IS NOT NULL OR structured_value IS NOT NULL",
+        name="ck_work_evidence_payload",
+    ),
+)
+
+Index("ix_work_evidence_tenant_work", work_evidence.c.tenant_id, work_evidence.c.work_id)
+Index("ix_work_evidence_source", work_evidence.c.source_id)
+
+work_claims = Table(
+    "enterprise_work_claims",
+    metadata,
+    Column("claim_id", String(160), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column("section_id", String(256), nullable=False),
+    Column("statement", Text, nullable=False),
+    Column("claim_type", String(32), nullable=False),
+    Column("verification_status", String(32), nullable=False),
+    Column("reviewer_status", String(32), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    CheckConstraint(f"claim_type IN ({claim_type_values})", name="ck_work_claim_type"),
+    CheckConstraint(
+        f"verification_status IN ({claim_verification_status_values})",
+        name="ck_work_claim_verification_status",
+    ),
+    CheckConstraint(
+        f"reviewer_status IN ({claim_reviewer_status_values})",
+        name="ck_work_claim_reviewer_status",
+    ),
+)
+
+Index("ix_work_claims_tenant_work", work_claims.c.tenant_id, work_claims.c.work_id)
+Index("ix_work_claims_section", work_claims.c.work_id, work_claims.c.section_id)
+
+work_claim_evidence = Table(
+    "enterprise_work_claim_evidence",
+    metadata,
+    Column(
+        "claim_id",
+        String(160),
+        ForeignKey("enterprise_work_claims.claim_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column(
+        "evidence_id",
+        String(160),
+        ForeignKey("enterprise_work_evidence.evidence_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("ordinal", Integer, nullable=False),
+    UniqueConstraint("claim_id", "ordinal", name="uq_work_claim_evidence_ordinal"),
+    CheckConstraint("ordinal >= 0", name="ck_work_claim_evidence_ordinal"),
+)
+
+Index("ix_work_claim_evidence_evidence", work_claim_evidence.c.evidence_id)
 
 work_budget_usage = Table(
     "enterprise_work_budget_usage",

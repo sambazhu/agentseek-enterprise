@@ -51,6 +51,12 @@ from {{ cookiecutter.project_slug }}.report_brief import (
     explicitly_confirms_report_brief,
     validate_report_brief_scope,
 )
+from {{ cookiecutter.project_slug }}.report_draft import (
+    REPORT_DRAFT_CONTRACT_TYPE,
+    ReportDraft,
+    claim_set_digest,
+    evidence_set_digest,
+)
 from {{ cookiecutter.project_slug }}.report_outline import (
     REPORT_OUTLINE_CONTRACT_TYPE,
     ReportOutline,
@@ -456,6 +462,93 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return confirmed
 
+    def current_confirmed_report_outline(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+    ) -> tuple[WorkItem, WorkContractSnapshot, ReportOutline]:
+        """Return the current confirmed outline after revalidating all frozen bindings."""
+
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            raise WorkCompositionError("当前员工没有可用于初稿的进行中报告任务。")
+        contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        if contract is None or contract.status is not WorkContractStatus.CONFIRMED:
+            raise WorkCompositionError("当前任务没有已确认的 ReportOutline，不能准备或保存初稿。")
+        try:
+            outline = ReportOutline.from_contract(contract)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportOutline 合同无效，不能进入初稿阶段。") from exc
+        self._require_outline_brief_binding(item, outline)
+        self._require_outline_evidence_current(item, outline)
+        return item, contract, outline
+
+    def save_report_draft(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        draft: ReportDraft,
+    ) -> WorkContractSnapshot:
+        """Persist one ledger-backed Markdown draft as a provisional contract."""
+
+        item, outline_contract, outline = self.current_confirmed_report_outline(state, runtime_context)
+        if (
+            draft.report_outline_version != outline_contract.contract_version
+            or draft.report_brief_version != outline.report_brief_version
+            or draft.report_title != outline.report_title
+            or draft.source_set_digest != outline.source_set_digest
+        ):
+            raise WorkCompositionError("ReportDraft 与当前已确认的 ReportOutline 绑定不一致。")
+        evidence = tuple(
+            record
+            for record in self.repository.list_evidence_records(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+            )
+            if record.metadata.get("report_outline_version") == outline_contract.contract_version
+            and record.source_id in set(outline.source_ids)
+        )
+        if evidence_set_digest(evidence) != draft.evidence_set_digest:
+            raise WorkCompositionError("ReportDraft 绑定的 Evidence 集合已变化，请重新准备初稿上下文。")
+        claims_by_id = {
+            claim.claim_id: claim
+            for claim in self.repository.list_claim_records(tenant_id=item.tenant_id, work_id=item.work_id)
+        }
+        try:
+            claims = tuple(claims_by_id[claim_id] for claim_id in draft.claim_ids)
+        except KeyError as exc:
+            raise WorkCompositionError("ReportDraft 引用了未登记的 ClaimRecord。") from exc
+        if claim_set_digest(claims) != draft.claim_set_digest:
+            raise WorkCompositionError("ReportDraft 绑定的 Claim 集合已变化，请重新生成初稿。")
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        )
+        if current is not None and dict(current.payload) == draft.to_payload():
+            saved = current
+        else:
+            version = 1 if current is None else current.contract_version + 1
+            candidate = draft.to_contract(
+                work_id=item.work_id,
+                tenant_id=item.tenant_id,
+                contract_version=version,
+                created_by=item.requester_id,
+                created_at=self._factory.clock(),
+            )
+            saved = (
+                self.repository.create_work_contract(candidate)
+                if current is None
+                else self.repository.revise_work_contract(candidate)
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return saved
+
     def _require_outline_brief_binding(self, item: WorkItem, outline: ReportOutline) -> None:
         brief_contract = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
@@ -618,7 +711,7 @@ class IndustryReportWorkComposition:
             },
         )
 
-    def _ledger_summary(self, item: WorkItem) -> dict[str, object]:
+    def _ledger_summary(self, item: WorkItem) -> dict[str, object]:  # noqa: C901
         summary = _work_summary(item)
         brief = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
@@ -664,6 +757,24 @@ class IndustryReportWorkComposition:
                     "report_brief_version": outline.report_brief_version,
                     "source_set_digest": outline.source_set_digest,
                     "unresolved_question_count": len(outline.unresolved_question_ids),
+                }
+        draft_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        )
+        if draft_contract is not None:
+            try:
+                draft = ReportDraft.from_contract(draft_contract)
+            except (TypeError, ValueError):
+                pass
+            else:
+                summary["report_draft"] = {
+                    "contract_version": draft_contract.contract_version,
+                    "status": draft_contract.status.value,
+                    "report_outline_version": draft.report_outline_version,
+                    "quality_status": draft.quality_status.value,
+                    "claim_count": len(draft.claim_ids),
                 }
         return summary
 
@@ -958,6 +1069,14 @@ def _current_work_context(summary: Mapping[str, object]) -> str:
             f"v{outline.get('contract_version')} status={outline.get('status')} "
             f"bound_report_brief_v{outline.get('report_brief_version')} "
             f"unresolved={outline.get('unresolved_question_count')}"
+        )
+    draft = summary.get("report_draft")
+    if isinstance(draft, Mapping):
+        lines.append(
+            "current_report_draft: "
+            f"v{draft.get('contract_version')} status={draft.get('status')} "
+            f"bound_report_outline_v{draft.get('report_outline_version')} "
+            f"quality={draft.get('quality_status')} claims={draft.get('claim_count')}"
         )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",

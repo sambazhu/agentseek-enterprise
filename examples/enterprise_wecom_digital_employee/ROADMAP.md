@@ -625,12 +625,32 @@ M3 先以运行时前置切片启动：
    provisional 状态查询只信任 `get_current_work_status` 返回的同版本、同状态 Brief/Outline
    账本证据，claim 按合同所在行解析，不让相邻 Brief/Outline 的状态串扰；模型不自行
    校验确认语的大小写、空格或拼写，服务端 parser 保持唯一裁决。
-5. **M3-02 及以后**：基于 confirmed ReportOutline 和 SourceRecord 的初稿、质量门与 Markdown。
+5. **M3-02 Evidence-backed ReportDraft（已实现，待 Mac mini 活体关闭）**：
+   基于 confirmed ReportOutline 和 SourceRecord 形成可审计的初稿、确定性质量门与 Markdown。
+
+   - schema revision 8 新增不可变、tenant-scoped 的 EvidenceRecord、ClaimRecord 和
+     Claim↔Evidence 关系表；幂等写入不改写旧证据或旧 Claim。
+   - `prepare_report_draft_context` 只重读已被当前 Outline 选中的部门知识片段，
+     核对 content hash，并将定位符、有界摘录、来源和适用章节固化为 Evidence。
+     未保存 raw result 的外部 Source 不伪装成可写作证据。
+   - `build_report_draft` 只接受结构化 Claim；事实与推断必须引用当前章节
+     Evidence ID，风险/建议可以无引用但保持 `unverified`。模型不得用记忆或常识
+     补齐 unresolved question。
+   - 服务端确定性渲染 Markdown，检查 Outline 绑定、Claim/Evidence 绑定、
+     locator、敏感路径/凭据特征和未解决缺口。ReportDraft 先保存为 provisional，
+     它不等于语义事实已复核：所有模型 Claim 先保持 `unverified`，语义/人工审阅
+     留给后续切片。
+   - 交付边界只允许 `build_report_draft` / `get_current_report_draft` 返回的带标记
+     Markdown，并丢弃模型二次改写；伪造 ReportDraft 版本/已生成声明仍 fail-closed。
+   - 本切片不做 Draft 确认/审批、语义 Claim 核验、DOCX/PDF 渲染、成品交付。
+     Pack/Profile 分别升级为 `1.4.0` / `1.3.0`，新增可快照化的 `report-writing@1.0.0` Skill。
 
    - 保留观察：DeepSeek 可能在员工确认 `continue_with_gaps` 后同轮调用 `build_report_outline`；只要
      服务端版本门和账本结果成立即可接受，不强制拆成两轮。
    - 保留观察：研究、缺口决策和提纲构建同轮执行时，外部观测查询可能遇到极短的事务可见性窗口；
      当前账本最终一致且工具链内读写正确，M3-02 增加阶段事件后再评估是否需要事务快照状态。
+6. **M3-03 及以后**：Claim 语义/人工审阅、Draft 版本确认与质量升级；
+   M4 再进入 DOCX/PDF 渲染、批准、交付和可恢复 outbox。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化

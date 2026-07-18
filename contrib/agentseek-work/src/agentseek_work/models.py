@@ -62,6 +62,27 @@ class ExcerptStatus(StrEnum):
     NOT_REQUESTED = "not_requested"
 
 
+class ClaimType(StrEnum):
+    FACT = "fact"
+    INFERENCE = "inference"
+    RECOMMENDATION = "recommendation"
+    RISK = "risk"
+
+
+class ClaimVerificationStatus(StrEnum):
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    CONFLICTED = "conflicted"
+    REJECTED = "rejected"
+
+
+class ClaimReviewerStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    CHANGES_REQUESTED = "changes_requested"
+    REJECTED = "rejected"
+
+
 TERMINAL_WORK_STATUSES = frozenset({
     WorkStatus.SUCCEEDED,
     WorkStatus.FAILED,
@@ -324,6 +345,85 @@ class SourceRecord:
             if value is not None:
                 _require_text(value, field_name)
         _require_unique_nonblank(self.allowed_uses, "allowed_uses")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRecord:
+    """Immutable excerpt or structured value extracted from one registered source."""
+
+    evidence_id: str
+    work_id: str
+    tenant_id: str
+    source_id: str
+    locator: str
+    confidence: float
+    extraction_method: str
+    created_at: datetime
+    excerpt: str | None = None
+    structured_value: Mapping[str, Any] | None = None
+    unit: str | None = None
+    period: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "evidence_id",
+            "work_id",
+            "tenant_id",
+            "source_id",
+            "locator",
+            "extraction_method",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        _require_aware(self.created_at, "created_at")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between zero and one")
+        if self.excerpt is not None:
+            _require_text(self.excerpt, "excerpt")
+        for field_name in ("unit", "period"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_text(value, field_name)
+        structured = None if self.structured_value is None else MappingProxyType(dict(self.structured_value))
+        if self.excerpt is None and structured is None:
+            raise ValueError("evidence requires an excerpt or structured_value")
+        object.__setattr__(self, "structured_value", structured)
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimRecord:
+    """Immutable report assertion linked to zero or more registered EvidenceRecords."""
+
+    claim_id: str
+    work_id: str
+    tenant_id: str
+    section_id: str
+    statement: str
+    claim_type: ClaimType
+    evidence_ids: tuple[str, ...]
+    verification_status: ClaimVerificationStatus
+    reviewer_status: ClaimReviewerStatus
+    created_at: datetime
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for field_name in ("claim_id", "work_id", "tenant_id", "section_id", "statement"):
+            _require_text(getattr(self, field_name), field_name)
+        if not isinstance(self.claim_type, ClaimType):
+            raise TypeError("claim_type must be a ClaimType")
+        if not isinstance(self.verification_status, ClaimVerificationStatus):
+            raise TypeError("verification_status must be a ClaimVerificationStatus")
+        if not isinstance(self.reviewer_status, ClaimReviewerStatus):
+            raise TypeError("reviewer_status must be a ClaimReviewerStatus")
+        if any(not evidence_id.strip() for evidence_id in self.evidence_ids):
+            raise ValueError("evidence_ids must not contain blank values")
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("evidence_ids must not contain duplicates")
+        if self.verification_status is ClaimVerificationStatus.VERIFIED and not self.evidence_ids:
+            raise ValueError("a verified claim requires evidence_ids")
+        _require_aware(self.created_at, "created_at")
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 

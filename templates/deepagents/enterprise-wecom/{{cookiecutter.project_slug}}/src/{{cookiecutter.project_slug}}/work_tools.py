@@ -25,6 +25,19 @@ from {{ cookiecutter.project_slug }}.report_brief import (
     ReportOutputFormat,
     ResearchScope,
 )
+from {{ cookiecutter.project_slug }}.report_draft import (
+    REPORT_DRAFT_CONTRACT_TYPE,
+    REPORT_DRAFT_MARKDOWN_BEGIN,
+    REPORT_DRAFT_MARKDOWN_END,
+    DraftClaimProposal,
+    ReportDraft,
+)
+from {{ cookiecutter.project_slug }}.report_draft import (
+    build_report_draft as _build_report_draft,
+)
+from {{ cookiecutter.project_slug }}.report_draft import (
+    prepare_report_draft_context as _prepare_report_draft_context,
+)
 from {{ cookiecutter.project_slug }}.report_outline import (
     REPORT_OUTLINE_CONTRACT_TYPE,
     OutlineQuestion,
@@ -130,6 +143,14 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                     "如认可，请明确回复"
                     f"“确认 ReportOutline v{outline.get('contract_version')}”；不要只回复“确认 vN”。"
                 )
+        draft = summary.get("report_draft")
+        if isinstance(draft, Mapping):
+            lines.append(
+                "当前 ReportDraft："
+                f"v{draft.get('contract_version')}，status={draft.get('status')}，"
+                f"bound_report_outline_v{draft.get('report_outline_version')}，"
+                f"quality={draft.get('quality_status')}，claims={draft.get('claim_count')}。"
+            )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -344,8 +365,79 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return str(exc)
         return (
             f"ReportOutline v{contract.contract_version} 已由任务委派人确认。"
-            "提纲账本已冻结；M3-01 尚未启用报告正文或文件生成。"
+            "提纲账本已冻结；现在可以准备 Evidence 并生成可审阅 Markdown 初稿，"
+            "但尚未启用最终批准、DOCX、PDF 或对外投递。"
         )
+
+    @tool("prepare_report_draft_context")
+    async def prepare_report_draft_context(runtime: ToolRuntime) -> str:
+        """Prepare bounded, source-verified EvidenceRecords for the confirmed outline.
+
+        Call this before build_report_draft. It re-reads only the department-knowledge
+        chunks already selected by the confirmed ReportOutline, verifies their content
+        hashes, and registers immutable EvidenceRecords. The returned excerpts are the
+        only material allowed for factual or inferential draft claims. It never calls
+        Gildata or Tavily and never writes report prose.
+        """
+
+        async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
+            return await call_mcp_tool(server, tool_name, arguments, confirmed)
+
+        try:
+            context = await _prepare_report_draft_context(
+                composition=composition,
+                state=runtime.state,
+                runtime_context=runtime.context,
+                invoke_mcp=invoke,
+            )
+        except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return json.dumps(context.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+
+    @tool("build_report_draft")
+    def build_report_draft(claims: list[DraftClaimProposal], runtime: ToolRuntime) -> str:
+        """Validate structured Claims and save one ledger-backed Markdown ReportDraft.
+
+        Requires a confirmed current ReportOutline and EvidenceRecords prepared by
+        prepare_report_draft_context. Every fact or inference must bind evidence_ids
+        returned by that tool and use the exact confirmed section_id. Recommendations
+        and risks may omit evidence but remain unverified. The server renders citations,
+        unresolved questions, and deterministic quality checks. Relay the returned
+        ReportDraft block verbatim; never embellish or rewrite it. This M3-02 tool does
+        not generate DOCX/PDF, approve the draft, or deliver an artifact.
+        """
+
+        try:
+            draft = _build_report_draft(
+                composition=composition,
+                state=runtime.state,
+                runtime_context=runtime.context,
+                proposals=claims,
+            )
+            contract = composition.save_report_draft(runtime.state, runtime.context, draft)
+        except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return _format_draft(contract.contract_version, contract.status.value, draft)
+
+    @tool("get_current_report_draft")
+    def get_current_report_draft(runtime: ToolRuntime) -> str:
+        """Read the current ledger-backed ReportDraft and return its exact Markdown."""
+
+        item = composition.current_work(runtime.state, runtime.context)
+        if item is None:
+            return "当前员工没有可见的进行中报告任务。"
+        contract = composition.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        )
+        if contract is None:
+            return "当前任务尚未形成 ReportDraft。"
+        try:
+            draft = ReportDraft.from_contract(contract)
+        except (TypeError, ValueError) as exc:
+            return f"当前 ReportDraft 合同无效：{exc}"
+        return _format_draft(contract.contract_version, contract.status.value, draft)
 
     return [
         create_industry_report_work,
@@ -358,6 +450,9 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         build_report_outline,
         get_current_report_outline,
         confirm_report_outline,
+        prepare_report_draft_context,
+        build_report_draft,
+        get_current_report_draft,
     ]
 
 
@@ -505,6 +600,19 @@ def _format_outline(contract_version: int, status: str, outline: ReportOutline) 
     lines.append("该提纲仅含章节、研究问题和 SourceRecord 绑定，不含报告正文。")
     if status == WorkContractStatus.PROVISIONAL.value:
         lines.append(f"如认可，请明确回复“确认 ReportOutline v{contract_version}”。")
+    return "\n".join(lines)
+
+
+def _format_draft(contract_version: int, status: str, draft: ReportDraft) -> str:
+    lines = [
+        f"ReportDraft v{contract_version}，status={status}，"
+        f"bound_report_outline_v{draft.report_outline_version}，"
+        f"quality={draft.quality_status.value}，claims={len(draft.claim_ids)}。",
+        "该版本是可审阅 Markdown 初稿，不是最终批准稿，也未生成 DOCX/PDF。",
+        REPORT_DRAFT_MARKDOWN_BEGIN,
+        draft.markdown,
+        REPORT_DRAFT_MARKDOWN_END,
+    ]
     return "\n".join(lines)
 
 

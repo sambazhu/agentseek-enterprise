@@ -108,6 +108,7 @@ def test_template_renders_without_unrendered_jinja(
         pack_loader = generated / "src" / generated.name / "pack_loader.py"
         report_brief = generated / "src" / generated.name / "report_brief.py"
         report_outline = generated / "src" / generated.name / "report_outline.py"
+        report_draft = generated / "src" / generated.name / "report_draft.py"
         report_research = generated / "src" / generated.name / "report_research.py"
         report_output_guard = generated / "src" / generated.name / "report_output_guard.py"
         external_research = generated / "src" / generated.name / "external_research.py"
@@ -127,11 +128,20 @@ def test_template_renders_without_unrendered_jinja(
             / "references"
             / "securities-industry-internal-research.yaml"
         )
+        report_writing_skill = (
+            generated
+            / "digital_employees"
+            / "industry-report"
+            / "skills"
+            / "report-writing"
+            / "SKILL.md"
+        )
         assert pack_manifest.is_file()
         assert agent_module.is_file()
         assert pack_loader.is_file()
         assert report_brief.is_file()
         assert report_outline.is_file()
+        assert report_draft.is_file()
         assert report_research.is_file()
         assert report_output_guard.is_file()
         assert external_research.is_file()
@@ -143,9 +153,11 @@ def test_template_renders_without_unrendered_jinja(
         assert knowledge_probe.is_file()
         assert knowledge_config.is_file()
         assert research_template.is_file()
+        assert report_writing_skill.is_file()
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
         rendered_python_modules = (
             agent_module,
+            report_draft,
             report_outline,
             report_output_guard,
             work_composition,
@@ -158,6 +170,7 @@ def test_template_renders_without_unrendered_jinja(
         assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
         assert "GeneralPurposeSubagentProfile" not in agent_source
         assert "{{" not in report_brief.read_text(encoding="utf-8")
+        assert "{{" not in report_draft.read_text(encoding="utf-8")
         assert "{{" not in report_outline.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")
         assert "{{" not in report_output_guard.read_text(encoding="utf-8")
@@ -169,6 +182,7 @@ def test_template_renders_without_unrendered_jinja(
         assert "{{" not in knowledge_probe.read_text(encoding="utf-8")
         assert "{{" not in knowledge_config.read_text(encoding="utf-8")
         assert "{{" not in research_template.read_text(encoding="utf-8")
+        assert "{{" not in report_writing_skill.read_text(encoding="utf-8")
         env_example = (generated / ".env.example").read_text(encoding="utf-8")
         assert "AGENTSEEK_WORK_ENABLED=false" in env_example
         assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example

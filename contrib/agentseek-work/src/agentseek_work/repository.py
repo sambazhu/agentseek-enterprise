@@ -16,6 +16,11 @@ from agentseek_work.models import (
     BudgetReservation,
     BudgetReservationStatus,
     BudgetUsage,
+    ClaimRecord,
+    ClaimReviewerStatus,
+    ClaimType,
+    ClaimVerificationStatus,
+    EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
     SnapshotStatus,
@@ -33,8 +38,11 @@ from agentseek_work.schema import (
     work_budget_reservations,
     work_budget_usage,
     work_budgets,
+    work_claim_evidence,
+    work_claims,
     work_contracts,
     work_events,
+    work_evidence,
     work_items,
     work_sources,
 )
@@ -483,6 +491,150 @@ class SQLAlchemyWorkRepository:
                 .all()
             )
         return tuple(_row_to_source(row) for row in rows)
+
+    def put_evidence_record(self, evidence: EvidenceRecord) -> EvidenceRecord:
+        """Register immutable source-derived evidence for a tenant-owned WorkItem."""
+
+        values = _evidence_values(evidence)
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(connection, tenant_id=evidence.tenant_id, work_id=evidence.work_id)
+                _require_source_binding(connection, evidence)
+                existing = (
+                    connection
+                    .execute(
+                        select(work_evidence).where(
+                            work_evidence.c.tenant_id == evidence.tenant_id,
+                            work_evidence.c.evidence_id == evidence.evidence_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    stored = _row_to_evidence(existing)
+                    if stored != evidence:
+                        _raise_evidence_record_conflict(evidence.evidence_id)
+                    return stored
+                connection.execute(insert(work_evidence).values(**values))
+                return evidence
+        except WorkConflictError:
+            raise
+        except IntegrityError as exc:
+            raise WorkConflictError("evidence record conflicts with an existing immutable record") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "evidence record creation failed")
+
+    def get_evidence_record(self, *, tenant_id: str, evidence_id: str) -> EvidenceRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_evidence).where(
+                        work_evidence.c.tenant_id == tenant_id,
+                        work_evidence.c.evidence_id == evidence_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise WorkNotFoundError(f"evidence record {evidence_id} was not found for tenant")
+        return _row_to_evidence(row)
+
+    def list_evidence_records(self, *, tenant_id: str, work_id: str) -> tuple[EvidenceRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_evidence)
+                    .where(
+                        work_evidence.c.tenant_id == tenant_id,
+                        work_evidence.c.work_id == work_id,
+                    )
+                    .order_by(work_evidence.c.created_at, work_evidence.c.evidence_id)
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_row_to_evidence(row) for row in rows)
+
+    def put_claim_record(self, claim: ClaimRecord) -> ClaimRecord:
+        """Register an immutable claim and its ordered EvidenceRecord bindings."""
+
+        values = _claim_values(claim)
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(connection, tenant_id=claim.tenant_id, work_id=claim.work_id)
+                existing = (
+                    connection
+                    .execute(
+                        select(work_claims).where(
+                            work_claims.c.tenant_id == claim.tenant_id,
+                            work_claims.c.claim_id == claim.claim_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    stored = _row_to_claim(connection, existing)
+                    if stored != claim:
+                        _raise_claim_record_conflict(claim.claim_id)
+                    return stored
+                _require_claim_evidence_bindings(connection, claim)
+                connection.execute(insert(work_claims).values(**values))
+                if claim.evidence_ids:
+                    connection.execute(
+                        insert(work_claim_evidence),
+                        [
+                            {"claim_id": claim.claim_id, "evidence_id": evidence_id, "ordinal": ordinal}
+                            for ordinal, evidence_id in enumerate(claim.evidence_ids)
+                        ],
+                    )
+                return claim
+        except WorkConflictError:
+            raise
+        except IntegrityError as exc:
+            raise WorkConflictError("claim record conflicts with an existing immutable record") from exc
+        except StatementError as exc:
+            self._raise_write_error(exc, "claim record creation failed")
+
+    def get_claim_record(self, *, tenant_id: str, claim_id: str) -> ClaimRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_claims).where(
+                        work_claims.c.tenant_id == tenant_id,
+                        work_claims.c.claim_id == claim_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"claim record {claim_id} was not found for tenant")
+            return _row_to_claim(connection, row)
+
+    def list_claim_records(self, *, tenant_id: str, work_id: str) -> tuple[ClaimRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_claims)
+                    .where(
+                        work_claims.c.tenant_id == tenant_id,
+                        work_claims.c.work_id == work_id,
+                    )
+                    .order_by(work_claims.c.created_at, work_claims.c.claim_id)
+                )
+                .mappings()
+                .all()
+            )
+            return tuple(_row_to_claim(connection, row) for row in rows)
 
     def commit_transition(
         self,
@@ -1103,6 +1255,47 @@ def _raise_source_record_conflict(source_id: str) -> NoReturn:
     raise WorkConflictError(f"source record {source_id} already exists with different values")
 
 
+def _raise_evidence_record_conflict(evidence_id: str) -> NoReturn:
+    raise WorkConflictError(f"evidence record {evidence_id} already exists with different values")
+
+
+def _raise_claim_record_conflict(claim_id: str) -> NoReturn:
+    raise WorkConflictError(f"claim record {claim_id} already exists with different values")
+
+
+def _require_source_binding(connection: Connection, evidence: EvidenceRecord) -> None:
+    row = (
+        connection
+        .execute(
+            select(work_sources.c.work_id).where(
+                work_sources.c.tenant_id == evidence.tenant_id,
+                work_sources.c.source_id == evidence.source_id,
+            )
+        )
+        .one_or_none()
+    )
+    if row is None:
+        raise WorkConflictError("evidence source is not registered for this tenant")
+    if str(row.work_id) != evidence.work_id:
+        raise WorkConflictError("evidence source belongs to a different WorkItem")
+
+
+def _require_claim_evidence_bindings(connection: Connection, claim: ClaimRecord) -> None:
+    if not claim.evidence_ids:
+        return
+    rows = connection.execute(
+        select(work_evidence.c.evidence_id).where(
+            work_evidence.c.tenant_id == claim.tenant_id,
+            work_evidence.c.work_id == claim.work_id,
+            work_evidence.c.evidence_id.in_(claim.evidence_ids),
+        )
+    ).all()
+    existing = {str(row.evidence_id) for row in rows}
+    missing = tuple(evidence_id for evidence_id in claim.evidence_ids if evidence_id not in existing)
+    if missing:
+        raise WorkConflictError("claim references evidence outside the tenant-owned WorkItem")
+
+
 def _find_active_work(
     connection: Connection,
     *,
@@ -1618,6 +1811,86 @@ def _row_to_source(row: RowMapping | Mapping[str, Any]) -> SourceRecord:
         retrieval_query_digest=str(row["retrieval_query_digest"]),
         license_terms_ref=_optional_text(row["license_terms_ref"]),
         excerpt_status=ExcerptStatus(str(row["excerpt_status"])),
+        metadata=dict(row["metadata"]),
+    )
+
+
+def _evidence_values(evidence: EvidenceRecord) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence.evidence_id,
+        "work_id": evidence.work_id,
+        "tenant_id": evidence.tenant_id,
+        "source_id": evidence.source_id,
+        "locator": evidence.locator,
+        "excerpt": evidence.excerpt,
+        "structured_value": (
+            None
+            if evidence.structured_value is None
+            else _json_document(dict(evidence.structured_value), "evidence structured_value")
+        ),
+        "unit": evidence.unit,
+        "period": evidence.period,
+        "confidence": evidence.confidence,
+        "extraction_method": evidence.extraction_method,
+        "created_at": evidence.created_at,
+        "metadata": _json_document(dict(evidence.metadata), "evidence metadata"),
+    }
+
+
+def _row_to_evidence(row: RowMapping | Mapping[str, Any]) -> EvidenceRecord:
+    structured = row["structured_value"]
+    return EvidenceRecord(
+        evidence_id=str(row["evidence_id"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        source_id=str(row["source_id"]),
+        locator=str(row["locator"]),
+        excerpt=_optional_text(row["excerpt"]),
+        structured_value=None if structured is None else dict(structured),
+        unit=_optional_text(row["unit"]),
+        period=_optional_text(row["period"]),
+        confidence=float(row["confidence"]),
+        extraction_method=str(row["extraction_method"]),
+        created_at=_aware_datetime(row["created_at"]),
+        metadata=dict(row["metadata"]),
+    )
+
+
+def _claim_values(claim: ClaimRecord) -> dict[str, Any]:
+    return {
+        "claim_id": claim.claim_id,
+        "work_id": claim.work_id,
+        "tenant_id": claim.tenant_id,
+        "section_id": claim.section_id,
+        "statement": claim.statement,
+        "claim_type": claim.claim_type.value,
+        "verification_status": claim.verification_status.value,
+        "reviewer_status": claim.reviewer_status.value,
+        "created_at": claim.created_at,
+        "metadata": _json_document(dict(claim.metadata), "claim metadata"),
+    }
+
+
+def _row_to_claim(connection: Connection, row: RowMapping | Mapping[str, Any]) -> ClaimRecord:
+    evidence_ids = tuple(
+        str(binding.evidence_id)
+        for binding in connection.execute(
+            select(work_claim_evidence.c.evidence_id)
+            .where(work_claim_evidence.c.claim_id == str(row["claim_id"]))
+            .order_by(work_claim_evidence.c.ordinal)
+        )
+    )
+    return ClaimRecord(
+        claim_id=str(row["claim_id"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        section_id=str(row["section_id"]),
+        statement=str(row["statement"]),
+        claim_type=ClaimType(str(row["claim_type"])),
+        evidence_ids=evidence_ids,
+        verification_status=ClaimVerificationStatus(str(row["verification_status"])),
+        reviewer_status=ClaimReviewerStatus(str(row["reviewer_status"])),
+        created_at=_aware_datetime(row["created_at"]),
         metadata=dict(row["metadata"]),
     )
 

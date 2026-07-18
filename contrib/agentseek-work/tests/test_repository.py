@@ -6,6 +6,11 @@ import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 from agentseek_work.models import (
     ActorType,
+    ClaimRecord,
+    ClaimReviewerStatus,
+    ClaimType,
+    ClaimVerificationStatus,
+    EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
     SnapshotStatus,
@@ -25,7 +30,14 @@ from agentseek_work.repository import (
     WorkContractConflictError,
     WorkNotFoundError,
 )
-from agentseek_work.schema import schema_versions, work_contracts, work_sources
+from agentseek_work.schema import (
+    schema_versions,
+    work_claim_evidence,
+    work_claims,
+    work_contracts,
+    work_evidence,
+    work_sources,
+)
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
 from sqlalchemy import Connection, create_engine, insert, inspect
 from sqlalchemy.exc import IntegrityError
@@ -141,6 +153,37 @@ def make_source(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> 
         excerpt_status=ExcerptStatus.STORED,
         license_terms_ref="internal-policy://department-knowledge/v1",
         metadata={"section_ids": ["industry-overview"]},
+    )
+
+
+def make_evidence(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> EvidenceRecord:
+    return EvidenceRecord(
+        evidence_id="evidence_sha256_abc",
+        work_id=work_id,
+        tenant_id=tenant_id,
+        source_id="source_sha256_abc",
+        locator="mcp://department-knowledge/doc-1#chunk-1",
+        excerpt="证券行业数字化转型应提升客户服务和风险控制能力。",
+        confidence=0.9,
+        extraction_method="department_knowledge_chunk",
+        created_at=NOW,
+        metadata={"question_ids": ["q1"]},
+    )
+
+
+def make_claim(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> ClaimRecord:
+    return ClaimRecord(
+        claim_id="claim_sha256_abc",
+        work_id=work_id,
+        tenant_id=tenant_id,
+        section_id="executive-summary",
+        statement="数字化转型应同时提升客户服务和风险控制能力。",
+        claim_type=ClaimType.FACT,
+        evidence_ids=("evidence_sha256_abc",),
+        verification_status=ClaimVerificationStatus.VERIFIED,
+        reviewer_status=ClaimReviewerStatus.PENDING,
+        created_at=NOW,
+        metadata={"report_outline_version": 1},
     )
 
 
@@ -345,6 +388,14 @@ def test_revision_seven_creates_source_ledger_and_fails_closed_on_partial_table(
         apply_migrations(partial)
 
 
+def test_revision_eight_creates_evidence_claim_and_binding_tables() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    table_names = set(inspect(engine).get_table_names())
+    assert {work_evidence.name, work_claims.name, work_claim_evidence.name} <= table_names
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -371,6 +422,35 @@ def test_source_record_round_trip_is_idempotent_tenant_scoped_and_immutable(
         repository.get_source_record(tenant_id="tenant_other", source_id=source.source_id)
     with pytest.raises(WorkNotFoundError):
         repository.put_source_record(replace(source, source_id="source_other", tenant_id="tenant_other"))
+
+
+def test_evidence_and_claim_records_are_immutable_scoped_and_idempotent(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    source = repository.put_source_record(make_source())
+    evidence = make_evidence()
+    claim = make_claim()
+
+    assert repository.put_evidence_record(evidence) == evidence
+    assert repository.put_evidence_record(evidence) == evidence
+    assert repository.get_evidence_record(tenant_id=evidence.tenant_id, evidence_id=evidence.evidence_id) == evidence
+    assert repository.list_evidence_records(tenant_id=evidence.tenant_id, work_id=evidence.work_id) == (evidence,)
+    assert repository.put_claim_record(claim) == claim
+    assert repository.put_claim_record(claim) == claim
+    assert repository.get_claim_record(tenant_id=claim.tenant_id, claim_id=claim.claim_id) == claim
+    assert repository.list_claim_records(tenant_id=claim.tenant_id, work_id=claim.work_id) == (claim,)
+
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_evidence_record(replace(evidence, excerpt="changed"))
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_claim_record(replace(claim, statement="changed"))
+    repository.create_work(
+        make_item(work_id="work_002", idempotency_key="request_002", requester_id="employee_002")
+    )
+    with pytest.raises(WorkConflictError, match="different WorkItem"):
+        repository.put_evidence_record(replace(evidence, evidence_id="evidence_other", work_id="work_002"))
+    assert source.source_id == evidence.source_id
 
 
 def test_different_request_is_rejected_when_same_playbook_scope_is_active(

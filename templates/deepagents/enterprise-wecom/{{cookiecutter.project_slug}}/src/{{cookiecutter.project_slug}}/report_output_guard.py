@@ -7,6 +7,11 @@ from hashlib import sha256
 from agentseek_enterprise.observability import emit_enterprise_event
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
+from {{ cookiecutter.project_slug }}.report_draft import (
+    REPORT_DRAFT_MARKDOWN_BEGIN,
+    REPORT_DRAFT_MARKDOWN_END,
+)
+
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 _GENERIC_CONFIRM_RE = re.compile(
     r"^(?:确认|同意|批准|认可|可以|好的|好|ok|okay)[。！!\s]*$",
@@ -91,12 +96,31 @@ _REPORT_OUTLINE_LEDGER_TOOLS = frozenset({
     "get_current_work_status",
     "confirm_report_outline",
 })
+_REPORT_DRAFT_REF_RE = re.compile(
+    r"(?:report\s*draft|reportdraft|报告初稿)\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?",
+    re.IGNORECASE,
+)
+_REPORT_DRAFT_LEDGER_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:生成|构建|创建|保存|更新|修改|修订)|"
+    r"status\s*[=:：]\s*(?:provisional|confirmed)|"
+    r"状态\s*[=:：]?\s*(?:provisional|confirmed|待确认|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_DRAFT_STATUS_SUCCESS_RE = re.compile(
+    r"(?:ReportDraft\s+v|当前\s+ReportDraft[：:]\s*v)"
+    r"(\d+)[，,]\s*status=(provisional|confirmed)",
+    re.IGNORECASE,
+)
+_REPORT_DRAFT_LEDGER_TOOLS = frozenset({
+    "build_report_draft",
+    "get_current_report_draft",
+    "get_current_work_status",
+})
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
-    "当前任务仍处于 M2 需求确认、内部研究和来源登记阶段，尚未启用报告正文生成。"
-    "这次模型输出已被运行时守卫拦截，不作为报告或事实交付。"
-    "请明确回复“确认 ReportBrief vN”，或从 get_report_research_gaps 返回的精确版本选项中选择一项。"
-    "如果内部研究已无缺口，当前阶段只能返回覆盖结果，不会即兴编写报告。"
+    "未检测到本轮账本支持的 ReportDraft，因此这次模型正文已被运行时守卫拦截，"
+    "不作为报告或事实交付。请先确认准确的 ReportOutline，再调用 "
+    "prepare_report_draft_context 和 build_report_draft；DOCX/PDF 与最终批准尚未启用。"
 )
 REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "未检测到本轮 save_report_brief 的成功账本写入，因此不能声称 ReportBrief "
@@ -109,6 +133,11 @@ REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "get_current_report_outline、get_current_work_status 或 confirm_report_outline，"
     "并以工具返回的版本和状态为准。"
 )
+REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到本轮 ReportDraft 工具返回的匹配账本状态，因此不能声称报告初稿已生成或保存。"
+    "当前初稿账本保持不变；请调用 build_report_draft、get_current_report_draft 或 "
+    "get_current_work_status，并以工具返回的版本和 Markdown 为准。"
+)
 
 
 def enforce_m2_output_guard(
@@ -117,7 +146,7 @@ def enforce_m2_output_guard(
     *,
     event_sink: Callable[..., object] = emit_enterprise_event,
 ) -> str:
-    """Block unaudited report prose while the active WorkItem is still in M2 intake."""
+    """Allow only ledger-backed report prose for an active report WorkItem."""
 
     work = _active_m2_work(result)
     if work is None:
@@ -125,15 +154,20 @@ def enforce_m2_output_guard(
     latest_user_message = _latest_human_message(result)
     signals = _output_shape_signals(output)
     tool_sequence = _tool_call_sequence(result)
+    verified_draft_output = _successful_report_draft_output(result)
     reason = (
         "generic_confirmation"
         if _GENERIC_CONFIRM_RE.fullmatch(latest_user_message.strip())
+        else "ledger_backed_report_draft"
+        if verified_draft_output
         else "report_body"
         if _looks_like_report_body(output, signals=signals)
         else "unverified_report_brief_write"
         if _claims_unverified_report_brief_write(result, output)
         else "unverified_report_outline_write"
         if _claims_unverified_report_outline_write(result, output)
+        else "unverified_report_draft_write"
+        if _claims_unverified_report_draft_write(result, output)
         else ""
     )
     _emit_guard_event(
@@ -149,6 +183,10 @@ def enforce_m2_output_guard(
         return REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_outline_write":
         return REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_draft_write":
+        return REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "ledger_backed_report_draft":
+        return verified_draft_output
     return M2_OUTPUT_BLOCKED_MESSAGE if reason else output
 
 
@@ -416,6 +454,96 @@ def _record_report_outline_states(states: dict[int, set[str]], content: str) -> 
         states.setdefault(int(version), set()).add(status.lower())
     for version in _REPORT_OUTLINE_CONFIRM_SUCCESS_RE.findall(content):
         states.setdefault(int(version), set()).add("confirmed")
+
+
+def _claims_unverified_report_draft_write(result: object, output: str) -> bool:
+    claims = _report_draft_claims(output)
+    if not claims:
+        return False
+    ledger_states = _successful_report_draft_states(result)
+    return any(
+        version not in ledger_states
+        or (
+            required_status in {"provisional", "confirmed"}
+            and required_status not in ledger_states[version]
+        )
+        for version, required_status in claims
+    )
+
+
+def _report_draft_claims(output: str) -> tuple[tuple[int, str], ...]:
+    claims: list[tuple[int, str]] = []
+    for match in _REPORT_DRAFT_REF_RE.finditer(output):
+        segment = _claim_line(output, match)
+        if not _REPORT_DRAFT_LEDGER_CLAIM_RE.search(segment):
+            continue
+        status_match = re.search(r"(?:status|状态)\s*[=:：]?\s*(provisional|confirmed)", segment, re.I)
+        claims.append((int(match.group(1)), status_match.group(1).lower() if status_match else "recorded"))
+    return tuple(claims)
+
+
+def _successful_report_draft_output(result: object) -> str:
+    """Return the last exact ledger draft block produced by a trusted draft tool."""
+
+    if not isinstance(result, Mapping):
+        return ""
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return ""
+    call_ids: set[str] = set()
+    verified = ""
+    for message in messages:
+        if _is_human_message(message):
+            call_ids.clear()
+            verified = ""
+            continue
+        call_ids.update(_report_draft_call_ids(message, include_status=False))
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name not in {"build_report_draft", "get_current_report_draft"} and tool_call_id not in call_ids:
+            continue
+        if (
+            _REPORT_DRAFT_STATUS_SUCCESS_RE.search(content)
+            and REPORT_DRAFT_MARKDOWN_BEGIN in content
+            and REPORT_DRAFT_MARKDOWN_END in content
+        ):
+            verified = content
+    return verified
+
+
+def _successful_report_draft_states(result: object) -> dict[int, set[str]]:
+    if not isinstance(result, Mapping):
+        return {}
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return {}
+    call_ids: set[str] = set()
+    states: dict[int, set[str]] = {}
+    for message in messages:
+        if _is_human_message(message):
+            call_ids.clear()
+            states.clear()
+            continue
+        call_ids.update(_report_draft_call_ids(message, include_status=True))
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name not in _REPORT_DRAFT_LEDGER_TOOLS and tool_call_id not in call_ids:
+            continue
+        for version, status in _REPORT_DRAFT_STATUS_SUCCESS_RE.findall(content):
+            states.setdefault(int(version), set()).add(status.lower())
+    return states
+
+
+def _report_draft_call_ids(message: object, *, include_status: bool) -> tuple[str, ...]:
+    raw_calls = _message_tool_calls(message)
+    if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
+        return ()
+    tool_names = _REPORT_DRAFT_LEDGER_TOOLS if include_status else {"build_report_draft", "get_current_report_draft"}
+    return tuple(
+        call_id
+        for call in raw_calls
+        if isinstance(call, Mapping)
+        and str(call.get("name") or "") in tool_names
+        and (call_id := str(call.get("id") or "").strip())
+    )
 
 
 def _tool_result_parts(message: object) -> tuple[str, str, str]:

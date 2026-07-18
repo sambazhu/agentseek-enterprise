@@ -5,6 +5,7 @@ from typing import Any
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
+    REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
     enforce_m2_output_guard,
 )
@@ -97,6 +98,51 @@ def test_markdown_report_body_and_unsupported_figures_are_blocked() -> None:
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == M2_OUTPUT_BLOCKED_MESSAGE
+
+
+def test_ledger_backed_report_draft_replaces_model_rewrite_with_exact_tool_output() -> None:
+    tool_output = """ReportDraft v1，status=provisional，bound_report_outline_v1，quality=warning，claims=1。
+该版本是可审阅 Markdown 初稿，不是最终批准稿，也未生成 DOCX/PDF。
+[REPORT_DRAFT_MARKDOWN]
+# 证券行业报告
+
+## 执行摘要
+
+证据支持的初稿陈述。[E1]
+[/REPORT_DRAFT_MARKDOWN]"""
+    model_output = "# 完整报告正文\n\n模型擅自改写的内容。"
+    result = _result("生成初稿", model_output)
+    result["messages"] = [
+        HumanMessage(content="生成初稿"),
+        AIMessage(content="", tool_calls=[{
+            "name": "build_report_draft",
+            "args": {},
+            "id": "call_draft",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=tool_output,
+            name="build_report_draft",
+            tool_call_id="call_draft",
+        ),
+        AIMessage(content=model_output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        model_output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == tool_output
+
+
+def test_report_draft_claim_without_ledger_result_is_blocked() -> None:
+    output = "ReportDraft v9 已生成并保存，稍后可以下载。"
+
+    assert enforce_m2_output_guard(
+        _result("报告进度", output),
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
 
 
 def test_versioned_confirmation_and_operational_reply_are_allowed() -> None:

@@ -144,8 +144,15 @@ materials, or continue with visible gaps. `resolve_report_research_gaps` accepts
 only an unambiguous choice in the latest employee message for the exact
 ReportBrief version. The choice is stored as a confirmed, versioned
 `report-research-gap-decision` WorkContract. Gildata/Tavily results are registered
-as provenance-only SourceRecords without storing the raw provider response;
-Evidence, Claims, and report prose remain M3/M4 work.
+as provenance-only SourceRecords without storing the raw provider response.
+
+M3-02 adds an evidence-backed provisional ReportDraft. The runtime re-reads only
+selected internal knowledge chunks, verifies their content hashes, persists
+bounded EvidenceRecords, and accepts structured Claims whose factual and
+inferential statements cite current-section Evidence IDs. It then renders the
+Markdown deterministically and returns the exact ledger-backed draft through the
+output guard. Semantic or human Claim verification, draft approval, DOCX/PDF
+rendering, and delivery remain later work.
 
 Pack `1.2.0` makes the report topic itself a first-class evidence question. Its
 `report_topic` query strategy searches the exact ReportBrief title before the

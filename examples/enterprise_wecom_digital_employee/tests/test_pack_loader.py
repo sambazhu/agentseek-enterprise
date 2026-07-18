@@ -49,12 +49,12 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.3.0"
+    assert loaded.pack_version == "1.4.0"
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
-    assert loaded.profile.skill_refs == ("report-intake@1.1.0",)
+    assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.0.0")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.2.0"
+    assert loaded.profile.profile_version == "1.3.0"
     assert len(loaded.profile.knowledge_refs) == 1
     knowledge = loaded.profile.knowledge_refs[0]
     assert knowledge.server == "department-knowledge"
@@ -62,7 +62,10 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert knowledge.owning_org == "战略发展部"
     assert knowledge.retrieval_modes == ("keyword", "semantic", "hybrid")
     assert knowledge.default_mode == "hybrid"
-    assert loaded.skill_digests == ("sha256:a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e",)
+    assert loaded.skill_digests == (
+        "sha256:a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e",
+        "sha256:6bcf67db9141d946d59d0b9877054da961dda87f3cebd2a214379d732ce04ca7",
+    )
     assert loaded.playbooks[0].entrypoint.endswith("reports.playbook:build_playbook")
     assert loaded.playbooks[0].research_template_ref.startswith("skill://report-intake@1.1.0/")
     assert loaded.playbooks[0].research_template_path.endswith("securities-industry-internal-research.yaml")
@@ -89,6 +92,7 @@ def test_snapshot_is_content_addressed_retrievable_and_excludes_binary_asset(
     assert (artifact_root / "pack.yaml").is_file()
     assert (artifact_root / "profile.yaml").is_file()
     assert (artifact_root / "skills" / "report-intake" / "SKILL.md").is_file()
+    assert (artifact_root / "skills" / "report-writing" / "SKILL.md").is_file()
     assert (
         artifact_root
         / "skills"
@@ -110,8 +114,9 @@ def test_skill_resolver_materializes_only_profile_selected_text(tmp_path: Path) 
 
     selected = materialize_profile_skills(loaded, skills_root)
 
-    assert selected == (skills_root / "report-intake",)
+    assert selected == (skills_root / "report-intake", skills_root / "report-writing")
     assert (skills_root / "report-intake" / "SKILL.md").is_file()
+    assert (skills_root / "report-writing" / "SKILL.md").is_file()
     assert not tuple(skills_root.rglob("*.docx"))
     assert not (skills_root / "report-policy.yaml").exists()
 

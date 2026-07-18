@@ -4,6 +4,11 @@ from typing import Any, cast
 
 import pytest
 from agentseek_work.models import (
+    ClaimRecord,
+    ClaimReviewerStatus,
+    ClaimType,
+    ClaimVerificationStatus,
+    EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
     SnapshotStatus,
@@ -171,3 +176,37 @@ def test_source_record_is_immutable_and_validates_provenance() -> None:
         replace(source, allowed_uses=("research", "research"))
     with pytest.raises(ValueError, match="timezone-aware"):
         replace(source, retrieved_at=datetime(2026, 7, 12))
+
+
+def test_evidence_and_claim_records_validate_governed_bindings() -> None:
+    evidence = EvidenceRecord(
+        evidence_id="evidence_sha256_abc",
+        work_id="work_001",
+        tenant_id="tenant_001",
+        source_id="source_sha256_abc",
+        locator="mcp://department-knowledge/doc-1#chunk-1",
+        excerpt="证券行业数字化转型应提升客户服务和风险控制能力。",
+        confidence=0.9,
+        extraction_method="department_knowledge_chunk",
+        created_at=NOW,
+        metadata={"question_ids": ["q1"]},
+    )
+    claim = ClaimRecord(
+        claim_id="claim_sha256_abc",
+        work_id="work_001",
+        tenant_id="tenant_001",
+        section_id="executive-summary",
+        statement="数字化转型应同时提升客户服务和风险控制能力。",
+        claim_type=ClaimType.FACT,
+        evidence_ids=(evidence.evidence_id,),
+        verification_status=ClaimVerificationStatus.VERIFIED,
+        reviewer_status=ClaimReviewerStatus.PENDING,
+        created_at=NOW,
+    )
+
+    assert evidence.metadata["question_ids"] == ["q1"]
+    assert claim.evidence_ids == (evidence.evidence_id,)
+    with pytest.raises(ValueError, match="requires an excerpt"):
+        replace(evidence, excerpt=None)
+    with pytest.raises(ValueError, match="requires evidence_ids"):
+        replace(claim, evidence_ids=())
