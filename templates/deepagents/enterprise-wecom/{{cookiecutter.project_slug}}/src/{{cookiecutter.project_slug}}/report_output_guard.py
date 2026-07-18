@@ -56,7 +56,8 @@ _REPORT_OUTLINE_CONFIRMED_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_STATUS_SUCCESS_RE = re.compile(
-    r"ReportOutline\s+v(\d+)[，,]\s*status=(provisional|confirmed)",
+    r"(?:ReportOutline\s+v|当前\s+ReportOutline[：:]\s*v)"
+    r"(\d+)[，,]\s*status=(provisional|confirmed)",
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_CONFIRM_SUCCESS_RE = re.compile(
@@ -66,6 +67,7 @@ _REPORT_OUTLINE_CONFIRM_SUCCESS_RE = re.compile(
 _REPORT_OUTLINE_LEDGER_TOOLS = frozenset({
     "build_report_outline",
     "get_current_report_outline",
+    "get_current_work_status",
     "confirm_report_outline",
 })
 
@@ -83,7 +85,8 @@ REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE = (
 REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "未检测到本轮 ReportOutline 工具返回的匹配账本状态，因此不能声称报告提纲已生成、"
     "保存或确认。当前提纲账本保持不变；请调用 build_report_outline、"
-    "get_current_report_outline 或 confirm_report_outline，并以工具返回的版本和状态为准。"
+    "get_current_report_outline、get_current_work_status 或 confirm_report_outline，"
+    "并以工具返回的版本和状态为准。"
 )
 
 

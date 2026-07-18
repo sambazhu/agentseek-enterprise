@@ -296,6 +296,88 @@ def test_report_outline_read_claim_allows_matching_current_ledger_result() -> No
     ) == output
 
 
+def test_report_outline_claim_allows_matching_work_status_result() -> None:
+    output = "当前 ReportOutline v2 已确认，绑定 ReportBrief v6。"
+    result = _result("查看当前工作状态", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前工作状态"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_work_status",
+            "args": {},
+            "id": "call_status",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "当前 WorkItem：work_test，status=draft，phase=intake，version=0。\n"
+                "当前 ReportOutline：v2，status=confirmed，"
+                "bound_report_brief_v6，unresolved=1。"
+            ),
+            name="get_current_work_status",
+            tool_call_id="call_status",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_work_status_provisional_outline_cannot_support_confirmed_claim() -> None:
+    output = "当前 ReportOutline v2 已确认。"
+    result = _result("查看当前工作状态", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前工作状态"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_work_status",
+            "args": {},
+            "id": "call_status",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="当前 ReportOutline：v2，status=provisional，bound_report_brief_v6。",
+            name="get_current_work_status",
+            tool_call_id="call_status",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_work_status_outline_claim_rejects_mismatched_version() -> None:
+    output = "当前 ReportOutline v3 已确认。"
+    result = _result("查看当前工作状态", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前工作状态"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_work_status",
+            "args": {},
+            "id": "call_status",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="当前 ReportOutline：v2，status=confirmed，bound_report_brief_v6。",
+            name="get_current_work_status",
+            tool_call_id="call_status",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
 def test_coverage_table_and_section_labels_are_allowed_with_safe_diagnostics() -> None:
     events: list[tuple[str, dict[str, object]]] = []
 
