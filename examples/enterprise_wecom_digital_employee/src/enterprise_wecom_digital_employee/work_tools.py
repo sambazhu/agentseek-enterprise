@@ -188,8 +188,10 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
     def confirm_report_brief(expected_version: int, runtime: ToolRuntime) -> str:
         """Confirm the exact current ReportBrief version after explicit requester approval.
 
-        Call only when the employee's latest message clearly confirms the exact
-        ReportBrief summary and version. Never infer confirmation from earlier turns.
+        When the latest employee message names a ReportBrief version with confirmation
+        intent, call this tool with that version. Do not validate case, spacing, or
+        spelling yourself; the server parser is the sole authority and fails closed.
+        Never infer confirmation from earlier turns.
         """
 
         try:
@@ -323,10 +325,12 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
     def confirm_report_outline(expected_version: int, runtime: ToolRuntime) -> str:
         """Confirm the exact current ReportOutline after explicit requester approval.
 
-        Call only when the employee's latest message explicitly confirms the exact
-        ReportOutline version. The server rechecks the current ReportBrief, gap
-        decision, and source-set digest before confirmation. Confirmation permits
-        the later draft slice; this tool itself never creates report prose.
+        When the latest employee message names a ReportOutline version with confirmation
+        intent, call this tool with that version. Do not validate case, spacing, or
+        spelling yourself; the server parser is the sole authority and fails closed.
+        The server also rechecks the current ReportBrief, gap decision, and source-set
+        digest. Confirmation permits the later draft slice; this tool itself never
+        creates report prose.
         """
 
         try:

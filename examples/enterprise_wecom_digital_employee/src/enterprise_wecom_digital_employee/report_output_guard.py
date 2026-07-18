@@ -38,7 +38,23 @@ _REPORT_BRIEF_WRITE_CLAIM_RE = re.compile(
     r"输出格式.{0,12}(?:改为|更新为|设为)",
     re.IGNORECASE,
 )
+_REPORT_BRIEF_CONFIRMED_CLAIM_RE = re.compile(
+    r"status\s*[=:：]\s*confirmed|"
+    r"状态\s*[=:：]?\s*(?:confirmed|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_BRIEF_PROVISIONAL_CLAIM_RE = re.compile(
+    r"status\s*[=:：]\s*provisional|"
+    r"状态\s*[=:：]?\s*(?:provisional|待确认)",
+    re.IGNORECASE,
+)
 _REPORT_BRIEF_SAVE_SUCCESS_RE = re.compile(r"ReportBrief\s+v(\d+)\s+已保存")
+_REPORT_BRIEF_STATUS_SUCCESS_RE = re.compile(
+    r"(?:ReportBrief\s+v|当前\s+ReportBrief[：:]\s*v)"
+    r"(\d+)(?:\s+已保存)?[，,]\s*(?:status|状态)\s*[=:：]\s*(provisional|confirmed)",
+    re.IGNORECASE,
+)
+_REPORT_BRIEF_LEDGER_TOOLS = frozenset({"save_report_brief", "get_current_work_status"})
 _REPORT_OUTLINE_REF_RE = re.compile(
     r"(?:report\s*outline|reportoutline|报告提纲)\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?",
     re.IGNORECASE,
@@ -53,6 +69,11 @@ _REPORT_OUTLINE_LEDGER_CLAIM_RE = re.compile(
 _REPORT_OUTLINE_CONFIRMED_CLAIM_RE = re.compile(
     r"(?:已|已经)(?:由.{0,24})?确认|status\s*[=:：]\s*confirmed|"
     r"状态\s*[=:：]?\s*(?:confirmed|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_OUTLINE_PROVISIONAL_CLAIM_RE = re.compile(
+    r"status\s*[=:：]\s*provisional|"
+    r"状态\s*[=:：]?\s*(?:provisional|待确认)",
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_STATUS_SUCCESS_RE = re.compile(
@@ -246,39 +267,75 @@ def _message_tool_calls(message: object) -> object:
 
 
 def _claims_unverified_report_brief_write(result: object, output: str) -> bool:
-    if not _REPORT_BRIEF_WRITE_CLAIM_RE.search(output) or not _REPORT_BRIEF_REF_RE.search(output):
+    claims = _report_brief_claims(output)
+    if not claims:
         return False
-    claimed_versions = {int(value) for value in _REPORT_BRIEF_REF_RE.findall(output)}
-    saved_versions = _successful_report_brief_save_versions(result)
-    return not saved_versions or not claimed_versions.issubset(saved_versions)
+    ledger_states = _successful_report_brief_states(result)
+    return any(
+        version not in ledger_states
+        or (
+            required_status in {"provisional", "confirmed"}
+            and required_status not in ledger_states[version]
+        )
+        for version, required_status in claims
+    )
 
 
-def _successful_report_brief_save_versions(result: object) -> set[int]:
+def _report_brief_claims(output: str) -> tuple[tuple[int, str], ...]:
+    matches = tuple(_REPORT_BRIEF_REF_RE.finditer(output))
+    claims: list[tuple[int, str]] = []
+    for index, match in enumerate(matches):
+        start = max(0, match.start() - 32)
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+        segment = output[start:end]
+        if not _REPORT_BRIEF_WRITE_CLAIM_RE.search(segment):
+            continue
+        status = (
+            "confirmed"
+            if _REPORT_BRIEF_CONFIRMED_CLAIM_RE.search(segment)
+            else "provisional"
+            if _REPORT_BRIEF_PROVISIONAL_CLAIM_RE.search(segment)
+            else "recorded"
+        )
+        claims.append((int(match.group(1)), status))
+    return tuple(claims)
+
+
+def _successful_report_brief_states(result: object) -> dict[int, set[str]]:
     if not isinstance(result, Mapping):
-        return set()
+        return {}
     messages = result.get("messages")
     if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
-        return set()
-    save_call_ids: set[str] = set()
-    versions: set[int] = set()
+        return {}
+    ledger_call_ids: set[str] = set()
+    states: dict[int, set[str]] = {}
     for message in messages:
         if _is_human_message(message):
-            save_call_ids.clear()
-            versions.clear()
+            ledger_call_ids.clear()
+            states.clear()
             continue
-        raw_calls = _message_tool_calls(message)
-        if isinstance(raw_calls, Sequence) and not isinstance(raw_calls, (str, bytes)):
-            for call in raw_calls:
-                if not isinstance(call, Mapping) or str(call.get("name") or "") != "save_report_brief":
-                    continue
-                call_id = str(call.get("id") or "").strip()
-                if call_id:
-                    save_call_ids.add(call_id)
+        ledger_call_ids.update(_report_brief_call_ids(message))
         tool_name, tool_call_id, content = _tool_result_parts(message)
-        if tool_name != "save_report_brief" and tool_call_id not in save_call_ids:
+        if tool_name not in _REPORT_BRIEF_LEDGER_TOOLS and tool_call_id not in ledger_call_ids:
             continue
-        versions.update(int(value) for value in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content))
-    return versions
+        for version in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content):
+            states.setdefault(int(version), set()).add("recorded")
+        for version, status in _REPORT_BRIEF_STATUS_SUCCESS_RE.findall(content):
+            states.setdefault(int(version), set()).add(status.lower())
+    return states
+
+
+def _report_brief_call_ids(message: object) -> tuple[str, ...]:
+    raw_calls = _message_tool_calls(message)
+    if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
+        return ()
+    return tuple(
+        call_id
+        for call in raw_calls
+        if isinstance(call, Mapping)
+        and str(call.get("name") or "") in _REPORT_BRIEF_LEDGER_TOOLS
+        and (call_id := str(call.get("id") or "").strip())
+    )
 
 
 def _claims_unverified_report_outline_write(result: object, output: str) -> bool:
@@ -288,7 +345,10 @@ def _claims_unverified_report_outline_write(result: object, output: str) -> bool
     ledger_states = _successful_report_outline_states(result)
     return any(
         version not in ledger_states
-        or (required_status == "confirmed" and "confirmed" not in ledger_states[version])
+        or (
+            required_status in {"provisional", "confirmed"}
+            and required_status not in ledger_states[version]
+        )
         for version, required_status in claims
     )
 
@@ -302,7 +362,13 @@ def _report_outline_claims(output: str) -> tuple[tuple[int, str], ...]:
         segment = output[start:end]
         if not _REPORT_OUTLINE_LEDGER_CLAIM_RE.search(segment):
             continue
-        status = "confirmed" if _REPORT_OUTLINE_CONFIRMED_CLAIM_RE.search(segment) else "recorded"
+        status = (
+            "confirmed"
+            if _REPORT_OUTLINE_CONFIRMED_CLAIM_RE.search(segment)
+            else "provisional"
+            if _REPORT_OUTLINE_PROVISIONAL_CLAIM_RE.search(segment)
+            else "recorded"
+        )
         claims.append((int(match.group(1)), status))
     return tuple(claims)
 

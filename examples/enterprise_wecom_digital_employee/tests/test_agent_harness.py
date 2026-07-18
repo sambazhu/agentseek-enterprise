@@ -78,3 +78,5 @@ def test_legacy_mode_keeps_generic_mcp_adapter_for_backward_compatibility() -> N
 def test_industry_report_prompt_refuses_unrelated_weather_and_forbids_mcp_name_invention() -> None:
     assert "Never invent or reconstruct an MCP server name" in agent_module.SYSTEM_PROMPT
     assert "unrelated personal utility requests such as weather" in agent_module.SYSTEM_PROMPT
+    assert "This wording rule applies only to your guidance" in agent_module.SYSTEM_PROMPT
+    assert "The server-side confirmation parser is the sole authority" in agent_module.SYSTEM_PROMPT
