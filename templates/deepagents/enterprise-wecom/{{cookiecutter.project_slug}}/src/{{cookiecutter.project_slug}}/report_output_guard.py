@@ -34,18 +34,18 @@ _REPORT_BRIEF_REF_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_BRIEF_WRITE_CLAIM_RE = re.compile(
-    r"(?:已|已经)?(?:保存|更新|修改|修订)|(?:保存|更新|修改|修订)(?:为|到)|"
+    r"(?:已|已经)?(?:保存|暂存|更新|修改|修订)|(?:保存|暂存|更新|修改|修订)(?:为|到)|"
     r"输出格式.{0,12}(?:改为|更新为|设为)",
     re.IGNORECASE,
 )
 _REPORT_BRIEF_CONFIRMED_CLAIM_RE = re.compile(
-    r"status\s*[=:：]\s*confirmed|"
+    r"\bconfirmed\b|已确认|"
     r"状态\s*[=:：]?\s*(?:confirmed|已确认)",
     re.IGNORECASE,
 )
 _REPORT_BRIEF_PROVISIONAL_CLAIM_RE = re.compile(
-    r"status\s*[=:：]\s*provisional|"
-    r"状态\s*[=:：]?\s*(?:provisional|待确认)",
+    r"\bprovisional\b|待确认|暂存|"
+    r"状态\s*[=:：]?\s*(?:provisional|待确认|暂存)",
     re.IGNORECASE,
 )
 _REPORT_BRIEF_SAVE_SUCCESS_RE = re.compile(r"ReportBrief\s+v(\d+)\s+已保存")
@@ -60,7 +60,7 @@ _REPORT_OUTLINE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_LEDGER_CLAIM_RE = re.compile(
-    r"(?:已|已经)(?:生成|创建|保存|更新|修改|修订)|"
+    r"(?:已|已经)(?:生成|构建|创建|保存|更新|修改|修订)|"
     r"(?:已|已经)(?:由.{0,24})?确认|"
     r"status\s*[=:：]\s*(?:provisional|confirmed)|"
     r"状态\s*[=:：]?\s*(?:provisional|confirmed|待确认|已确认)",
@@ -72,8 +72,8 @@ _REPORT_OUTLINE_CONFIRMED_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_PROVISIONAL_CLAIM_RE = re.compile(
-    r"status\s*[=:：]\s*provisional|"
-    r"状态\s*[=:：]?\s*(?:provisional|待确认)",
+    r"\bprovisional\b|待确认|暂定|"
+    r"状态\s*[=:：]?\s*(?:provisional|待确认|暂定)",
     re.IGNORECASE,
 )
 _REPORT_OUTLINE_STATUS_SUCCESS_RE = re.compile(
@@ -284,10 +284,8 @@ def _claims_unverified_report_brief_write(result: object, output: str) -> bool:
 def _report_brief_claims(output: str) -> tuple[tuple[int, str], ...]:
     matches = tuple(_REPORT_BRIEF_REF_RE.finditer(output))
     claims: list[tuple[int, str]] = []
-    for index, match in enumerate(matches):
-        start = max(0, match.start() - 32)
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
-        segment = output[start:end]
+    for match in matches:
+        segment = _claim_line(output, match)
         if not _REPORT_BRIEF_WRITE_CLAIM_RE.search(segment):
             continue
         status = (
@@ -356,10 +354,8 @@ def _claims_unverified_report_outline_write(result: object, output: str) -> bool
 def _report_outline_claims(output: str) -> tuple[tuple[int, str], ...]:
     matches = tuple(_REPORT_OUTLINE_REF_RE.finditer(output))
     claims: list[tuple[int, str]] = []
-    for index, match in enumerate(matches):
-        start = max(0, match.start() - 32)
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
-        segment = output[start:end]
+    for match in matches:
+        segment = _claim_line(output, match)
         if not _REPORT_OUTLINE_LEDGER_CLAIM_RE.search(segment):
             continue
         status = (
@@ -371,6 +367,14 @@ def _report_outline_claims(output: str) -> tuple[tuple[int, str], ...]:
         )
         claims.append((int(match.group(1)), status))
     return tuple(claims)
+
+
+def _claim_line(output: str, match: re.Match[str]) -> str:
+    """Return only the current contract line so adjacent statuses cannot leak in."""
+
+    start = output.rfind("\n", 0, match.start()) + 1
+    end = output.find("\n", match.end())
+    return output[start:] if end < 0 else output[start:end]
 
 
 def _successful_report_outline_states(result: object) -> dict[int, set[str]]:

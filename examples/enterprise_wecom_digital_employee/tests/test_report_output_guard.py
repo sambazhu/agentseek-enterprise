@@ -430,6 +430,81 @@ def test_work_status_provisional_outline_allows_matching_recorded_claim() -> Non
     ) == output
 
 
+def test_adjacent_confirmed_brief_does_not_contaminate_provisional_outline() -> None:
+    output = (
+        "ReportBrief v1 已确认。\n"
+        "ReportOutline v1 已构建，暂定（provisional）。"
+    )
+    result = _result("查看当前工作状态", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前工作状态"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_work_status",
+            "args": {},
+            "id": "call_status",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "当前 ReportBrief：v1，status=confirmed。\n"
+                "当前 ReportOutline：v1，status=provisional，"
+                "bound_report_brief_v1。"
+            ),
+            name="get_current_work_status",
+            tool_call_id="call_status",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_adjacent_confirmed_outline_does_not_contaminate_provisional_brief() -> None:
+    output = (
+        "ReportOutline v1 已确认。\n"
+        "ReportBrief v1 已暂存（provisional）。"
+    )
+    result = _result("查看当前工作状态", output)
+    result["messages"] = [
+        HumanMessage(content="查看当前工作状态"),
+        AIMessage(content="", tool_calls=[{
+            "name": "get_current_work_status",
+            "args": {},
+            "id": "call_status",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "当前 ReportOutline：v1，status=confirmed，bound_report_brief_v1。\n"
+                "当前 ReportBrief：v1，status=provisional。"
+            ),
+            name="get_current_work_status",
+            tool_call_id="call_status",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_unverified_constructed_tentative_outline_is_blocked() -> None:
+    output = "ReportOutline v999 已构建，暂定。"
+
+    assert enforce_m2_output_guard(
+        _result("查看当前工作状态", output),
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
 def test_work_status_provisional_outline_cannot_support_confirmed_claim() -> None:
     output = "当前 ReportOutline v2 已确认。"
     result = _result("查看当前工作状态", output)

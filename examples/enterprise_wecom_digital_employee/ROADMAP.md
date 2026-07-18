@@ -623,7 +623,8 @@ M3 先以运行时前置切片启动：
    确认引导也统一为可照抄的 `确认 ReportBrief vN` / `确认 ReportOutline vN`；
    严格版本门保持不变，不接受在 Brief 和 Outline 版本号可能相同时有歧义的 `确认 vN`。
    provisional 状态查询只信任 `get_current_work_status` 返回的同版本、同状态 Brief/Outline
-   账本证据；模型不自行校验确认语的大小写、空格或拼写，服务端 parser 保持唯一裁决。
+   账本证据，claim 按合同所在行解析，不让相邻 Brief/Outline 的状态串扰；模型不自行
+   校验确认语的大小写、空格或拼写，服务端 parser 保持唯一裁决。
 5. **M3-02 及以后**：基于 confirmed ReportOutline 和 SourceRecord 的初稿、质量门与 Markdown。
 
    - 保留观察：DeepSeek 可能在员工确认 `continue_with_gaps` 后同轮调用 `build_report_outline`；只要
