@@ -103,6 +103,11 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             lines.append(
                 f"当前 ReportBrief：v{brief.get('contract_version')}，status={brief.get('status')}。"
             )
+            if brief.get("status") == WorkContractStatus.PROVISIONAL.value:
+                lines.append(
+                    "如认可，请明确回复"
+                    f"“确认 ReportBrief v{brief.get('contract_version')}”；不要只回复“确认 vN”。"
+                )
         decision = summary.get("research_gap_decision")
         if isinstance(decision, Mapping):
             lines.append(
@@ -120,6 +125,11 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 f"bound_report_brief_v{outline.get('report_brief_version')}，"
                 f"unresolved={outline.get('unresolved_question_count')}。"
             )
+            if outline.get("status") == WorkContractStatus.PROVISIONAL.value:
+                lines.append(
+                    "如认可，请明确回复"
+                    f"“确认 ReportOutline v{outline.get('contract_version')}”；不要只回复“确认 vN”。"
+                )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -170,7 +180,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"主题：{brief.title}；研究范围：{brief.research_scope.value}；"
             f"目标受众：{'、'.join(brief.target_audience)}；"
             f"报告覆盖期：{brief.coverage_period}；输出：{','.join(brief.output_formats)}。"
-            "请员工确认上述版本；未确认前不得启动正式知识检索。"
+            f"如认可，请明确回复“确认 ReportBrief v{contract.contract_version}”；"
+            "不要只回复“确认 vN”。未确认前不得启动正式知识检索。"
         )
 
     @tool("confirm_report_brief")

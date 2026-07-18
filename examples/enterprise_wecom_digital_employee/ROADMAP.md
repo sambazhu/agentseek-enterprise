@@ -620,6 +620,8 @@ M3 先以运行时前置切片启动：
 
    Mac mini 已在 `4080d57` 验证证券提纲、外部因素裁剪、精确确认、账本真实性、幂等、M3-00A
    burst 和 MCP 零差异，M3-01 正式关闭。验证中发现的状态查询误拦已在进入 M3-02 前以窄白名单修复。
+   确认引导也统一为可照抄的 `确认 ReportBrief vN` / `确认 ReportOutline vN`；
+   严格版本门保持不变，不接受在 Brief 和 Outline 版本号可能相同时有歧义的 `确认 vN`。
 5. **M3-02 及以后**：基于 confirmed ReportOutline 和 SourceRecord 的初稿、质量门与 Markdown。
 
    - 保留观察：DeepSeek 可能在员工确认 `continue_with_gaps` 后同轮调用 `build_report_outline`；只要

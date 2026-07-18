@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -17,6 +18,47 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
 NOW = datetime(2026, 7, 14, tzinfo=UTC)
+
+
+class _GuidanceComposition:
+    def current_work_summary(
+        self,
+        state: object,
+        runtime_context: object | None = None,
+    ) -> dict[str, object]:
+        del state, runtime_context
+        return {
+            "work_id": "work_guidance",
+            "status": "draft",
+            "current_phase": "intake",
+            "playbook_id": "securities-industry-report",
+            "playbook_version": "1",
+            "report_brief": {
+                "contract_version": 3,
+                "status": WorkContractStatus.PROVISIONAL.value,
+            },
+            "report_outline": {
+                "contract_version": 2,
+                "status": WorkContractStatus.PROVISIONAL.value,
+                "report_brief_version": 3,
+                "unresolved_question_count": 1,
+            },
+        }
+
+    def save_report_brief(
+        self,
+        state: object,
+        runtime_context: object | None,
+        brief: ReportBrief,
+    ) -> WorkContractSnapshot:
+        del state, runtime_context
+        return brief.to_contract(
+            work_id="work_guidance",
+            tenant_id="tenant_guidance",
+            contract_version=3,
+            created_by="employee_guidance",
+            created_at=NOW,
+        )
 
 
 def test_report_brief_is_progressive_and_uses_playbook_defaults() -> None:
@@ -157,6 +199,34 @@ def test_save_report_brief_tool_constrains_formats_and_isolates_invalid_values()
 
     assert "unsupported format" in result
     assert "markdown, docx, and pdf" in result
+
+
+def test_work_tools_emit_unambiguous_contract_confirmation_guidance() -> None:
+    tools = {
+        item.name: cast(StructuredTool, item)
+        for item in work_tools(cast(Any, _GuidanceComposition()))
+    }
+    runtime = cast(Any, SimpleNamespace(state={}, context=None))
+
+    status_func = tools["get_current_work_status"].func
+    assert status_func is not None
+    status = status_func(runtime=runtime)
+
+    assert "明确回复“确认 ReportBrief v3”" in status
+    assert "明确回复“确认 ReportOutline v2”" in status
+    assert status.count("不要只回复“确认 vN”") == 2
+
+    save_func = tools["save_report_brief"].func
+    assert save_func is not None
+    saved = save_func(
+        title="证券行业摘要",
+        target_audience=["管理层"],
+        runtime=runtime,
+    )
+
+    assert "明确回复“确认 ReportBrief v3”" in saved
+    assert "不要只回复“确认 vN”" in saved
+    assert "请员工确认上述版本" not in saved
 
 
 def test_report_brief_parser_fails_closed_on_wrong_contract_or_schema() -> None:
