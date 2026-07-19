@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -22,6 +23,13 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
+from enterprise_wecom_digital_employee.report_approval import (
+    REPORT_APPROVAL_CONTRACT_TYPE,
+    ReportApproval,
+    approval_state,
+    explicitly_approves_report_draft,
+    explicitly_requests_report_approval,
+)
 from enterprise_wecom_digital_employee.report_brief import ReportBrief
 from enterprise_wecom_digital_employee.report_draft import (
     REPORT_DRAFT_CONTRACT_TYPE,
@@ -32,6 +40,7 @@ from enterprise_wecom_digital_employee.report_draft import (
     explicitly_confirms_report_draft,
     explicitly_requests_report_draft,
     prepare_report_draft_context,
+    report_draft_digest,
 )
 from enterprise_wecom_digital_employee.report_outline import ReportOutline
 from enterprise_wecom_digital_employee.report_research import load_current_research_result
@@ -89,6 +98,39 @@ def test_explicit_draft_request_parser(message: str, expected: bool) -> None:
 )
 def test_explicit_draft_confirmation_parser(message: str, expected: bool) -> None:
     assert explicitly_confirms_report_draft(message, expected_version=2) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("提交 ReportDraft v2 审批", True),
+        ("申请报告初稿第2版审批", True),
+        ("send ReportDraft v2 for approval", False),
+        ("确认 ReportDraft v2", False),
+        ("提交 ReportDraft v1 审批", False),
+        ("暂不提交 ReportDraft v2 审批", False),
+        ("可以提交 ReportDraft v2 审批吗？", False),
+    ],
+)
+def test_explicit_approval_request_parser(message: str, expected: bool) -> None:
+    assert explicitly_requests_report_approval(message, expected_version=2) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("批准 ReportDraft v2", True),
+        ("报告初稿第2版审批通过", True),
+        ("approve ReportDraft v2", True),
+        ("提交 ReportDraft v2 审批", False),
+        ("请批准 ReportDraft v2", False),
+        ("批准 ReportDraft v1", False),
+        ("不批准 ReportDraft v2", False),
+        ("ReportDraft v2 是否批准？", False),
+    ],
+)
+def test_explicit_draft_approval_parser(message: str, expected: bool) -> None:
+    assert explicitly_approves_report_draft(message, expected_version=2) is expected
 
 
 def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> None:
@@ -365,6 +407,158 @@ def test_report_draft_confirmation_is_exact_and_idempotent(tmp_path: Path) -> No
     assert summary is not None
     draft_summary = cast("dict[str, object]", summary["report_draft"])
     assert draft_summary["status"] == "confirmed"
+
+
+def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_path: Path) -> None:
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+
+    async def invoke(_server: str, _tool_name: str, _arguments: dict[str, Any], _confirmed: bool) -> str:
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+
+    context = _run(prepare_report_draft_context(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    ))
+    draft = build_report_draft(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        proposals=_proposals(outline, context.evidence[0].evidence_id),
+        clock=lambda: NOW,
+    )
+    composition.save_report_draft(state, None, draft)
+
+    with pytest.raises(WorkCompositionError, match="没有已确认的 ReportDraft"):
+        composition.request_report_approval(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="提交 ReportDraft v1 审批",
+        )
+
+    composition.confirm_report_draft(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="确认 ReportDraft v1",
+    )
+    with pytest.raises(WorkCompositionError, match="未显式提交 ReportDraft v1 审批"):
+        composition.request_report_approval(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="请审批初稿",
+        )
+    pending = composition.request_report_approval(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="提交 ReportDraft v1 审批",
+    )
+    replay_pending = composition.request_report_approval(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="申请 ReportDraft v1 审批",
+    )
+
+    assert pending == replay_pending
+    assert pending.contract_type == REPORT_APPROVAL_CONTRACT_TYPE
+    assert pending.contract_version == 1
+    assert approval_state(pending) == "pending"
+    approval = ReportApproval.from_contract(pending)
+    assert approval.report_draft_version == 1
+    assert approval.report_draft_digest == report_draft_digest(draft)
+
+    with pytest.raises(WorkCompositionError, match="未显式批准 ReportDraft v1"):
+        composition.approve_report_draft(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="确认 ReportDraft v1",
+        )
+    with pytest.raises(WorkCompositionError, match="版本不匹配"):
+        composition.approve_report_draft(
+            state,
+            None,
+            expected_version=2,
+            latest_user_message="批准 ReportDraft v2",
+        )
+    approved = composition.approve_report_draft(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="批准 ReportDraft v1",
+    )
+    replay_approved = composition.approve_report_draft(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="批准 ReportDraft v1",
+    )
+
+    assert approved == replay_approved
+    assert approval_state(approved) == "approved"
+    assert approved.confirmed_by == "hmac-" + "2" * 64
+    item = composition.current_work(state)
+    assert item is not None
+    assert item.approval_state == "not_requested"
+    assert item.artifact_ids == ()
+    summary = composition.current_work_summary(state)
+    assert summary is not None
+    assert summary["report_approval"] == {
+        "contract_version": 1,
+        "status": "approved",
+        "report_draft_version": 1,
+        "policy_id": "industry-report-v1",
+        "current": True,
+    }
+
+    revised_draft = replace(draft, markdown=f"{draft.markdown}\n\n修订说明。")
+    revised = composition.save_report_draft(state, None, revised_draft)
+    assert revised.contract_version == 2
+    stale_summary = composition.current_work_summary(state)
+    assert stale_summary is not None
+    assert cast("dict[str, object]", stale_summary["report_approval"])["current"] is False
+
+    composition.confirm_report_draft(
+        state,
+        None,
+        expected_version=2,
+        latest_user_message="确认 ReportDraft v2",
+    )
+    pending_v2 = composition.request_report_approval(
+        state,
+        None,
+        expected_version=2,
+        latest_user_message="提交 ReportDraft v2 审批",
+    )
+    assert pending_v2.contract_version == 2
+    assert approval_state(pending_v2) == "pending"
+    approvals = composition.repository.list_work_contracts(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+        contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+    )
+    assert [contract.status for contract in approvals] == [
+        WorkContractStatus.SUPERSEDED,
+        WorkContractStatus.PROVISIONAL,
+    ]
+    approved_v2 = composition.approve_report_draft(
+        state,
+        None,
+        expected_version=2,
+        latest_user_message="批准 ReportDraft v2",
+    )
+    assert approval_state(approved_v2) == "approved"
+    current_summary = composition.current_work_summary(state)
+    assert current_summary is not None
+    assert cast("dict[str, object]", current_summary["report_approval"])["current"] is True
 
 
 def _composition_with_confirmed_outline(

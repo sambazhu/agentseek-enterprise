@@ -151,8 +151,8 @@ selected internal knowledge chunks, verifies their content hashes, persists
 bounded EvidenceRecords, and accepts structured Claims whose factual and
 inferential statements cite current-section Evidence IDs. It then renders the
 Markdown deterministically and returns the exact ledger-backed draft through the
-output guard. Semantic or human Claim verification, draft approval, DOCX/PDF
-rendering, and delivery remain later work.
+output guard. Semantic Claim verification, DOCX/PDF rendering, and delivery
+remain later work.
 
 M3-03 makes draft generation and confirmation explicit checkpoints. Confirming
 `ReportOutline vN` stops that turn; a later employee message must explicitly ask
@@ -161,6 +161,14 @@ employee message names the exact `ReportDraft vN`. Confirmation records requeste
 acceptance of that Markdown version, not final approval, publication, DOCX/PDF
 generation, or delivery. Read-only Brief/Outline/Draft status prose is trusted only
 when it matches the server-published `current_work` ledger snapshot.
+
+M3-04A adds a separate, versioned `report-approval` content decision. A confirmed
+draft enters approval only after an exact `提交 ReportDraft vN 审批` request; the
+authenticated WorkItem approver must then separately send `批准 ReportDraft vN`.
+The approval binds the exact Draft version and canonical payload digest, becomes
+stale after a Draft revision, and is independently guarded against fabricated
+pending or approved claims. Content approval still does not render, publish, or
+deliver DOCX/PDF artifacts.
 
 Pack `1.2.0` makes the report topic itself a first-class evidence question. Its
 `report_topic` query strategy searches the exact ReportBrief title before the
@@ -191,6 +199,11 @@ same project-scoped configuration.
 ```bash
 examples/enterprise_wecom_digital_employee/scripts/run_gateway.sh
 ```
+
+Use this script (or `agentseek dev`) as the supported entrypoint. Do not invoke
+`bub_gateway.py` directly: the script establishes the example `PYTHONPATH`, loads
+the project environment, and configures the runtime extras required by lazy
+playbook imports.
 
 This example also declares `.agentseek/lifecycle.toml`, so the new AgentSeek
 lifecycle commands can inspect and start it from the example directory:

@@ -132,6 +132,35 @@ _REPORT_DRAFT_LEDGER_TOOLS = frozenset({
     "get_current_work_status",
     "confirm_report_draft",
 })
+_REPORT_APPROVAL_REF_RE = _REPORT_DRAFT_REF_RE
+_REPORT_APPROVAL_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:提交|申请|发起|进入).{0,12}(?:审批|批准)|送审|待审批|"
+    r"(?:已|已经)(?:审批通过|批准)|approval[_\s-]*state\s*[=:：]\s*(?:pending|approved)|"
+    r"\b(?:pending\s+approval|approved)\b",
+    re.IGNORECASE,
+)
+_REPORT_APPROVAL_APPROVED_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:审批通过|批准)|approval[_\s-]*state\s*[=:：]\s*approved|"
+    r"status\s*[=:：]\s*approved|\bapproved\b",
+    re.IGNORECASE,
+)
+_REPORT_APPROVAL_PENDING_CLAIM_RE = re.compile(
+    r"待审批|(?:已|已经)(?:提交|申请|发起|进入).{0,12}(?:审批|批准)|送审|"
+    r"approval[_\s-]*state\s*[=:：]\s*pending|status\s*[=:：]\s*pending|"
+    r"\bpending\s+approval\b",
+    re.IGNORECASE,
+)
+_REPORT_APPROVAL_STATUS_SUCCESS_RE = re.compile(
+    r"ReportApproval\s+contract_v\d+[，,]\s*status=(pending|approved)[，,]"
+    r"\s*bound_report_draft_v(\d+)",
+    re.IGNORECASE,
+)
+_REPORT_APPROVAL_LEDGER_TOOLS = frozenset({
+    "request_report_approval",
+    "get_current_report_approval",
+    "get_current_work_status",
+    "approve_report_draft",
+})
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "未检测到本轮账本支持的 ReportDraft，因此这次模型正文已被运行时守卫拦截，"
@@ -155,6 +184,13 @@ REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "confirm_report_draft 或 "
     "get_current_work_status，并以工具返回的版本和 Markdown 为准。"
 )
+REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到匹配的 ReportApproval 账本状态，因此不能声称 ReportDraft 已提交审批或已批准。"
+    "请调用 request_report_approval、get_current_report_approval、get_current_work_status "
+    "或 approve_report_draft，并以工具返回的精确 Draft 版本和审批状态为准。"
+    "批准不等于发布、渲染或交付。"
+)
+_OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
 
 
 def enforce_m2_output_guard(
@@ -185,6 +221,8 @@ def enforce_m2_output_guard(
         if _claims_unverified_report_outline_write(result, output)
         else "unverified_report_draft_write"
         if _claims_unverified_report_draft_write(result, output)
+        else "unverified_report_approval"
+        if _claims_unverified_report_approval(result, output)
         else ""
     )
     _emit_guard_event(
@@ -202,9 +240,13 @@ def enforce_m2_output_guard(
         return REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_draft_write":
         return REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_approval":
+        return REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "ledger_backed_report_draft":
         return verified_draft_output
-    return M2_OUTPUT_BLOCKED_MESSAGE if reason else output
+    if reason:
+        return M2_OUTPUT_BLOCKED_MESSAGE
+    return _append_outline_confirmation_nudge(result, output)
 
 
 def _active_m2_work(result: object) -> Mapping[str, object] | None:
@@ -485,6 +527,99 @@ def _claims_unverified_report_draft_write(result: object, output: str) -> bool:
             and required_status not in ledger_states[version]
         )
         for version, required_status in claims
+    )
+
+
+def _claims_unverified_report_approval(result: object, output: str) -> bool:
+    claims = _report_approval_claims(output)
+    if not claims:
+        return False
+    ledger_states = _successful_report_approval_states(result)
+    return any(status not in ledger_states.get(version, set()) for version, status in claims)
+
+
+def _report_approval_claims(output: str) -> tuple[tuple[int, str], ...]:
+    claims: list[tuple[int, str]] = []
+    for match in _REPORT_APPROVAL_REF_RE.finditer(output):
+        segment = _claim_line(output, match)
+        if not _REPORT_APPROVAL_CLAIM_RE.search(segment):
+            continue
+        status = (
+            "approved"
+            if _REPORT_APPROVAL_APPROVED_CLAIM_RE.search(segment)
+            else "pending"
+            if _REPORT_APPROVAL_PENDING_CLAIM_RE.search(segment)
+            else ""
+        )
+        if status:
+            claims.append((int(match.group(1)), status))
+    return tuple(claims)
+
+
+def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
+    if not isinstance(result, Mapping):
+        return {}
+    states: dict[int, set[str]] = {}
+    messages = result.get("messages")
+    call_ids: set[str] = set()
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                call_ids.clear()
+                states.clear()
+                continue
+            call_ids.update(_tool_call_ids(message, _REPORT_APPROVAL_LEDGER_TOOLS))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_APPROVAL_LEDGER_TOOLS and tool_call_id not in call_ids:
+                continue
+            for status, draft_version in _REPORT_APPROVAL_STATUS_SUCCESS_RE.findall(content):
+                states.setdefault(int(draft_version), set()).add(status.lower())
+    if isinstance(work := result.get("current_work"), Mapping):
+        approval = work.get("report_approval")
+        if isinstance(approval, Mapping) and approval.get("current") is True:
+            version = approval.get("report_draft_version")
+            status = str(approval.get("status") or "").lower()
+            if isinstance(version, int) and not isinstance(version, bool) and status in {"pending", "approved"}:
+                states.setdefault(version, set()).add(status)
+    return states
+
+
+def _append_outline_confirmation_nudge(result: object, output: str) -> str:
+    if "生成可审阅初稿" in output or not _successful_outline_confirmation_in_turn(result):
+        return output
+    return f"{output.rstrip()}\n\n{_OUTLINE_CONFIRMATION_NUDGE}"
+
+
+def _successful_outline_confirmation_in_turn(result: object) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return False
+    call_ids: set[str] = set()
+    succeeded = False
+    for message in messages:
+        if _is_human_message(message):
+            call_ids.clear()
+            succeeded = False
+            continue
+        call_ids.update(_tool_call_ids(message, frozenset({"confirm_report_outline"})))
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name == "confirm_report_outline" or tool_call_id in call_ids:
+            succeeded = bool(_REPORT_OUTLINE_CONFIRM_SUCCESS_RE.search(content))
+    return succeeded
+
+
+def _tool_call_ids(message: object, tool_names: frozenset[str]) -> tuple[str, ...]:
+    raw_calls = _message_tool_calls(message)
+    if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
+        return ()
+    return tuple(
+        call_id
+        for call in raw_calls
+        if isinstance(call, Mapping)
+        and str(call.get("name") or "") in tool_names
+        and (call_id := str(call.get("id") or "").strip())
     )
 
 

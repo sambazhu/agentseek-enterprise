@@ -1,6 +1,6 @@
 schema_version: 1
 pack_id: industry-report
-pack_version: 1.5.0
+pack_version: 1.6.0
 profile: profile.yaml
 skills:
   - id: report-intake
@@ -8,9 +8,9 @@ skills:
     path: skills/report-intake/SKILL.md
     sha256: a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e
   - id: report-writing
-    version: 1.1.0
+    version: 1.2.0
     path: skills/report-writing/SKILL.md
-    sha256: da86f37b6bfe7571c7af90de2950a8507c2136d4b19bf4d57df8db1f5fe5ee73
+    sha256: 3464b3f8eec6eea0dcdfb7fab7d5fc616d8e821da3a97cb239f13f0f653da323
 playbooks:
   - id: securities-industry-report
     version: "1"

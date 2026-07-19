@@ -45,6 +45,14 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
+from enterprise_wecom_digital_employee.report_approval import (
+    REPORT_APPROVAL_CONTRACT_TYPE,
+    ReportApproval,
+    approval_message_digest,
+    approval_state,
+    explicitly_approves_report_draft,
+    explicitly_requests_report_approval,
+)
 from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
     ReportBrief,
@@ -57,6 +65,7 @@ from enterprise_wecom_digital_employee.report_draft import (
     claim_set_digest,
     evidence_set_digest,
     explicitly_confirms_report_draft,
+    report_draft_digest,
 )
 from enterprise_wecom_digital_employee.report_outline import (
     REPORT_OUTLINE_CONTRACT_TYPE,
@@ -578,6 +587,150 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return confirmed
 
+    def current_confirmed_report_draft(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+    ) -> tuple[WorkItem, WorkContractSnapshot, ReportDraft]:
+        """Return the current confirmed draft after revalidating its frozen bindings."""
+
+        item, outline_contract, outline = self.current_confirmed_report_outline(state, runtime_context)
+        contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        )
+        if contract is None or contract.status is not WorkContractStatus.CONFIRMED:
+            raise WorkCompositionError("当前任务没有已确认的 ReportDraft，不能提交或完成审批。")
+        try:
+            draft = ReportDraft.from_contract(contract)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportDraft 合同无效，不能提交或完成审批。") from exc
+        if (
+            draft.report_outline_version != outline_contract.contract_version
+            or draft.report_brief_version != outline.report_brief_version
+            or draft.report_title != outline.report_title
+            or draft.source_set_digest != outline.source_set_digest
+        ):
+            raise WorkCompositionError("当前 ReportDraft 与已确认的 ReportOutline 绑定不一致。")
+        self._require_draft_bindings(item, outline_contract, outline, draft)
+        return item, contract, draft
+
+    def request_report_approval(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> WorkContractSnapshot:
+        """Open a versioned approval request for one exact confirmed draft."""
+
+        item, draft_contract, draft = self.current_confirmed_report_draft(state, runtime_context)
+        if draft_contract.contract_version != expected_version:
+            raise WorkCompositionError("ReportDraft 版本不匹配，请重新展示当前版本后再提交审批。")
+        if not explicitly_requests_report_approval(latest_user_message, expected_version=expected_version):
+            raise WorkCompositionError(
+                f"员工最新消息未显式提交 ReportDraft v{expected_version} 审批，不能建立审批合同。"
+            )
+        approval = ReportApproval(
+            report_draft_version=draft_contract.contract_version,
+            report_draft_digest=report_draft_digest(draft),
+            request_message_digest=approval_message_digest(latest_user_message),
+        )
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+        )
+        if current is not None:
+            try:
+                current_approval = ReportApproval.from_contract(current)
+            except (TypeError, ValueError):
+                current_approval = None
+            if (
+                current_approval is not None
+                and current_approval.report_draft_version == approval.report_draft_version
+                and current_approval.report_draft_digest == approval.report_draft_digest
+                and current_approval.policy_id == approval.policy_id
+            ):
+                saved = current
+            else:
+                saved = self.repository.revise_work_contract(
+                    approval.to_contract(
+                        work_id=item.work_id,
+                        tenant_id=item.tenant_id,
+                        contract_version=current.contract_version + 1,
+                        created_by=item.requester_id,
+                        created_at=self._factory.clock(),
+                    )
+                )
+        else:
+            saved = self.repository.create_work_contract(
+                approval.to_contract(
+                    work_id=item.work_id,
+                    tenant_id=item.tenant_id,
+                    contract_version=1,
+                    created_by=item.requester_id,
+                    created_at=self._factory.clock(),
+                )
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return saved
+
+    def approve_report_draft(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> WorkContractSnapshot:
+        """Approve one exact pending draft without publishing or rendering it."""
+
+        item, draft_contract, draft = self.current_confirmed_report_draft(state, runtime_context)
+        if draft_contract.contract_version != expected_version:
+            raise WorkCompositionError("ReportDraft 版本不匹配，请重新展示当前版本后再审批。")
+        if not explicitly_approves_report_draft(latest_user_message, expected_version=expected_version):
+            raise WorkCompositionError(
+                f"员工最新消息未显式批准 ReportDraft v{expected_version}，不能完成审批。"
+            )
+        enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
+        actor = _clean(enterprise.get("user_key")) if enterprise is not None else ""
+        if not actor or actor != item.approver_id:
+            raise WorkCompositionError("当前企业身份不是该任务的审批人，不能批准。")
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+        )
+        if current is None:
+            raise WorkCompositionError("当前 ReportDraft 尚未显式提交审批。")
+        try:
+            approval = ReportApproval.from_contract(current)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportApproval 合同无效，不能审批。") from exc
+        if (
+            approval.report_draft_version != draft_contract.contract_version
+            or approval.report_draft_digest != report_draft_digest(draft)
+        ):
+            raise WorkCompositionError("当前审批请求未绑定最新已确认 ReportDraft，请重新提交审批。")
+        if current.status is WorkContractStatus.CONFIRMED:
+            approved = current
+        else:
+            approved = self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+                expected_contract_version=current.contract_version,
+                confirmed_by=actor,
+                confirmed_at=self._factory.clock(),
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return approved
+
     def _require_draft_bindings(
         self,
         item: WorkItem,
@@ -817,6 +970,7 @@ class IndustryReportWorkComposition:
                     "source_set_digest": outline.source_set_digest,
                     "unresolved_question_count": len(outline.unresolved_question_ids),
                 }
+        current_draft: ReportDraft | None = None
         draft_contract = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,
@@ -828,12 +982,38 @@ class IndustryReportWorkComposition:
             except (TypeError, ValueError):
                 pass
             else:
+                current_draft = draft
                 summary["report_draft"] = {
                     "contract_version": draft_contract.contract_version,
                     "status": draft_contract.status.value,
                     "report_outline_version": draft.report_outline_version,
                     "quality_status": draft.quality_status.value,
                     "claim_count": len(draft.claim_ids),
+                }
+        approval_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+        )
+        if approval_contract is not None:
+            try:
+                approval = ReportApproval.from_contract(approval_contract)
+            except (TypeError, ValueError):
+                pass
+            else:
+                current = bool(
+                    draft_contract is not None
+                    and draft_contract.status is WorkContractStatus.CONFIRMED
+                    and approval.report_draft_version == draft_contract.contract_version
+                    and current_draft is not None
+                    and approval.report_draft_digest == report_draft_digest(current_draft)
+                )
+                summary["report_approval"] = {
+                    "contract_version": approval_contract.contract_version,
+                    "status": approval_state(approval_contract),
+                    "report_draft_version": approval.report_draft_version,
+                    "policy_id": approval.policy_id,
+                    "current": current,
                 }
         return summary
 
@@ -1146,6 +1326,14 @@ def _current_work_context(summary: Mapping[str, object]) -> str:
             f"v{draft.get('contract_version')} status={draft.get('status')} "
             f"bound_report_outline_v{draft.get('report_outline_version')} "
             f"quality={draft.get('quality_status')} claims={draft.get('claim_count')}"
+        )
+    approval = summary.get("report_approval")
+    if isinstance(approval, Mapping):
+        lines.append(
+            "current_report_approval: "
+            f"contract_v{approval.get('contract_version')} status={approval.get('status')} "
+            f"bound_report_draft_v{approval.get('report_draft_version')} "
+            f"current={approval.get('current')} policy={approval.get('policy_id')}"
         )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",

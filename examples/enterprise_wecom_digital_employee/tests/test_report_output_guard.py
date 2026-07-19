@@ -4,6 +4,7 @@ from typing import Any
 
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
+    REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
@@ -169,6 +170,116 @@ def test_report_draft_confirmation_claim_allows_matching_confirm_result() -> Non
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == output
+
+
+def test_outline_confirmation_appends_deterministic_next_step_nudge() -> None:
+    output = "ReportOutline v1 已由任务委派人确认。"
+    result = _result("确认 ReportOutline v1", output)
+    result["messages"] = [
+        HumanMessage(content="确认 ReportOutline v1"),
+        AIMessage(content="", tool_calls=[{
+            "name": "confirm_report_outline",
+            "args": {"expected_version": 1},
+            "id": "call_confirm_outline",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportOutline v1 已由任务委派人确认。本轮只完成提纲确认。",
+            name="confirm_report_outline",
+            tool_call_id="call_confirm_outline",
+        ),
+        AIMessage(content=output),
+    ]
+
+    guarded = enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    )
+
+    assert guarded == (
+        "ReportOutline v1 已由任务委派人确认。\n\n"
+        "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
+    )
+
+
+def test_report_approval_claim_requires_exact_current_ledger_state() -> None:
+    output = "ReportDraft v1 已批准。"
+    result = _result("查看审批状态", output)
+    result["current_work"].update({
+        "report_draft": {"contract_version": 1, "status": "confirmed"},
+        "report_approval": {
+            "contract_version": 1,
+            "status": "pending",
+            "report_draft_version": 1,
+            "current": True,
+        },
+    })
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+    pending_output = "ReportDraft v1 已提交审批，当前待审批。"
+    result["messages"][-1] = AIMessage(content=pending_output)
+    assert enforce_m2_output_guard(
+        result,
+        pending_output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == pending_output
+
+
+def test_report_approval_claim_allows_matching_approve_tool_result() -> None:
+    output = "ReportDraft v1 内容已批准，但尚未发布或交付。"
+    result = _result("批准 ReportDraft v1", output)
+    result["messages"] = [
+        HumanMessage(content="批准 ReportDraft v1"),
+        AIMessage(content="", tool_calls=[{
+            "name": "approve_report_draft",
+            "args": {"expected_version": 1},
+            "id": "call_approve",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "ReportApproval contract_v1，status=approved，bound_report_draft_v1。"
+                "ReportDraft v1 内容已批准。"
+            ),
+            name="approve_report_draft",
+            tool_call_id="call_approve",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_stale_or_fake_report_approval_claim_is_blocked_and_digest_only() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    output = "ReportDraft v999 已批准。"
+    result = _result("查看审批状态", output)
+    result["current_work"]["report_approval"] = {
+        "contract_version": 1,
+        "status": "approved",
+        "report_draft_version": 1,
+        "current": False,
+    }
+
+    guarded = enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda event, **fields: events.append((event, fields)),
+    )
+
+    assert guarded == REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE
+    assert events[0][1]["reason"] == "unverified_report_approval"
+    assert output not in str(events[0][1])
 
 
 def test_read_only_contract_status_prose_uses_server_published_ledger() -> None:
@@ -455,7 +566,10 @@ def test_report_outline_confirmation_claim_allows_matching_confirm_result() -> N
         result,
         output,
         event_sink=lambda *_args, **_kwargs: None,
-    ) == output
+    ) == (
+        f"{output}\n\n"
+        "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
+    )
 
 
 def test_report_outline_read_claim_allows_matching_current_ledger_result() -> None:

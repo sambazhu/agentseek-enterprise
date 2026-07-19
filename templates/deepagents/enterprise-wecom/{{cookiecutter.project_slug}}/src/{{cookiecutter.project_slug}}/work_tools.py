@@ -19,6 +19,7 @@ from {{ cookiecutter.project_slug }}.external_research import (
 from {{ cookiecutter.project_slug }}.external_research import (
     resolve_research_gaps as _resolve_research_gaps,
 )
+from {{ cookiecutter.project_slug }}.report_approval import approval_state
 from {{ cookiecutter.project_slug }}.report_brief import (
     CoveragePeriodSource,
     ReportBrief,
@@ -100,7 +101,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         )
 
     @tool("get_current_work_status")
-    def get_current_work_status(runtime: ToolRuntime) -> str:
+    def get_current_work_status(runtime: ToolRuntime) -> str:  # noqa: C901
         """Read current WorkItem, ReportBrief, and gap-decision versions from the ledger."""
 
         summary = composition.current_work_summary(runtime.state, runtime.context)
@@ -155,6 +156,24 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 lines.append(
                     "如认可该初稿，请明确回复"
                     f"“确认 ReportDraft v{draft.get('contract_version')}”；该确认不等于最终批准。"
+                )
+            elif draft.get("status") == WorkContractStatus.CONFIRMED.value:
+                lines.append(
+                    "如需进入内容审批，请另行回复"
+                    f"“提交 ReportDraft v{draft.get('contract_version')} 审批”。"
+                )
+        approval = summary.get("report_approval")
+        if isinstance(approval, Mapping):
+            lines.append(
+                "当前 ReportApproval："
+                f"contract_v{approval.get('contract_version')}，status={approval.get('status')}，"
+                f"bound_report_draft_v{approval.get('report_draft_version')}，"
+                f"current={str(bool(approval.get('current'))).lower()}。"
+            )
+            if approval.get("status") == "pending" and approval.get("current") is True:
+                lines.append(
+                    "审批人如批准该内容，请明确回复"
+                    f"“批准 ReportDraft v{approval.get('report_draft_version')}”。"
                 )
         return "\n".join(lines)
 
@@ -410,8 +429,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         returned by that tool and use the exact confirmed section_id. Recommendations
         and risks may omit evidence but remain unverified. The server renders citations,
         unresolved questions, and deterministic quality checks. Relay the returned
-        ReportDraft block verbatim; never embellish or rewrite it. This M3-03 tool does
-        not generate DOCX/PDF, approve the draft, or deliver an artifact.
+        ReportDraft block verbatim; never embellish or rewrite it. This tool does
+        not generate DOCX/PDF, submit or approve the draft, or deliver an artifact.
         """
 
         try:
@@ -450,6 +469,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"ReportDraft v{contract.contract_version} 已由任务委派人确认。"
             "这只表示当前 Markdown 初稿版本已确认，不是最终批准，"
             "也不会生成或交付 DOCX/PDF。"
+            f"如需进入内容审批，请在后续消息中显式回复“提交 ReportDraft v{contract.contract_version} 审批”。"
         )
 
     @tool("get_current_report_draft")
@@ -472,6 +492,75 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return f"当前 ReportDraft 合同无效：{exc}"
         return _format_draft(contract.contract_version, contract.status.value, draft)
 
+    @tool("request_report_approval")
+    def request_report_approval(expected_version: int, runtime: ToolRuntime) -> str:
+        """Submit one exact confirmed ReportDraft version for content approval.
+
+        Call only when the latest employee message explicitly says
+        `提交 ReportDraft vN 审批` (or an equivalent exact-version approval request).
+        This creates a pending approval contract. It does not approve, render,
+        publish, or deliver anything.
+        """
+
+        try:
+            contract = composition.request_report_approval(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportApproval contract_v{contract.contract_version}，"
+            f"status={approval_state(contract)}，bound_report_draft_v{expected_version}。"
+            "该合同只申请内容审批，不代表已批准，也未生成、发布或交付文件。"
+            f"审批人如批准，请另行明确回复“批准 ReportDraft v{expected_version}”。"
+        )
+
+    @tool("get_current_report_approval")
+    def get_current_report_approval(runtime: ToolRuntime) -> str:
+        """Read the current versioned report-content approval from the ledger."""
+
+        summary = composition.current_work_summary(runtime.state, runtime.context)
+        if summary is None:
+            return "当前员工没有可见的进行中报告任务。"
+        approval = summary.get("report_approval")
+        if not isinstance(approval, Mapping):
+            return "当前任务尚未形成 ReportApproval。"
+        return (
+            f"ReportApproval contract_v{approval.get('contract_version')}，"
+            f"status={approval.get('status')}，"
+            f"bound_report_draft_v{approval.get('report_draft_version')}，"
+            f"current={str(bool(approval.get('current'))).lower()}，"
+            f"policy={approval.get('policy_id')}。"
+        )
+
+    @tool("approve_report_draft")
+    def approve_report_draft(expected_version: int, runtime: ToolRuntime) -> str:
+        """Approve one exact pending ReportDraft as the WorkItem approver.
+
+        Call only when the latest employee message explicitly says
+        `批准 ReportDraft vN`. The server validates the authenticated approver,
+        current draft digest, pending approval contract, and exact version. Approval
+        covers report content only; it never renders, publishes, or delivers files.
+        """
+
+        try:
+            contract = composition.approve_report_draft(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportApproval contract_v{contract.contract_version}，status=approved，"
+            f"bound_report_draft_v{expected_version}。ReportDraft v{expected_version} 内容已批准。"
+            "批准不等于发布或交付，本轮不会生成 DOCX/PDF，也不会发送文件。"
+        )
+
     return [
         create_industry_report_work,
         get_current_work_status,
@@ -487,6 +576,9 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         build_report_draft,
         get_current_report_draft,
         confirm_report_draft,
+        request_report_approval,
+        get_current_report_approval,
+        approve_report_draft,
     ]
 
 
@@ -650,6 +742,10 @@ def _format_draft(contract_version: int, status: str, draft: ReportDraft) -> str
     if status == WorkContractStatus.PROVISIONAL.value:
         lines.append(
             f'如认可该初稿，请明确回复“确认 ReportDraft v{contract_version}”。'
+        )
+    elif status == WorkContractStatus.CONFIRMED.value:
+        lines.append(
+            f'如需进入内容审批，请另行回复“提交 ReportDraft v{contract_version} 审批”。'
         )
     return "\n".join(lines)
 

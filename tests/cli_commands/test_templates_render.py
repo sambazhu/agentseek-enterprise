@@ -109,6 +109,7 @@ def test_template_renders_without_unrendered_jinja(
         report_brief = generated / "src" / generated.name / "report_brief.py"
         report_outline = generated / "src" / generated.name / "report_outline.py"
         report_draft = generated / "src" / generated.name / "report_draft.py"
+        report_approval = generated / "src" / generated.name / "report_approval.py"
         report_research = generated / "src" / generated.name / "report_research.py"
         report_output_guard = generated / "src" / generated.name / "report_output_guard.py"
         external_research = generated / "src" / generated.name / "external_research.py"
@@ -142,6 +143,7 @@ def test_template_renders_without_unrendered_jinja(
         assert report_brief.is_file()
         assert report_outline.is_file()
         assert report_draft.is_file()
+        assert report_approval.is_file()
         assert report_research.is_file()
         assert report_output_guard.is_file()
         assert external_research.is_file()
@@ -157,6 +159,7 @@ def test_template_renders_without_unrendered_jinja(
         assert "{{" not in pack_manifest.read_text(encoding="utf-8")
         rendered_python_modules = (
             agent_module,
+            report_approval,
             report_draft,
             report_outline,
             report_output_guard,
@@ -170,6 +173,7 @@ def test_template_renders_without_unrendered_jinja(
         assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
         assert "GeneralPurposeSubagentProfile" not in agent_source
         assert "{{" not in report_brief.read_text(encoding="utf-8")
+        assert "{{" not in report_approval.read_text(encoding="utf-8")
         assert "{{" not in report_draft.read_text(encoding="utf-8")
         assert "{{" not in report_outline.read_text(encoding="utf-8")
         assert "{{" not in report_research.read_text(encoding="utf-8")

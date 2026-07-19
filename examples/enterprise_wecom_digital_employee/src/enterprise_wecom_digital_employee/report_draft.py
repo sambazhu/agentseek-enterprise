@@ -552,6 +552,12 @@ def claim_set_digest(claims: Sequence[ClaimRecord]) -> str:
     return _digest([f"{item.claim_id}:{','.join(item.evidence_ids)}" for item in sorted(claims, key=lambda x: x.claim_id)])
 
 
+def report_draft_digest(draft: ReportDraft) -> str:
+    """Return the canonical digest bound by review and approval contracts."""
+
+    return _digest(draft.to_payload())
+
+
 async def _read_chunks(chunk_ids: Sequence[str], invoke_mcp: MCPInvoker) -> dict[str, str]:
     raw = await invoke_mcp(
         "department-knowledge",

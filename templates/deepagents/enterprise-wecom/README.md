@@ -67,3 +67,5 @@ The generated project is intentionally backend-first. It is meant to be run by
 bridge extras, and starts `bub gateway --enable-channel wecom` through a small
 Logfire-safe wrapper. The same process is declared in `.agentseek/lifecycle.toml`,
 so `agentseek dev` can also start it under the AgentSeek lifecycle toolkit.
+Directly invoking `bub_gateway.py` is unsupported because it bypasses the generated
+project `PYTHONPATH`, dotenv loading, and runtime extras established by the script.

@@ -653,7 +653,7 @@ M3 先以运行时前置切片启动：
      服务端版本门和账本结果成立即可接受，不强制拆成两轮。
    - 保留观察：研究、缺口决策和提纲构建同轮执行时，外部观测查询可能遇到极短的事务可见性窗口；
      当前账本最终一致且工具链内读写正确，M3-02 增加阶段事件后再评估是否需要事务快照状态。
-6. **M3-03 ReportDraft 确认与离散检查点（已实现，待 Mac mini 活体关闭）**：
+6. **M3-03 ReportDraft 确认与离散检查点（已完成）**：
 
    - `确认 ReportOutline vN` 只确认提纲，当轮不准备 Evidence、不保存 Claim、不生成 Draft；
      员工必须后续显式请求“生成可审阅初稿”才能进入写作。
@@ -666,8 +666,29 @@ M3 先以运行时前置切片启动：
    - Pack/Profile 升级为 `1.5.0` / `1.4.0`，`report-writing` 升级为 `1.1.0`；
      example 和 cookiecutter 模板保持同步。
 
-7. **M3-04 及以后**：Claim 语义/人工审阅与质量升级；M4 再进入
-   DOCX/PDF 渲染、独立批准、交付和可恢复 outbox。
+   Mac mini 已在 `ae34958` 完成离散检查点、Draft 精确确认、账本真实性和回归活体复核，
+   验证文档为 `e0fbfe8`，M3-03 正式关闭。
+
+7. **M3-04A ReportApproval 内容审批合同（已实现，待 Mac mini 活体关闭）**：
+
+   - confirmed ReportDraft 只有在员工最新消息精确提交 `ReportDraft vN` 审批后，才建立
+     独立、版本化的 `report-approval` provisional 合同；审批合同绑定 Draft 精确版本、
+     canonical payload digest 和政策 ID。
+   - 只有 WorkItem 账本中的 approver，且最新消息精确批准同一 `ReportDraft vN`，才能把
+     当前审批合同推进为 confirmed（对外语义为 `approved`）。请求、批准和重复调用均幂等；
+     Draft 修订后旧审批自动标记为非 current，不能为新 Draft 提供批准证明。
+   - `ReportDraft confirmed`、`ReportApproval pending`、`ReportApproval approved` 是三个不同
+     检查点。批准只覆盖报告内容，不修改 WorkItem 发布状态，不生成 Artifact，也不代表发布或交付。
+   - 输出守卫要求“已提交审批/已批准”必须有本轮审批工具结果或当前 server-published 账本快照；
+     stale、错版本和伪造 v999 继续 fail-closed，事件只记录 digest。
+   - 补齐 Outline 确认后的确定性下一步 nudge，并约束 Draft 重放必须调用账本工具，不得从记忆复述正文。
+   - schema 保持 rev8；Pack/Profile 升级为 `1.6.0` / `1.5.0`，`report-writing` 升级为 `1.2.0`。
+
+8. **M3-04B Artifact 渲染（后续）**：只允许当前 approved ReportDraft 进入 DOCX/PDF
+   内容寻址渲染，记录 artifact ID、sha256、模板与渲染版本；仍不自动发布或交付。
+
+9. **M4 发布与交付（后续）**：发布和员工文件交付使用独立显式动作、delivery ledger、
+   exactly-once/outbox 与恢复机制；审批、渲染、发布和交付继续保持分离。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化
