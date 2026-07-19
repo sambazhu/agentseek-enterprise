@@ -952,6 +952,7 @@ class IndustryReportWorkComposition:
                     "report_brief_version": decision.report_brief_version,
                     "action": decision.action.value,
                 }
+        current_outline: ReportOutline | None = None
         outline_contract = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,
@@ -963,6 +964,7 @@ class IndustryReportWorkComposition:
             except (TypeError, ValueError):
                 pass
             else:
+                current_outline = outline
                 summary["report_outline"] = {
                     "contract_version": outline_contract.contract_version,
                     "status": outline_contract.status.value,
@@ -1001,12 +1003,13 @@ class IndustryReportWorkComposition:
             except (TypeError, ValueError):
                 pass
             else:
-                current = bool(
-                    draft_contract is not None
-                    and draft_contract.status is WorkContractStatus.CONFIRMED
-                    and approval.report_draft_version == draft_contract.contract_version
-                    and current_draft is not None
-                    and approval.report_draft_digest == report_draft_digest(current_draft)
+                current = self._approval_matches_current_draft(
+                    item,
+                    approval,
+                    draft_contract=draft_contract,
+                    draft=current_draft,
+                    outline_contract=outline_contract,
+                    outline=current_outline,
                 )
                 summary["report_approval"] = {
                     "contract_version": approval_contract.contract_version,
@@ -1016,6 +1019,39 @@ class IndustryReportWorkComposition:
                     "current": current,
                 }
         return summary
+
+    def _approval_matches_current_draft(
+        self,
+        item: WorkItem,
+        approval: ReportApproval,
+        *,
+        draft_contract: WorkContractSnapshot | None,
+        draft: ReportDraft | None,
+        outline_contract: WorkContractSnapshot | None,
+        outline: ReportOutline | None,
+    ) -> bool:
+        if (
+            draft_contract is None
+            or draft_contract.status is not WorkContractStatus.CONFIRMED
+            or draft is None
+            or outline_contract is None
+            or outline_contract.status is not WorkContractStatus.CONFIRMED
+            or outline is None
+            or approval.report_draft_version != draft_contract.contract_version
+            or approval.report_draft_digest != report_draft_digest(draft)
+            or draft.report_outline_version != outline_contract.contract_version
+            or draft.report_brief_version != outline.report_brief_version
+            or draft.report_title != outline.report_title
+            or draft.source_set_digest != outline.source_set_digest
+        ):
+            return False
+        try:
+            self._require_outline_brief_binding(item, outline)
+            self._require_outline_evidence_current(item, outline)
+            self._require_draft_bindings(item, outline_contract, outline, draft)
+        except WorkCompositionError:
+            return False
+        return True
 
 
 def build_work_binding() -> IndustryReportWorkComposition:

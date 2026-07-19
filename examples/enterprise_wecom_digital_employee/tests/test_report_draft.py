@@ -560,6 +560,19 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     assert current_summary is not None
     assert cast("dict[str, object]", current_summary["report_approval"])["current"] is True
 
+    composition.save_report_brief(
+        state,
+        None,
+        ReportBrief(
+            title="证券行业数字化转型报告",
+            target_audience=("公司管理层",),
+            coverage_period="2027年全年",
+        ),
+    )
+    upstream_stale_summary = composition.current_work_summary(state)
+    assert upstream_stale_summary is not None
+    assert cast("dict[str, object]", upstream_stale_summary["report_approval"])["current"] is False
+
 
 def _composition_with_confirmed_outline(
     tmp_path: Path,
