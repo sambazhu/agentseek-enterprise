@@ -151,6 +151,11 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 f"bound_report_outline_v{draft.get('report_outline_version')}，"
                 f"quality={draft.get('quality_status')}，claims={draft.get('claim_count')}。"
             )
+            if draft.get("status") == WorkContractStatus.PROVISIONAL.value:
+                lines.append(
+                    "如认可该初稿，请明确回复"
+                    f"“确认 ReportDraft v{draft.get('contract_version')}”；该确认不等于最终批准。"
+                )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -365,15 +370,16 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             return str(exc)
         return (
             f"ReportOutline v{contract.contract_version} 已由任务委派人确认。"
-            "提纲账本已冻结；现在可以准备 Evidence 并生成可审阅 Markdown 初稿，"
-            "但尚未启用最终批准、DOCX、PDF 或对外投递。"
+            "本轮只完成提纲确认，不会自动生成初稿。"
+            "如需继续，请在后续消息中显式请求“生成可审阅初稿”。"
         )
 
     @tool("prepare_report_draft_context")
     async def prepare_report_draft_context(runtime: ToolRuntime) -> str:
         """Prepare bounded, source-verified EvidenceRecords for the confirmed outline.
 
-        Call this before build_report_draft. It re-reads only the department-knowledge
+        Call only after the employee explicitly requests a review draft, and before
+        build_report_draft. It re-reads only the department-knowledge
         chunks already selected by the confirmed ReportOutline, verifies their content
         hashes, and registers immutable EvidenceRecords. The returned excerpts are the
         only material allowed for factual or inferential draft claims. It never calls
@@ -388,6 +394,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 composition=composition,
                 state=runtime.state,
                 runtime_context=runtime.context,
+                latest_user_message=_latest_user_message_text(runtime),
                 invoke_mcp=invoke,
             )
         except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
@@ -403,7 +410,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         returned by that tool and use the exact confirmed section_id. Recommendations
         and risks may omit evidence but remain unverified. The server renders citations,
         unresolved questions, and deterministic quality checks. Relay the returned
-        ReportDraft block verbatim; never embellish or rewrite it. This M3-02 tool does
+        ReportDraft block verbatim; never embellish or rewrite it. This M3-03 tool does
         not generate DOCX/PDF, approve the draft, or deliver an artifact.
         """
 
@@ -412,12 +419,38 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 composition=composition,
                 state=runtime.state,
                 runtime_context=runtime.context,
+                latest_user_message=_latest_user_message_text(runtime),
                 proposals=claims,
             )
             contract = composition.save_report_draft(runtime.state, runtime.context, draft)
         except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
             return str(exc)
         return _format_draft(contract.contract_version, contract.status.value, draft)
+
+    @tool("confirm_report_draft")
+    def confirm_report_draft(expected_version: int, runtime: ToolRuntime) -> str:
+        """Confirm the exact current ReportDraft after explicit requester review.
+
+        Call only when the latest employee message explicitly confirms
+        `ReportDraft vN`; the server parser is the sole authority and fails closed.
+        This records requester acceptance of the review draft. It is not final
+        approval, publication, DOCX/PDF generation, or artifact delivery.
+        """
+
+        try:
+            contract = composition.confirm_report_draft(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportDraft v{contract.contract_version} 已由任务委派人确认。"
+            "这只表示当前 Markdown 初稿版本已确认，不是最终批准，"
+            "也不会生成或交付 DOCX/PDF。"
+        )
 
     @tool("get_current_report_draft")
     def get_current_report_draft(runtime: ToolRuntime) -> str:
@@ -453,6 +486,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         prepare_report_draft_context,
         build_report_draft,
         get_current_report_draft,
+        confirm_report_draft,
     ]
 
 
@@ -613,6 +647,10 @@ def _format_draft(contract_version: int, status: str, draft: ReportDraft) -> str
         draft.markdown,
         REPORT_DRAFT_MARKDOWN_END,
     ]
+    if status == WorkContractStatus.PROVISIONAL.value:
+        lines.append(
+            f'如认可该初稿，请明确回复“确认 ReportDraft v{contract_version}”。'
+        )
     return "\n".join(lines)
 
 

@@ -102,8 +102,19 @@ _REPORT_DRAFT_REF_RE = re.compile(
 )
 _REPORT_DRAFT_LEDGER_CLAIM_RE = re.compile(
     r"(?:已|已经)(?:生成|构建|创建|保存|更新|修改|修订)|"
+    r"(?:已|已经)(?:由.{0,24})?确认|"
     r"status\s*[=:：]\s*(?:provisional|confirmed)|"
     r"状态\s*[=:：]?\s*(?:provisional|confirmed|待确认|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_DRAFT_CONFIRMED_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:由.{0,24})?确认|status\s*[=:：]\s*confirmed|"
+    r"状态\s*[=:：]?\s*(?:confirmed|已确认)",
+    re.IGNORECASE,
+)
+_REPORT_DRAFT_PROVISIONAL_CLAIM_RE = re.compile(
+    r"\bprovisional\b|待确认|暂存|暂定|"
+    r"状态\s*[=:：]?\s*(?:provisional|待确认|暂存|暂定)",
     re.IGNORECASE,
 )
 _REPORT_DRAFT_STATUS_SUCCESS_RE = re.compile(
@@ -111,10 +122,15 @@ _REPORT_DRAFT_STATUS_SUCCESS_RE = re.compile(
     r"(\d+)[，,]\s*status=(provisional|confirmed)",
     re.IGNORECASE,
 )
+_REPORT_DRAFT_CONFIRM_SUCCESS_RE = re.compile(
+    r"ReportDraft\s+v(\d+)\s+已由任务委派人确认",
+    re.IGNORECASE,
+)
 _REPORT_DRAFT_LEDGER_TOOLS = frozenset({
     "build_report_draft",
     "get_current_report_draft",
     "get_current_work_status",
+    "confirm_report_draft",
 })
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
@@ -134,8 +150,9 @@ REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "并以工具返回的版本和状态为准。"
 )
 REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE = (
-    "未检测到本轮 ReportDraft 工具返回的匹配账本状态，因此不能声称报告初稿已生成或保存。"
-    "当前初稿账本保持不变；请调用 build_report_draft、get_current_report_draft 或 "
+    "未检测到匹配的 ReportDraft 账本状态，因此不能声称报告初稿已生成、保存或确认。"
+    "当前初稿账本保持不变；请调用 build_report_draft、get_current_report_draft、"
+    "confirm_report_draft 或 "
     "get_current_work_status，并以工具返回的版本和 Markdown 为准。"
 )
 
@@ -340,24 +357,24 @@ def _report_brief_claims(output: str) -> tuple[tuple[int, str], ...]:
 def _successful_report_brief_states(result: object) -> dict[int, set[str]]:
     if not isinstance(result, Mapping):
         return {}
-    messages = result.get("messages")
-    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
-        return {}
-    ledger_call_ids: set[str] = set()
     states: dict[int, set[str]] = {}
-    for message in messages:
-        if _is_human_message(message):
-            ledger_call_ids.clear()
-            states.clear()
-            continue
-        ledger_call_ids.update(_report_brief_call_ids(message))
-        tool_name, tool_call_id, content = _tool_result_parts(message)
-        if tool_name not in _REPORT_BRIEF_LEDGER_TOOLS and tool_call_id not in ledger_call_ids:
-            continue
-        for version in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content):
-            states.setdefault(int(version), set()).add("recorded")
-        for version, status in _REPORT_BRIEF_STATUS_SUCCESS_RE.findall(content):
-            states.setdefault(int(version), set()).add(status.lower())
+    messages = result.get("messages")
+    ledger_call_ids: set[str] = set()
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                ledger_call_ids.clear()
+                states.clear()
+                continue
+            ledger_call_ids.update(_report_brief_call_ids(message))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_BRIEF_LEDGER_TOOLS and tool_call_id not in ledger_call_ids:
+                continue
+            for version in _REPORT_BRIEF_SAVE_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add("recorded")
+            for version, status in _REPORT_BRIEF_STATUS_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add(status.lower())
+    _merge_current_work_contract_state(result, states, "report_brief")
     return states
 
 
@@ -418,21 +435,21 @@ def _claim_line(output: str, match: re.Match[str]) -> str:
 def _successful_report_outline_states(result: object) -> dict[int, set[str]]:
     if not isinstance(result, Mapping):
         return {}
-    messages = result.get("messages")
-    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
-        return {}
-    outline_call_ids: set[str] = set()
     states: dict[int, set[str]] = {}
-    for message in messages:
-        if _is_human_message(message):
-            outline_call_ids.clear()
-            states.clear()
-            continue
-        outline_call_ids.update(_report_outline_call_ids(message))
-        tool_name, tool_call_id, content = _tool_result_parts(message)
-        if tool_name not in _REPORT_OUTLINE_LEDGER_TOOLS and tool_call_id not in outline_call_ids:
-            continue
-        _record_report_outline_states(states, content)
+    messages = result.get("messages")
+    outline_call_ids: set[str] = set()
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                outline_call_ids.clear()
+                states.clear()
+                continue
+            outline_call_ids.update(_report_outline_call_ids(message))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_OUTLINE_LEDGER_TOOLS and tool_call_id not in outline_call_ids:
+                continue
+            _record_report_outline_states(states, content)
+    _merge_current_work_contract_state(result, states, "report_outline")
     return states
 
 
@@ -477,8 +494,14 @@ def _report_draft_claims(output: str) -> tuple[tuple[int, str], ...]:
         segment = _claim_line(output, match)
         if not _REPORT_DRAFT_LEDGER_CLAIM_RE.search(segment):
             continue
-        status_match = re.search(r"(?:status|状态)\s*[=:：]?\s*(provisional|confirmed)", segment, re.I)
-        claims.append((int(match.group(1)), status_match.group(1).lower() if status_match else "recorded"))
+        status = (
+            "confirmed"
+            if _REPORT_DRAFT_CONFIRMED_CLAIM_RE.search(segment)
+            else "provisional"
+            if _REPORT_DRAFT_PROVISIONAL_CLAIM_RE.search(segment)
+            else "recorded"
+        )
+        claims.append((int(match.group(1)), status))
     return tuple(claims)
 
 
@@ -513,23 +536,52 @@ def _successful_report_draft_output(result: object) -> str:
 def _successful_report_draft_states(result: object) -> dict[int, set[str]]:
     if not isinstance(result, Mapping):
         return {}
-    messages = result.get("messages")
-    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
-        return {}
-    call_ids: set[str] = set()
     states: dict[int, set[str]] = {}
-    for message in messages:
-        if _is_human_message(message):
-            call_ids.clear()
-            states.clear()
-            continue
-        call_ids.update(_report_draft_call_ids(message, include_status=True))
-        tool_name, tool_call_id, content = _tool_result_parts(message)
-        if tool_name not in _REPORT_DRAFT_LEDGER_TOOLS and tool_call_id not in call_ids:
-            continue
-        for version, status in _REPORT_DRAFT_STATUS_SUCCESS_RE.findall(content):
-            states.setdefault(int(version), set()).add(status.lower())
+    messages = result.get("messages")
+    call_ids: set[str] = set()
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                call_ids.clear()
+                states.clear()
+                continue
+            call_ids.update(_report_draft_call_ids(message, include_status=True))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_DRAFT_LEDGER_TOOLS and tool_call_id not in call_ids:
+                continue
+            for version, status in _REPORT_DRAFT_STATUS_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add(status.lower())
+            for version in _REPORT_DRAFT_CONFIRM_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add("confirmed")
+    _merge_current_work_contract_state(result, states, "report_draft")
     return states
+
+
+def _merge_current_work_contract_state(
+    result: object,
+    states: dict[int, set[str]],
+    contract_key: str,
+) -> None:
+    """Merge only the server-published current ledger snapshot into guard proof."""
+
+    if not isinstance(result, Mapping):
+        return
+    work = result.get("current_work")
+    if not isinstance(work, Mapping):
+        return
+    contract = work.get(contract_key)
+    if not isinstance(contract, Mapping):
+        return
+    version = contract.get("contract_version")
+    status = str(contract.get("status") or "").lower()
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version <= 0
+        or status not in {"provisional", "confirmed"}
+    ):
+        return
+    states.setdefault(version, set()).update({"recorded", status})
 
 
 def _report_draft_call_ids(message: object, *, include_status: bool) -> tuple[str, ...]:

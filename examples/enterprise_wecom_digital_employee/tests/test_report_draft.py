@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from agentseek_work import (
@@ -29,6 +29,8 @@ from enterprise_wecom_digital_employee.report_draft import (
     DraftQualityStatus,
     ReportDraft,
     build_report_draft,
+    explicitly_confirms_report_draft,
+    explicitly_requests_report_draft,
     prepare_report_draft_context,
 )
 from enterprise_wecom_digital_employee.report_outline import ReportOutline
@@ -51,6 +53,42 @@ PACK_ROOT = PROJECT_ROOT / "digital_employees" / "industry-report"
 ASSET_REF = "trusted-asset://strategic-report-docx/1.0.0"
 NOW = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
 CONTENT = "证券行业数字化转型应以客户服务、经营管理和风险控制能力提升为目标。"
+DRAFT_REQUEST = "请生成可审阅初稿"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("请生成可审阅初稿", True),
+        ("请根据已生成的提纲生成初稿", True),
+        ("开始撰写报告草稿", True),
+        ("generate a report draft", True),
+        ("确认 ReportOutline v1", False),
+        ("confirm ReportDraft v1", False),
+        ("暂不生成初稿", False),
+        ("可以生成初稿吗？", False),
+        ("ReportDraft v1 已生成", False),
+        ("初稿状态如何", False),
+    ],
+)
+def test_explicit_draft_request_parser(message: str, expected: bool) -> None:
+    assert explicitly_requests_report_draft(message) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("确认 ReportDraft v2", True),
+        ("我认可报告初稿第2版", True),
+        ("确认", False),
+        ("确认 ReportDraft v1", False),
+        ("不确认 ReportDraft v2", False),
+        ("请确认 ReportDraft v2", False),
+        ("ReportDraft v2 可以确认吗？", False),
+    ],
+)
+def test_explicit_draft_confirmation_parser(message: str, expected: bool) -> None:
+    assert explicitly_confirms_report_draft(message, expected_version=2) is expected
 
 
 def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> None:
@@ -67,6 +105,7 @@ def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> N
         composition=composition,
         state=state,
         runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
         invoke_mcp=invoke,
         clock=lambda: NOW,
     ))
@@ -74,6 +113,7 @@ def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> N
         composition=composition,
         state=state,
         runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
         invoke_mcp=invoke,
         clock=lambda: NOW,
     ))
@@ -92,6 +132,7 @@ def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> N
         composition=composition,
         state=state,
         runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
         proposals=proposals,
         clock=lambda: NOW,
     )
@@ -134,6 +175,7 @@ def test_draft_requires_confirmed_outline_and_source_hash_stability(tmp_path: Pa
             composition=composition,
             state=state,
             runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
             proposals=[DraftClaimProposal(
                 section_id="executive-summary",
                 statement="待确认。",
@@ -151,6 +193,7 @@ def test_draft_requires_confirmed_outline_and_source_hash_stability(tmp_path: Pa
             composition=composition,
             state=state,
             runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
             invoke_mcp=changed,
         ))
 
@@ -163,6 +206,7 @@ def test_draft_rejects_unsupported_fact_and_sensitive_content(tmp_path: Path) ->
             composition=composition,
             state=state,
             runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
             proposals=[
                 DraftClaimProposal(
                     section_id=section.section_id,
@@ -177,6 +221,7 @@ def test_draft_rejects_unsupported_fact_and_sensitive_content(tmp_path: Path) ->
             composition=composition,
             state=state,
             runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
             proposals=[
                 DraftClaimProposal(
                     section_id=section.section_id,
@@ -204,6 +249,7 @@ def test_draft_validates_the_complete_claim_batch_before_writing(tmp_path: Path)
             composition=composition,
             state=state,
             runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
             proposals=proposals,
         )
 
@@ -211,6 +257,114 @@ def test_draft_validates_the_complete_claim_batch_before_writing(tmp_path: Path)
         tenant_id="tenant-test",
         work_id="work_draft_001",
     ) == ()
+
+
+def test_outline_confirmation_does_not_advance_to_draft(tmp_path: Path) -> None:
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    async def invoke(server: str, tool_name: str, _arguments: dict[str, Any], _confirmed: bool) -> str:
+        calls.append((server, tool_name))
+        return json.dumps({"chunks": []})
+
+    confirmation = "确认 ReportOutline v1"
+    with pytest.raises(ValueError, match="未显式请求生成可审阅初稿"):
+        _run(prepare_report_draft_context(
+            composition=composition,
+            state=state,
+            runtime_context=None,
+            latest_user_message=confirmation,
+            invoke_mcp=invoke,
+        ))
+    with pytest.raises(ValueError, match="未显式请求生成可审阅初稿"):
+        build_report_draft(
+            composition=composition,
+            state=state,
+            runtime_context=None,
+            latest_user_message=confirmation,
+            proposals=[DraftClaimProposal(
+                section_id=outline.sections[0].section_id,
+                statement="不应写入。",
+                claim_type=ClaimType.RISK,
+            )],
+        )
+
+    assert calls == []
+    assert composition.repository.list_evidence_records(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+    ) == ()
+    assert composition.repository.list_claim_records(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+    ) == ()
+    assert composition.repository.get_current_work_contract(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+        contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+    ) is None
+
+
+def test_report_draft_confirmation_is_exact_and_idempotent(tmp_path: Path) -> None:
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+
+    async def invoke(_server: str, _tool_name: str, _arguments: dict[str, Any], _confirmed: bool) -> str:
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+
+    context = _run(prepare_report_draft_context(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        invoke_mcp=invoke,
+        clock=lambda: NOW,
+    ))
+    draft = build_report_draft(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        proposals=_proposals(outline, context.evidence[0].evidence_id),
+        clock=lambda: NOW,
+    )
+    saved = composition.save_report_draft(state, None, draft)
+
+    with pytest.raises(WorkCompositionError, match="未显式确认 ReportDraft v1"):
+        composition.confirm_report_draft(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="确认",
+        )
+    with pytest.raises(WorkCompositionError, match="版本不匹配"):
+        composition.confirm_report_draft(
+            state,
+            None,
+            expected_version=2,
+            latest_user_message="确认 ReportDraft v2",
+        )
+    assert saved.status is WorkContractStatus.PROVISIONAL
+
+    confirmed = composition.confirm_report_draft(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="确认 ReportDraft v1",
+    )
+    replay = composition.confirm_report_draft(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="确认 ReportDraft v1",
+    )
+
+    assert confirmed == replay
+    assert confirmed.status is WorkContractStatus.CONFIRMED
+    assert confirmed.confirmed_by == "hmac-" + "2" * 64
+    summary = composition.current_work_summary(state)
+    assert summary is not None
+    draft_summary = cast("dict[str, object]", summary["report_draft"])
+    assert draft_summary["status"] == "confirmed"
 
 
 def _composition_with_confirmed_outline(

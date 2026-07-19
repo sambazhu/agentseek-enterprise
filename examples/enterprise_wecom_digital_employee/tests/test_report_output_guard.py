@@ -145,6 +145,70 @@ def test_report_draft_claim_without_ledger_result_is_blocked() -> None:
     ) == REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
 
 
+def test_report_draft_confirmation_claim_allows_matching_confirm_result() -> None:
+    output = "ReportDraft v1 已由任务委派人确认。"
+    result = _result("确认 ReportDraft v1", output)
+    result["messages"] = [
+        HumanMessage(content="确认 ReportDraft v1"),
+        AIMessage(content="", tool_calls=[{
+            "name": "confirm_report_draft",
+            "args": {"expected_version": 1},
+            "id": "call_confirm_draft",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content="ReportDraft v1 已由任务委派人确认。",
+            name="confirm_report_draft",
+            tool_call_id="call_confirm_draft",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_read_only_contract_status_prose_uses_server_published_ledger() -> None:
+    output = (
+        "ReportBrief v3 已保存，状态=confirmed。\n"
+        "ReportOutline v2 已构建，暂定（provisional）。\n"
+        "ReportDraft v1 已生成并保存，状态=provisional。"
+    )
+    result = _result("请简要说明当前合同状态", output)
+    result["current_work"].update({
+        "report_brief": {"contract_version": 3, "status": "confirmed"},
+        "report_outline": {"contract_version": 2, "status": "provisional"},
+        "report_draft": {"contract_version": 1, "status": "provisional"},
+    })
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_server_published_ledger_does_not_allow_fake_or_wrong_draft_status() -> None:
+    result = _result("查看初稿状态", "ReportDraft v999 已确认。")
+    result["current_work"]["report_draft"] = {"contract_version": 1, "status": "provisional"}
+
+    assert enforce_m2_output_guard(
+        result,
+        "ReportDraft v999 已确认。",
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+    result["messages"][-1] = AIMessage(content="ReportDraft v1 已确认。")
+    assert enforce_m2_output_guard(
+        result,
+        "ReportDraft v1 已确认。",
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
 def test_versioned_confirmation_and_operational_reply_are_allowed() -> None:
     output = "ReportBrief v1 已确认，内部知识检索覆盖 5/6，尚有 1 个主题证据缺口。"
 

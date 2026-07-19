@@ -41,6 +41,46 @@ _FORBIDDEN_CONTENT_RE = re.compile(
     r"(?:/(?:Users|home|private|var)/\S+|(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+|\.env(?:\b|/))",
     re.IGNORECASE,
 )
+_CONFIRM_INTENT_RE = re.compile(
+    r"(?:我\s*)?(?:确认|同意|批准|认可)|\b(?:confirm|approve|accept)\b",
+    re.IGNORECASE,
+)
+_NEGATED_CONFIRM_RE = re.compile(
+    r"(?:不|未|尚未|暂不|不要|不能|无法|拒绝)\s*(?:确认|同意|批准|认可)"
+    r"|\b(?:do\s+not|don't|not)\s+(?:confirm|approve|accept)\b",
+    re.IGNORECASE,
+)
+_REQUEST_CONFIRM_RE = re.compile(r"请\s*(?:确认|同意|批准|认可)")
+_QUESTION_CONFIRM_RE = re.compile(r"(?:是否|要不要|能否|可否).*(?:确认|同意|批准|认可)|(?:吗|么)[？?]?\s*$")
+_DRAFT_VERSION_PATTERNS = (
+    re.compile(r"report\s*draft\s*(?:version|版本)?\s*[vV]?\s*(\d+)", re.IGNORECASE),
+    re.compile(r"(?:报告初稿|初稿|报告草稿)\s*(?:version|版本|第)?\s*[vV]?\s*(\d+)\s*版?"),
+)
+_DRAFT_REQUEST_ACTION_RE = re.compile(
+    r"(?:生成|编写|起草|撰写|准备|开始写|制作)|\b(?:generate|write|prepare|create)\b",
+    re.IGNORECASE,
+)
+_DRAFT_REQUEST_TARGET_RE = re.compile(
+    r"(?:可审阅)?(?:报告)?(?:初稿|草稿)|(?:report\s*draft|markdown\s*draft)",
+    re.IGNORECASE,
+)
+_NEGATED_DRAFT_REQUEST_RE = re.compile(
+    r"(?:不|未|尚未|暂不|不要|不能|无需|别)\s*.{0,8}"
+    r"(?:生成|编写|起草|撰写|准备|制作).{0,12}(?:初稿|草稿)"
+    r"|\b(?:do\s+not|don't|not)\s+(?:generate|write|draft|prepare|create)\b",
+    re.IGNORECASE,
+)
+_DRAFT_REQUEST_QUESTION_RE = re.compile(
+    r"(?:是否|要不要|能否|可否).{0,20}(?:生成|编写|起草|撰写|准备|制作).{0,20}(?:初稿|草稿)|"
+    r"(?:初稿|草稿).{0,16}(?:状态|进度|版本|如何|怎样|吗|么)[？?]?\s*$|"
+    r"(?:生成|编写|起草|撰写|准备|制作).{0,20}(?:初稿|草稿).{0,6}(?:吗|么)[？?]?\s*$",
+    re.IGNORECASE,
+)
+_DRAFT_STATUS_STATEMENT_RE = re.compile(
+    r"(?:初稿|草稿|report\s*draft).{0,12}(?:已|已经)(?:生成|编写|起草|撰写|准备|制作)|"
+    r"(?:已|已经)(?:生成|编写|起草|撰写|准备|制作)(?:了)?(?:报告)?(?:初稿|草稿)",
+    re.IGNORECASE,
+)
 
 
 class DraftQualityStatus(StrEnum):
@@ -76,6 +116,36 @@ class DraftClaimProposal(BaseModel):
         if len(clean) != len(set(clean)):
             raise ValueError("evidence_ids must not contain duplicates")
         return clean
+
+
+def explicitly_requests_report_draft(message: str) -> bool:
+    """Return whether the employee explicitly asks to generate a review draft."""
+
+    text = str(message or "").strip()
+    return bool(
+        text
+        and _DRAFT_REQUEST_ACTION_RE.search(text)
+        and _DRAFT_REQUEST_TARGET_RE.search(text)
+        and not _NEGATED_DRAFT_REQUEST_RE.search(text)
+        and not _DRAFT_REQUEST_QUESTION_RE.search(text)
+        and not _DRAFT_STATUS_STATEMENT_RE.search(text)
+    )
+
+
+def explicitly_confirms_report_draft(message: str, *, expected_version: int) -> bool:
+    """Return whether one employee message confirms exactly one ReportDraft version."""
+
+    text = str(message or "").strip()
+    if expected_version <= 0 or not text or not _CONFIRM_INTENT_RE.search(text):
+        return False
+    if _NEGATED_CONFIRM_RE.search(text) or _REQUEST_CONFIRM_RE.search(text) or _QUESTION_CONFIRM_RE.search(text):
+        return False
+    versions = {
+        int(match.group(1))
+        for pattern in _DRAFT_VERSION_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    return versions == {expected_version}
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,9 +357,11 @@ async def prepare_report_draft_context(
     composition: IndustryReportWorkComposition,
     state: Mapping[str, object],
     runtime_context: object | None,
+    latest_user_message: str,
     invoke_mcp: MCPInvoker,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> DraftContextResult:
+    _require_explicit_draft_request(latest_user_message)
     item, outline_contract, outline = composition.current_confirmed_report_outline(state, runtime_context)
     sources = _outline_sources(composition, item.tenant_id, item.work_id, outline)
     internal_sources = tuple(
@@ -369,9 +441,11 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
     composition: IndustryReportWorkComposition,
     state: Mapping[str, object],
     runtime_context: object | None,
+    latest_user_message: str,
     proposals: Sequence[DraftClaimProposal],
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ReportDraft:
+    _require_explicit_draft_request(latest_user_message)
     if not proposals:
         raise ValueError("报告初稿至少需要一条结构化 Claim。")
     if len(proposals) > MAX_DRAFT_CLAIMS:
@@ -681,6 +755,14 @@ def _digest_text(value: str) -> str:
 def _require_text(value: str, field_name: str) -> None:
     if not value.strip():
         raise ValueError(f"{field_name} must not be blank")
+
+
+def _require_explicit_draft_request(message: str) -> None:
+    if not explicitly_requests_report_draft(message):
+        raise ValueError(
+            "员工最新消息未显式请求生成可审阅初稿；"
+            "确认 ReportOutline 不会自动进入下一合同阶段。"
+        )
 
 
 def _require_unique_nonblank(values: Sequence[str], field_name: str, *, allow_empty: bool = False) -> None:

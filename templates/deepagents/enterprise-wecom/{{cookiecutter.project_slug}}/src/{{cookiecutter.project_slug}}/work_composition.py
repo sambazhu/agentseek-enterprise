@@ -56,6 +56,7 @@ from {{ cookiecutter.project_slug }}.report_draft import (
     ReportDraft,
     claim_set_digest,
     evidence_set_digest,
+    explicitly_confirms_report_draft,
 )
 from {{ cookiecutter.project_slug }}.report_outline import (
     REPORT_OUTLINE_CONTRACT_TYPE,
@@ -503,27 +504,7 @@ class IndustryReportWorkComposition:
             or draft.source_set_digest != outline.source_set_digest
         ):
             raise WorkCompositionError("ReportDraft 与当前已确认的 ReportOutline 绑定不一致。")
-        evidence = tuple(
-            record
-            for record in self.repository.list_evidence_records(
-                tenant_id=item.tenant_id,
-                work_id=item.work_id,
-            )
-            if record.metadata.get("report_outline_version") == outline_contract.contract_version
-            and record.source_id in set(outline.source_ids)
-        )
-        if evidence_set_digest(evidence) != draft.evidence_set_digest:
-            raise WorkCompositionError("ReportDraft 绑定的 Evidence 集合已变化，请重新准备初稿上下文。")
-        claims_by_id = {
-            claim.claim_id: claim
-            for claim in self.repository.list_claim_records(tenant_id=item.tenant_id, work_id=item.work_id)
-        }
-        try:
-            claims = tuple(claims_by_id[claim_id] for claim_id in draft.claim_ids)
-        except KeyError as exc:
-            raise WorkCompositionError("ReportDraft 引用了未登记的 ClaimRecord。") from exc
-        if claim_set_digest(claims) != draft.claim_set_digest:
-            raise WorkCompositionError("ReportDraft 绑定的 Claim 集合已变化，请重新生成初稿。")
+        self._require_draft_bindings(item, outline_contract, outline, draft)
         current = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,
@@ -548,6 +529,80 @@ class IndustryReportWorkComposition:
         if isinstance(state, dict):
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return saved
+
+    def confirm_report_draft(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> WorkContractSnapshot:
+        """Confirm an exact draft version without treating confirmation as approval."""
+
+        item, outline_contract, outline = self.current_confirmed_report_outline(state, runtime_context)
+        current = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        )
+        if current is None:
+            raise WorkCompositionError("当前任务尚未形成 ReportDraft。")
+        if current.contract_version != expected_version:
+            raise WorkCompositionError("ReportDraft 版本不匹配，请重新展示当前版本后再确认。")
+        try:
+            draft = ReportDraft.from_contract(current)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportDraft 合同无效，不能确认。") from exc
+        self._require_draft_bindings(item, outline_contract, outline, draft)
+        if current.status is WorkContractStatus.CONFIRMED:
+            confirmed = current
+        else:
+            if not explicitly_confirms_report_draft(latest_user_message, expected_version=expected_version):
+                raise WorkCompositionError(
+                    f"员工最新消息未显式确认 ReportDraft v{expected_version}，不能确认初稿。"
+                )
+            confirmed = self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+                expected_contract_version=expected_version,
+                confirmed_by=item.requester_id,
+                confirmed_at=self._factory.clock(),
+            )
+        if isinstance(state, dict):
+            self._publish_current_work(cast("dict[str, Any]", state), item)
+        return confirmed
+
+    def _require_draft_bindings(
+        self,
+        item: WorkItem,
+        outline_contract: WorkContractSnapshot,
+        outline: ReportOutline,
+        draft: ReportDraft,
+    ) -> None:
+        source_ids = set(outline.source_ids)
+        evidence = tuple(
+            record
+            for record in self.repository.list_evidence_records(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+            )
+            if record.metadata.get("report_outline_version") == outline_contract.contract_version
+            and record.source_id in source_ids
+        )
+        if evidence_set_digest(evidence) != draft.evidence_set_digest:
+            raise WorkCompositionError("ReportDraft 绑定的 Evidence 集合已变化，请重新准备初稿上下文。")
+        claims_by_id = {
+            claim.claim_id: claim
+            for claim in self.repository.list_claim_records(tenant_id=item.tenant_id, work_id=item.work_id)
+        }
+        try:
+            claims = tuple(claims_by_id[claim_id] for claim_id in draft.claim_ids)
+        except KeyError as exc:
+            raise WorkCompositionError("ReportDraft 引用了未登记的 ClaimRecord。") from exc
+        if claim_set_digest(claims) != draft.claim_set_digest:
+            raise WorkCompositionError("ReportDraft 绑定的 Claim 集合已变化，请重新生成初稿。")
 
     def _require_outline_brief_binding(self, item: WorkItem, outline: ReportOutline) -> None:
         brief_contract = self.repository.get_current_work_contract(

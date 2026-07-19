@@ -154,6 +154,14 @@ Markdown deterministically and returns the exact ledger-backed draft through the
 output guard. Semantic or human Claim verification, draft approval, DOCX/PDF
 rendering, and delivery remain later work.
 
+M3-03 makes draft generation and confirmation explicit checkpoints. Confirming
+`ReportOutline vN` stops that turn; a later employee message must explicitly ask
+for a review draft. A provisional draft becomes confirmed only after the latest
+employee message names the exact `ReportDraft vN`. Confirmation records requester
+acceptance of that Markdown version, not final approval, publication, DOCX/PDF
+generation, or delivery. Read-only Brief/Outline/Draft status prose is trusted only
+when it matches the server-published `current_work` ledger snapshot.
+
 Pack `1.2.0` makes the report topic itself a first-class evidence question. Its
 `report_topic` query strategy searches the exact ReportBrief title before the
 five reusable industry questions, so generic securities-methodology documents
