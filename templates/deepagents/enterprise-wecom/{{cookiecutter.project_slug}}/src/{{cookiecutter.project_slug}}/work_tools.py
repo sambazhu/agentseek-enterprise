@@ -193,6 +193,20 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                     f"publication={artifact.get('publication_status')}，"
                     f"delivery={artifact.get('delivery_status')}。"
                 )
+        publications = summary.get("report_publications")
+        if isinstance(publications, list):
+            for publication in publications:
+                if not isinstance(publication, Mapping):
+                    continue
+                lines.append(
+                    "当前 ReportPublication："
+                    f"publication_v{publication.get('publication_version')}，"
+                    f"status={publication.get('status')}，"
+                    f"artifact_id={publication.get('artifact_id')}，"
+                    f"bound_report_draft_v{publication.get('report_draft_version')}，"
+                    f"current={str(bool(publication.get('current'))).lower()}，"
+                    f"delivery={publication.get('delivery_status')}。"
+                )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -634,6 +648,62 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             )
         return "\n".join(lines)
 
+    @tool("publish_report_artifact")
+    def publish_report_artifact(expected_version: int, runtime: ToolRuntime) -> str:
+        """Publish one exact current ReportArtifact without delivering it.
+
+        Call only when the latest employee message is exactly
+        `发布 ReportArtifact vN`. The server revalidates the current approved
+        Draft, Artifact bytes and all immutable digest bindings. Publication is
+        a ledger fact only; this tool never sends a card or creates a download URL.
+        """
+
+        try:
+            publication = composition.publish_report_artifact(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportPublication publication_id={publication.publication_id}，"
+            f"publication_v{publication.publication_version}，status=published，"
+            f"artifact_id={publication.artifact_id}，"
+            f"bound_report_draft_v{publication.source_contract_version}，"
+            f"content_sha256={publication.content_sha256}，current=true，"
+            "delivery=not_delivered。ReportArtifact 已正式发布，但尚未交付；"
+            "本轮不会发送模板卡片、文件或下载链接。"
+        )
+
+    @tool("get_current_report_publications")
+    def get_current_report_publications(runtime: ToolRuntime) -> str:
+        """Read publication ledger state without publishing or delivering."""
+
+        summary = composition.current_work_summary(runtime.state, runtime.context)
+        if summary is None:
+            return "当前员工没有可见的进行中报告任务。"
+        publications = summary.get("report_publications")
+        if not isinstance(publications, list) or not publications:
+            return "当前任务尚无 ReportPublication；Artifact 尚未发布。"
+        lines: list[str] = []
+        for publication in publications:
+            if not isinstance(publication, Mapping):
+                continue
+            lines.append(
+                "ReportPublication "
+                f"publication_id={publication.get('publication_id')}，"
+                f"publication_v{publication.get('publication_version')}，"
+                f"status={publication.get('status')}，"
+                f"artifact_id={publication.get('artifact_id')}，"
+                f"bound_report_draft_v{publication.get('report_draft_version')}，"
+                f"content_sha256={publication.get('content_sha256')}，"
+                f"current={str(bool(publication.get('current'))).lower()}，"
+                f"delivery={publication.get('delivery_status')}。"
+            )
+        return "\n".join(lines)
+
     return [
         create_industry_report_work,
         get_current_work_status,
@@ -654,6 +724,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         approve_report_draft,
         render_report_docx_artifact,
         get_current_report_artifacts,
+        publish_report_artifact,
+        get_current_report_publications,
     ]
 
 

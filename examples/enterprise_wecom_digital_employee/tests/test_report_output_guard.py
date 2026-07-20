@@ -9,6 +9,7 @@ from enterprise_wecom_digital_employee.report_output_guard import (
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
+    REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE,
     enforce_m2_output_guard,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -960,6 +961,69 @@ def test_report_publication_or_delivery_claim_is_blocked_without_a_delivery_ledg
 
     assert enforce_m2_output_guard(
         _result("发布报告", output),
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_ledger_backed_report_publication_claim_is_allowed() -> None:
+    publication_id = f"publication_{'a' * 64}"
+    artifact_id = f"artifact_{'b' * 64}"
+    tool_output = (
+        f"ReportPublication publication_id={publication_id}，publication_v1，status=published，"
+        f"artifact_id={artifact_id}，bound_report_draft_v1，content_sha256=sha256:{'c' * 64}，"
+        "current=true，delivery=not_delivered。"
+    )
+    output = "ReportArtifact v1 已正式发布，但尚未交付。"
+    result = _result("发布 ReportArtifact v1", output)
+    result["messages"] = [
+        HumanMessage(content="发布 ReportArtifact v1"),
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "publish_report_artifact",
+                "args": {"expected_version": 1},
+                "id": "call_publication",
+                "type": "tool_call",
+            }],
+        ),
+        ToolMessage(
+            content=tool_output,
+            name="publish_report_artifact",
+            tool_call_id="call_publication",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_stale_publication_cannot_be_claimed_as_current() -> None:
+    output = "ReportArtifact v1 仍已正式发布。"
+    result = _result("查看当前发布状态", output)
+    result["current_work"]["report_publications"] = [{
+        "publication_version": 1,
+        "status": "published",
+        "report_draft_version": 1,
+        "current": False,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_delivery_claim_remains_blocked_after_publication_support() -> None:
+    output = "ReportArtifact v1 已交付给员工。"
+
+    assert enforce_m2_output_guard(
+        _result("交付 ReportArtifact v1", output),
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE

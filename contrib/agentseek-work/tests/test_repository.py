@@ -14,6 +14,8 @@ from agentseek_work.models import (
     EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
+    PublicationRecord,
+    PublicationStatus,
     SnapshotStatus,
     SourceRecord,
     SourceType,
@@ -38,6 +40,7 @@ from agentseek_work.schema import (
     work_claims,
     work_contracts,
     work_evidence,
+    work_publications,
     work_sources,
 )
 from agentseek_work.state_machine import OptimisticConcurrencyError, transition_work_item
@@ -212,6 +215,31 @@ def make_artifact(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -
         created_by="employee_001",
         created_at=NOW,
         metadata={"publication_status": "not_published"},
+    )
+
+
+def make_publication(
+    artifact: ArtifactRecord | None = None,
+    *,
+    version: int = 1,
+    published_at: datetime = NOW + timedelta(seconds=2),
+) -> PublicationRecord:
+    current = artifact or make_artifact()
+    return PublicationRecord(
+        publication_id=f"publication_{'e' * 64}",
+        publication_version=version,
+        work_id=current.work_id,
+        tenant_id=current.tenant_id,
+        artifact_id=current.artifact_id,
+        content_sha256=current.content_sha256,
+        source_contract_version=current.source_contract_version,
+        approval_contract_version=current.approval_contract_version,
+        template_digest=current.template_digest,
+        policy_id="industry-report-v1",
+        status=PublicationStatus.PUBLISHED,
+        published_by="employee_001",
+        published_at=published_at,
+        metadata={"delivery_status": "not_delivered"},
     )
 
 
@@ -431,6 +459,13 @@ def test_revision_nine_creates_artifact_ledger() -> None:
     assert work_artifacts.name in set(inspect(engine).get_table_names())
 
 
+def test_revision_ten_creates_publication_ledger() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    assert work_publications.name in set(inspect(engine).get_table_names())
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -507,6 +542,101 @@ def test_artifact_record_is_immutable_scoped_idempotent_and_attached(
         repository.put_artifact_record(replace(artifact, filename="changed.docx"))
     with pytest.raises(WorkNotFoundError):
         repository.get_artifact_record(tenant_id="tenant_other", artifact_id=artifact.artifact_id)
+
+
+def test_publication_record_is_atomic_idempotent_and_advances_work_status(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    artifact = repository.put_artifact_record(make_artifact())
+    publication = make_publication(artifact)
+
+    assert repository.put_publication_record(publication) == publication
+    assert repository.put_publication_record(publication) == publication
+    assert repository.get_publication_record(
+        tenant_id=publication.tenant_id,
+        publication_id=publication.publication_id,
+    ) == publication
+    assert repository.list_publication_records(
+        tenant_id=publication.tenant_id,
+        work_id=publication.work_id,
+    ) == (publication,)
+    item = repository.get_work(tenant_id=publication.tenant_id, work_id=publication.work_id)
+    assert item.status is WorkStatus.PUBLISHED
+    assert item.version == 2
+    events = repository.list_events(tenant_id=publication.tenant_id, work_id=publication.work_id)
+    assert [(event.event_type, event.work_version) for event in events] == [
+        ("artifact_registered", 1),
+        ("publication_registered", 2),
+    ]
+
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_publication_record(replace(publication, policy_id="changed-policy"))
+    with pytest.raises(WorkNotFoundError):
+        repository.get_publication_record(
+            tenant_id="tenant_other",
+            publication_id=publication.publication_id,
+        )
+
+
+def test_publication_binding_must_match_registered_artifact(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    artifact = repository.put_artifact_record(make_artifact())
+
+    with pytest.raises(WorkConflictError, match="binding does not match"):
+        repository.put_publication_record(
+            replace(make_publication(artifact), content_sha256=f"sha256:{'f' * 64}")
+        )
+
+
+def test_later_artifact_creates_next_publication_while_work_remains_published(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    first_artifact = repository.put_artifact_record(make_artifact())
+    first = make_publication(first_artifact)
+    repository.put_publication_record(first)
+    second_artifact = repository.put_artifact_record(replace(
+        first_artifact,
+        artifact_id=f"artifact_{'f' * 64}",
+        content_sha256=f"sha256:{'1' * 64}",
+        storage_key=f"tenant_001/work_001/docx/{'1' * 64}.docx",
+        filename="industry-report-draft-v2.docx",
+        source_contract_version=2,
+        source_digest=f"sha256:{'2' * 64}",
+        approval_contract_version=2,
+        approval_digest=f"sha256:{'3' * 64}",
+        created_at=NOW + timedelta(seconds=3),
+    ))
+    second = replace(
+        make_publication(
+            second_artifact,
+            version=2,
+            published_at=NOW + timedelta(seconds=4),
+        ),
+        publication_id=f"publication_{'4' * 64}",
+    )
+
+    assert repository.put_publication_record(second) == second
+    assert repository.put_publication_record(second) == second
+    item = repository.get_work(tenant_id=second.tenant_id, work_id=second.work_id)
+    assert item.status is WorkStatus.PUBLISHED
+    assert item.version == 4
+    assert repository.list_publication_records(
+        tenant_id=second.tenant_id,
+        work_id=second.work_id,
+    ) == (first, second)
+    assert [event.event_type for event in repository.list_events(
+        tenant_id=second.tenant_id,
+        work_id=second.work_id,
+    )] == [
+        "artifact_registered",
+        "publication_registered",
+        "artifact_registered",
+        "publication_registered",
+    ]
 
 
 def test_different_request_is_rejected_when_same_playbook_scope_is_active(

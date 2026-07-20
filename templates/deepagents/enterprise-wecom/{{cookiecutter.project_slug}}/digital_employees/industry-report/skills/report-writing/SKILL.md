@@ -17,3 +17,5 @@ description: Build, confirm, approve, and explicitly render a reviewable securit
 10. Content approval is not rendering, publication, or delivery. After approval, stop and tell the employee that a separate exact `生成 ReportDraft vN DOCX` request is required.
 11. Render only the current approved ReportDraft after that exact request. Use `render_report_docx_artifact`; do not fabricate an artifact ID, filename, digest, or storage result. PDF is not enabled in this slice.
 12. A rendered Artifact is still neither published nor delivered. Report only the ledger-backed artifact ID, content digest, current status, and explicit `not_published` / `not_delivered` state. Never expose a host filesystem path.
+13. Publish only after a later employee message exactly says `发布 ReportArtifact vN`. Call `publish_report_artifact` and rely on its server-side revalidation of the current Draft, Approval, Artifact bytes, digests, actor, and policy.
+14. Publication is an immutable ledger fact, not delivery. Stop after publication and state explicitly that no template card, file, signed link, or download endpoint was produced. Delivery remains unavailable in this slice.

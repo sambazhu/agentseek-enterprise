@@ -705,7 +705,7 @@ M3 先以运行时前置切片启动：
    独立模板 smoke 和全量回归活体复核，验证文档为 `48e379f`。M3 从 Brief 到 Artifact
    的完整闭环正式关闭。
 
-9. **M4-00 企微出站协议冻结（已实现，待 Mac mini 复核）**：
+9. **M4-00 企微出站协议冻结（已关闭）**：
 
    - 当前部署固定为 AI Bot HTTP callback。官方 `response_url` 每个只可调用一次、有效期一小时，
      仅支持 `markdown` 与 `template_card`，不支持 `file`。
@@ -718,8 +718,19 @@ M3 先以运行时前置切片启动：
    - v0.1.0 决策：保留已验证 callback，M4 用模板卡片发送短期签名下载链接。消息投递 exactly-once
      与文件下载重试分开记账；直接附件留给后续长连接迁移。
 
-10. **M4-01 发布合同（后续）**：Artifact 发布使用独立显式动作和 publication ledger，
-    不自动交付。
+   Mac mini 已在 `8b629ca` 完成能力矩阵、preflight、默认关闭的模板卡片活体探针及全量回归，
+   验证文档为 `3ae928f`，M4-00 正式关闭。
+
+10. **M4-01 发布合同（已实现，待 Mac mini 复核）**：
+
+    - schema rev10 新增不可变 `enterprise_work_publications`，绑定 Artifact、Draft、Approval、
+      模板摘要、政策、发布人和时间。
+    - 只有当前 approved + current 内容、唯一当前 DOCX Artifact、物理文件哈希和企业身份全部复核通过，
+      且员工精确输入 `发布 ReportArtifact vN`，才能发布。
+    - 发布记录、WorkItem `published` 状态和 WorkEvent 在同一事务落账；精确重放不新增版本或事件。
+    - 上游合同修订后旧发布保留历史但 `current=false`；伪造发布声明由独立守卫 fail-closed。
+    - 发布不等于交付；本切片不生成卡片、文件、签名链接或下载端点，delivery 仍为关闭。
+    - Pack/Profile/report-writing 升级为 `1.8.0` / `1.7.0` / `1.4.0`，example 与 cookiecutter 同步。
 
 11. **M4-02 签名链接交付（后续）**：建立 delivery ledger、outbox、短期签名下载端点和
     template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。

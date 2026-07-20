@@ -179,9 +179,33 @@ _REPORT_ARTIFACT_LEDGER_TOOLS = frozenset({
     "get_current_report_artifacts",
     "get_current_work_status",
 })
-_REPORT_PUBLISH_DELIVERY_CLAIM_RE = re.compile(
-    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:发布|交付|发送)|"
-    r"(?:publication|delivery|status)\s*[=:：]\s*(?:published|delivered)",
+_REPORT_PUBLICATION_REF_RE = re.compile(
+    r"report\s*artifact\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?|"
+    r"bound_report_draft_v(\d+)",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_CLAIM_RE = re.compile(
+    r"(?:已|已经)(?:正式)?发布|status\s*[=:：]\s*published|"
+    r"publication\s*[=:：]\s*published",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_STALE_RE = re.compile(
+    r"current\s*[=:：]\s*false|(?:历史|旧版|已失效|非当前).{0,12}(?:发布|版本)",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_STATUS_SUCCESS_RE = re.compile(
+    r"ReportPublication\s+publication_id=([A-Za-z0-9_-]+).{0,160}?"
+    r"status=published.{0,160}?bound_report_draft_v(\d+).{0,240}?current=(true|false)",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_LEDGER_TOOLS = frozenset({
+    "publish_report_artifact",
+    "get_current_report_publications",
+    "get_current_work_status",
+})
+_REPORT_DELIVERY_CLAIM_RE = re.compile(
+    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:交付|发送)|"
+    r"(?:delivery|status)\s*[=:：]\s*delivered",
     re.IGNORECASE,
 )
 
@@ -218,6 +242,11 @@ REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "请调用 render_report_docx_artifact、get_current_report_artifacts 或 get_current_work_status，"
     "并以工具返回的 artifact_id、Draft 版本和 current 状态为准。渲染不等于发布或交付。"
 )
+REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到匹配的当前 ReportPublication 账本记录，因此不能声称 ReportArtifact 已正式发布。"
+    "请调用 publish_report_artifact、get_current_report_publications 或 get_current_work_status，"
+    "并以工具返回的发布版本、Artifact 绑定和 current 状态为准。发布不等于交付或发送。"
+)
 _OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
 
 
@@ -247,6 +276,8 @@ def enforce_m2_output_guard(
         if _claims_unverified_report_brief_write(result, output)
         else "unverified_report_outline_write"
         if _claims_unverified_report_outline_write(result, output)
+        else "unverified_report_publication"
+        if _claims_unverified_report_publication(result, output)
         else "unverified_report_artifact"
         if _claims_unverified_report_artifact(result, output)
         else "unverified_report_draft_write"
@@ -274,6 +305,8 @@ def enforce_m2_output_guard(
         return REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_artifact":
         return REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_publication":
+        return REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "ledger_backed_report_draft":
         return verified_draft_output
     if reason:
@@ -617,7 +650,7 @@ def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
 
 
 def _claims_unverified_report_artifact(result: object, output: str) -> bool:
-    if _REPORT_PUBLISH_DELIVERY_CLAIM_RE.search(output):
+    if _REPORT_DELIVERY_CLAIM_RE.search(output):
         return True
     if not _REPORT_ARTIFACT_CLAIM_RE.search(output):
         return False
@@ -662,6 +695,67 @@ def _artifact_states_from_messages(messages: object) -> tuple[set[str], set[int]
                 artifact_ids.add(artifact_id)
                 draft_versions.add(int(draft_version))
     return artifact_ids, draft_versions
+
+
+def _claims_unverified_report_publication(result: object, output: str) -> bool:
+    if not _REPORT_PUBLICATION_CLAIM_RE.search(output):
+        return False
+    claims = _report_publication_claims(output)
+    states = _successful_report_publication_states(result)
+    if not claims:
+        return not any(True in values for values in states.values())
+    return any(current not in states.get(version, set()) for version, current in claims)
+
+
+def _report_publication_claims(output: str) -> tuple[tuple[int, bool], ...]:
+    claims: list[tuple[int, bool]] = []
+    for match in _REPORT_PUBLICATION_REF_RE.finditer(output):
+        line = _claim_line(output, match)
+        if not _REPORT_PUBLICATION_CLAIM_RE.search(line):
+            continue
+        version_text = match.group(1) or match.group(2)
+        claims.append((int(version_text), not bool(_REPORT_PUBLICATION_STALE_RE.search(line))))
+    return tuple(claims)
+
+
+def _successful_report_publication_states(result: object) -> dict[int, set[bool]]:
+    if not isinstance(result, Mapping):
+        return {}
+    states = _publication_states_from_messages(result.get("messages"))
+    _merge_current_work_publication_states(result.get("current_work"), states)
+    return states
+
+
+def _publication_states_from_messages(messages: object) -> dict[int, set[bool]]:
+    states: dict[int, set[bool]] = {}
+    call_ids: set[str] = set()
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                call_ids.clear()
+                states.clear()
+                continue
+            call_ids.update(_tool_call_ids(message, _REPORT_PUBLICATION_LEDGER_TOOLS))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_PUBLICATION_LEDGER_TOOLS and tool_call_id not in call_ids:
+                continue
+            for _publication_id, version, current in _REPORT_PUBLICATION_STATUS_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add(current.lower() == "true")
+    return states
+
+
+def _merge_current_work_publication_states(work: object, states: dict[int, set[bool]]) -> None:
+    if not isinstance(work, Mapping):
+        return
+    publications = work.get("report_publications")
+    if not isinstance(publications, Sequence) or isinstance(publications, (str, bytes)):
+        return
+    for publication in publications:
+        if not isinstance(publication, Mapping):
+            continue
+        version = publication.get("report_draft_version")
+        if isinstance(version, int) and not isinstance(version, bool):
+            states.setdefault(version, set()).add(publication.get("current") is True)
 
 
 def _artifact_states_from_work(work: object) -> tuple[set[str], set[int]]:

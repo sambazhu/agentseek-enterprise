@@ -6,6 +6,7 @@ from agentseek_work.schema import (
     work_contracts,
     work_events,
     work_items,
+    work_publications,
     work_sources,
 )
 from sqlalchemy.dialects import postgresql
@@ -92,3 +93,14 @@ def test_postgresql_work_artifact_ddl_is_content_addressed_and_bound() -> None:
     assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl
     assert "CONSTRAINT uq_work_artifacts_render_binding UNIQUE" in ddl
     assert "CONSTRAINT ck_work_artifact_size CHECK" in ddl
+
+
+def test_postgresql_work_publication_ddl_is_immutable_and_artifact_bound() -> None:
+    ddl = str(CreateTable(work_publications).compile(dialect=postgresql.dialect()))
+
+    assert "publication_version INTEGER NOT NULL" in ddl
+    assert "content_sha256 VARCHAR(71) NOT NULL" in ddl
+    assert "FOREIGN KEY(artifact_id) REFERENCES enterprise_work_artifacts (artifact_id) ON DELETE RESTRICT" in ddl
+    assert "CONSTRAINT uq_work_publications_version UNIQUE" in ddl
+    assert "CONSTRAINT uq_work_publications_artifact UNIQUE" in ddl
+    assert "CONSTRAINT ck_work_publication_status CHECK" in ddl

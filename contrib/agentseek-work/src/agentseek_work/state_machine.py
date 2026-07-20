@@ -20,7 +20,7 @@ class OptimisticConcurrencyError(WorkStateError):
 
 
 ALLOWED_TRANSITIONS: Final[dict[WorkStatus, frozenset[WorkStatus]]] = {
-    WorkStatus.DRAFT: frozenset({WorkStatus.QUEUED, WorkStatus.CANCELLED}),
+    WorkStatus.DRAFT: frozenset({WorkStatus.QUEUED, WorkStatus.PUBLISHED, WorkStatus.CANCELLED}),
     WorkStatus.QUEUED: frozenset({WorkStatus.RUNNING, WorkStatus.FAILED, WorkStatus.CANCELLED}),
     WorkStatus.RUNNING: frozenset({
         WorkStatus.WAITING_EXTERNAL,
@@ -35,6 +35,7 @@ ALLOWED_TRANSITIONS: Final[dict[WorkStatus, frozenset[WorkStatus]]] = {
     WorkStatus.WAITING_INPUT: frozenset({WorkStatus.QUEUED, WorkStatus.CANCELLED}),
     WorkStatus.WAITING_REVIEW: frozenset({WorkStatus.QUEUED, WorkStatus.CANCELLED}),
     WorkStatus.WAITING_APPROVAL: frozenset({WorkStatus.QUEUED, WorkStatus.CANCELLED}),
+    WorkStatus.PUBLISHED: frozenset(),
     WorkStatus.SUCCEEDED: frozenset(),
     WorkStatus.FAILED: frozenset(),
     WorkStatus.CANCELLED: frozenset(),

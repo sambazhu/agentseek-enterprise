@@ -568,6 +568,54 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     artifacts = cast("list[dict[str, object]]", artifact_summary["report_artifacts"])
     assert artifacts[0]["current"] is True
 
+    with pytest.raises(WorkCompositionError, match="未精确请求发布"):
+        composition.publish_report_artifact(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="请发布 ReportArtifact v1",
+        )
+    with pytest.raises(WorkCompositionError, match="版本不匹配"):
+        composition.publish_report_artifact(
+            state,
+            None,
+            expected_version=2,
+            latest_user_message="发布 ReportArtifact v2",
+        )
+    publication = composition.publish_report_artifact(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="发布 ReportArtifact v1",
+    )
+    published_item = composition.current_work(state)
+    assert published_item is not None
+    published_version = published_item.version
+    replay_publication = composition.publish_report_artifact(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="发布 ReportArtifact v1",
+    )
+
+    assert publication == replay_publication
+    assert publication.publication_version == 1
+    assert publication.artifact_id == artifact.artifact_id
+    assert publication.content_sha256 == artifact.content_sha256
+    assert publication.metadata["delivery_status"] == "not_delivered"
+    replay_item = composition.current_work(state)
+    assert replay_item is not None
+    assert replay_item.status.value == "published"
+    assert replay_item.version == published_version
+    publication_summary = composition.current_work_summary(state)
+    assert publication_summary is not None
+    publications = cast("list[dict[str, object]]", publication_summary["report_publications"])
+    assert publications[0]["current"] is True
+    assert publications[0]["delivery_status"] == "not_delivered"
+    assert cast("list[dict[str, object]]", publication_summary["report_artifacts"])[0][
+        "publication_status"
+    ] == "published"
+
     revised_draft = replace(draft, markdown=f"{draft.markdown}\n\n修订说明。")
     revised = composition.save_report_draft(state, None, revised_draft)
     assert revised.contract_version == 2
@@ -576,6 +624,8 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     assert cast("dict[str, object]", stale_summary["report_approval"])["current"] is False
     stale_artifacts = cast("list[dict[str, object]]", stale_summary["report_artifacts"])
     assert stale_artifacts[0]["current"] is False
+    stale_publications = cast("list[dict[str, object]]", stale_summary["report_publications"])
+    assert stale_publications[0]["current"] is False
     composition.confirm_report_draft(
         state,
         None,

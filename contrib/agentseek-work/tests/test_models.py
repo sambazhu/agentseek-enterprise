@@ -11,6 +11,8 @@ from agentseek_work.models import (
     EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
+    PublicationRecord,
+    PublicationStatus,
     SnapshotStatus,
     SourceRecord,
     SourceType,
@@ -210,3 +212,30 @@ def test_evidence_and_claim_records_validate_governed_bindings() -> None:
         replace(evidence, excerpt=None)
     with pytest.raises(ValueError, match="requires evidence_ids"):
         replace(claim, evidence_ids=())
+
+
+def test_publication_record_is_immutable_and_validates_exact_bindings() -> None:
+    publication = PublicationRecord(
+        publication_id="publication_sha256_abc",
+        publication_version=1,
+        work_id="work_001",
+        tenant_id="tenant_001",
+        artifact_id="artifact_sha256_abc",
+        content_sha256=f"sha256:{'a' * 64}",
+        source_contract_version=1,
+        approval_contract_version=1,
+        template_digest=f"sha256:{'b' * 64}",
+        policy_id="industry-report-v1",
+        status=PublicationStatus.PUBLISHED,
+        published_by="employee_001",
+        published_at=NOW,
+        metadata={"delivery_status": "not_delivered"},
+    )
+
+    assert publication.metadata["delivery_status"] == "not_delivered"
+    with pytest.raises(TypeError):
+        cast(Any, publication.metadata)["changed"] = True
+    with pytest.raises(ValueError, match="greater than zero"):
+        replace(publication, publication_version=0)
+    with pytest.raises(ValueError, match="canonical sha256"):
+        replace(publication, content_sha256="sha256:invalid")

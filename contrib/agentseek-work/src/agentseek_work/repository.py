@@ -24,6 +24,8 @@ from agentseek_work.models import (
     EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
+    PublicationRecord,
+    PublicationStatus,
     SnapshotStatus,
     SourceRecord,
     SourceType,
@@ -46,6 +48,7 @@ from agentseek_work.schema import (
     work_events,
     work_evidence,
     work_items,
+    work_publications,
     work_sources,
 )
 from agentseek_work.state_machine import OptimisticConcurrencyError, TransitionResult
@@ -763,6 +766,130 @@ class SQLAlchemyWorkRepository:
             )
             return tuple(_row_to_artifact(row) for row in rows)
 
+    def put_publication_record(self, publication: PublicationRecord) -> PublicationRecord:
+        """Publish one immutable Artifact and advance its WorkItem atomically."""
+
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(
+                    connection,
+                    tenant_id=publication.tenant_id,
+                    work_id=publication.work_id,
+                )
+                item_row = (
+                    connection
+                    .execute(
+                        select(work_items)
+                        .where(
+                            work_items.c.tenant_id == publication.tenant_id,
+                            work_items.c.work_id == publication.work_id,
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one()
+                )
+                _require_publication_artifact(connection, publication)
+                existing_row = (
+                    connection
+                    .execute(
+                        select(work_publications).where(
+                            work_publications.c.tenant_id == publication.tenant_id,
+                            work_publications.c.publication_id == publication.publication_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing_row is not None:
+                    existing = _row_to_publication(existing_row)
+                    if existing != publication:
+                        _raise_publication_record_conflict(publication.publication_id)
+                    return existing
+
+                item = _row_to_item(item_row)
+                result = _publication_transition(item, publication)
+                values = _item_to_values(result.item)
+                values.pop("work_id")
+                values.pop("tenant_id")
+                connection.execute(insert(work_publications).values(**_publication_values(publication)))
+                updated = connection.execute(
+                    update(work_items)
+                    .where(
+                        work_items.c.tenant_id == publication.tenant_id,
+                        work_items.c.work_id == publication.work_id,
+                        work_items.c.version == item.version,
+                    )
+                    .values(**values)
+                )
+                if updated.rowcount != 1:
+                    _raise_optimistic_concurrency(publication.work_id)
+                connection.execute(insert(work_events).values(**_event_to_values(result.event)))
+                return publication
+        except (WorkNotFoundError, WorkConflictError, OptimisticConcurrencyError):
+            raise
+        except IntegrityError as exc:
+            try:
+                existing = self.get_publication_record(
+                    tenant_id=publication.tenant_id,
+                    publication_id=publication.publication_id,
+                )
+            except WorkNotFoundError:
+                self._raise_write_error(exc, "publication registration failed")
+            if existing == publication:
+                return existing
+            self._raise_write_error(exc, "publication registration failed")
+        except StatementError as exc:
+            self._raise_write_error(exc, "publication registration failed")
+
+    def get_publication_record(
+        self,
+        *,
+        tenant_id: str,
+        publication_id: str,
+    ) -> PublicationRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_publications).where(
+                        work_publications.c.tenant_id == tenant_id,
+                        work_publications.c.publication_id == publication_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"publication {publication_id} was not found for tenant")
+            return _row_to_publication(row)
+
+    def list_publication_records(
+        self,
+        *,
+        tenant_id: str,
+        work_id: str,
+    ) -> tuple[PublicationRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_publications)
+                    .where(
+                        work_publications.c.tenant_id == tenant_id,
+                        work_publications.c.work_id == work_id,
+                    )
+                    .order_by(
+                        work_publications.c.publication_version,
+                        work_publications.c.publication_id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return tuple(_row_to_publication(row) for row in rows)
+
     def commit_transition(
         self,
         *,
@@ -1392,6 +1519,39 @@ def _raise_claim_record_conflict(claim_id: str) -> NoReturn:
 
 def _raise_artifact_record_conflict(artifact_id: str) -> NoReturn:
     raise WorkConflictError(f"artifact record {artifact_id} already exists with different values")
+
+
+def _raise_publication_record_conflict(publication_id: str) -> NoReturn:
+    raise WorkConflictError(f"publication record {publication_id} already exists with different values")
+
+
+def _require_publication_artifact(
+    connection: Connection,
+    publication: PublicationRecord,
+) -> ArtifactRecord:
+    row = (
+        connection
+        .execute(
+            select(work_artifacts).where(
+                work_artifacts.c.tenant_id == publication.tenant_id,
+                work_artifacts.c.artifact_id == publication.artifact_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise WorkConflictError("publication artifact is not registered for this tenant")
+    artifact = _row_to_artifact(row)
+    if (
+        artifact.work_id != publication.work_id
+        or artifact.content_sha256 != publication.content_sha256
+        or artifact.source_contract_version != publication.source_contract_version
+        or artifact.approval_contract_version != publication.approval_contract_version
+        or artifact.template_digest != publication.template_digest
+    ):
+        raise WorkConflictError("publication binding does not match the immutable Artifact")
+    return artifact
 
 
 def _require_source_binding(connection: Connection, evidence: EvidenceRecord) -> None:
@@ -2076,6 +2236,44 @@ def _row_to_artifact(row: RowMapping | Mapping[str, Any]) -> ArtifactRecord:
     )
 
 
+def _publication_values(publication: PublicationRecord) -> dict[str, Any]:
+    return {
+        "publication_id": publication.publication_id,
+        "publication_version": publication.publication_version,
+        "work_id": publication.work_id,
+        "tenant_id": publication.tenant_id,
+        "artifact_id": publication.artifact_id,
+        "content_sha256": publication.content_sha256,
+        "source_contract_version": publication.source_contract_version,
+        "approval_contract_version": publication.approval_contract_version,
+        "template_digest": publication.template_digest,
+        "policy_id": publication.policy_id,
+        "status": publication.status.value,
+        "published_by": publication.published_by,
+        "published_at": publication.published_at,
+        "metadata": _json_document(dict(publication.metadata), "publication metadata"),
+    }
+
+
+def _row_to_publication(row: RowMapping | Mapping[str, Any]) -> PublicationRecord:
+    return PublicationRecord(
+        publication_id=str(row["publication_id"]),
+        publication_version=int(row["publication_version"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        artifact_id=str(row["artifact_id"]),
+        content_sha256=str(row["content_sha256"]),
+        source_contract_version=int(row["source_contract_version"]),
+        approval_contract_version=int(row["approval_contract_version"]),
+        template_digest=str(row["template_digest"]),
+        policy_id=str(row["policy_id"]),
+        status=PublicationStatus(str(row["status"])),
+        published_by=str(row["published_by"]),
+        published_at=_aware_datetime(row["published_at"]),
+        metadata=dict(row["metadata"]),
+    )
+
+
 def _item_to_values(item: WorkItem) -> dict[str, Any]:
     return {
         "work_id": item.work_id,
@@ -2262,6 +2460,53 @@ def _system_transition(
         occurred_at=occurred_at,
         payload_digest="sha256:operational",
         policy_decision="allowed",
+    )
+
+
+def _publication_transition(item: WorkItem, publication: PublicationRecord) -> TransitionResult:
+    if publication.published_at < item.updated_at:
+        raise ValueError("published_at must not be earlier than the current WorkItem updated_at")
+    event_id = f"publication-{publication.publication_id}"
+    if item.status is WorkStatus.DRAFT:
+        from agentseek_work.state_machine import transition_work_item
+
+        return transition_work_item(
+            item,
+            to_status=WorkStatus.PUBLISHED,
+            expected_version=item.version,
+            event_id=event_id,
+            event_type="publication_registered",
+            actor_type=ActorType.REQUESTER,
+            actor_id=publication.published_by,
+            occurred_at=publication.published_at,
+            payload_digest=publication.content_sha256,
+            policy_decision=publication.policy_id,
+        )
+    if item.status is not WorkStatus.PUBLISHED:
+        raise WorkConflictError(
+            f"work item status {item.status.value} cannot register a report publication"
+        )
+    next_item = replace(
+        item,
+        version=item.version + 1,
+        updated_at=publication.published_at,
+    )
+    return TransitionResult(
+        item=next_item,
+        event=WorkEvent(
+            event_id=event_id,
+            work_id=item.work_id,
+            event_type="publication_registered",
+            actor_type=ActorType.REQUESTER,
+            actor_id=publication.published_by,
+            phase=item.current_phase,
+            from_status=WorkStatus.PUBLISHED,
+            to_status=WorkStatus.PUBLISHED,
+            work_version=next_item.version,
+            payload_digest=publication.content_sha256,
+            policy_decision=publication.policy_id,
+            occurred_at=publication.published_at,
+        ),
     )
 
 

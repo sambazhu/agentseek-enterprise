@@ -17,6 +17,7 @@ class WorkStatus(StrEnum):
     WAITING_INPUT = "waiting_input"
     WAITING_REVIEW = "waiting_review"
     WAITING_APPROVAL = "waiting_approval"
+    PUBLISHED = "published"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -82,6 +83,10 @@ class ClaimReviewerStatus(StrEnum):
     ACCEPTED = "accepted"
     CHANGES_REQUESTED = "changes_requested"
     REJECTED = "rejected"
+
+
+class PublicationStatus(StrEnum):
+    PUBLISHED = "published"
 
 
 TERMINAL_WORK_STATUSES = frozenset({
@@ -486,6 +491,53 @@ class ArtifactRecord:
         if PurePosixPath(self.filename).name != self.filename:
             raise ValueError("filename must not contain a path")
         _require_aware(self.created_at, "created_at")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationRecord:
+    """Immutable publication fact for one exact content-addressed Artifact."""
+
+    publication_id: str
+    publication_version: int
+    work_id: str
+    tenant_id: str
+    artifact_id: str
+    content_sha256: str
+    source_contract_version: int
+    approval_contract_version: int
+    template_digest: str
+    policy_id: str
+    status: PublicationStatus
+    published_by: str
+    published_at: datetime
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "publication_id",
+            "work_id",
+            "tenant_id",
+            "artifact_id",
+            "policy_id",
+            "published_by",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        for field_name in ("content_sha256", "template_digest"):
+            value = getattr(self, field_name)
+            if len(value) != 71 or not value.startswith("sha256:"):
+                raise ValueError(f"{field_name} must be a canonical sha256 digest")
+            try:
+                int(value.removeprefix("sha256:"), 16)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a canonical sha256 digest") from exc
+        if self.publication_version <= 0:
+            raise ValueError("publication_version must be greater than zero")
+        if self.source_contract_version <= 0 or self.approval_contract_version <= 0:
+            raise ValueError("publication contract versions must be greater than zero")
+        if self.status is not PublicationStatus.PUBLISHED:
+            raise ValueError("publication status must be published")
+        _require_aware(self.published_at, "published_at")
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 

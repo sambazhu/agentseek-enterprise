@@ -17,6 +17,8 @@ from agentseek_work import (
     ArtifactRecord,
     CreateWorkResult,
     InteractionRoute,
+    PublicationRecord,
+    PublicationStatus,
     RouteRequest,
     SideEffect,
     SourceRecord,
@@ -84,6 +86,10 @@ from {{ cookiecutter.project_slug }}.report_outline import (
     ReportOutline,
     explicitly_confirms_report_outline,
     source_set_digest,
+)
+from {{ cookiecutter.project_slug }}.report_publication import (
+    explicitly_requests_report_publication,
+    publication_id,
 )
 from {{ cookiecutter.project_slug }}.research_gap_decision import (
     RESEARCH_GAP_DECISION_CONTRACT_TYPE,
@@ -831,6 +837,103 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), current)
         return saved
 
+    def publish_report_artifact(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> PublicationRecord:
+        """Publish one exact current Artifact without delivering it."""
+
+        if not explicitly_requests_report_publication(
+            latest_user_message,
+            expected_version=expected_version,
+        ):
+            raise WorkCompositionError(
+                f"员工最新消息未精确请求发布 ReportArtifact v{expected_version}，不能登记发布。"
+            )
+        item, draft_contract, draft = self.current_confirmed_report_draft(state, runtime_context)
+        if draft_contract.contract_version != expected_version:
+            raise WorkCompositionError("ReportArtifact 版本不匹配，请重新展示当前版本后再发布。")
+        approval_contract = self._require_current_report_approval(
+            item,
+            draft_contract=draft_contract,
+            draft=draft,
+        )
+        approval = ReportApproval.from_contract(approval_contract)
+        draft_digest = report_draft_digest(draft)
+        approval_digest = contract_digest(approval_contract)
+        candidates = tuple(
+            artifact
+            for artifact in self.repository.list_artifact_records(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+            )
+            if artifact.artifact_format == REPORT_ARTIFACT_FORMAT_DOCX
+            and artifact.source_contract_version == expected_version
+            and artifact.source_digest == draft_digest
+            and artifact.approval_contract_version == approval_contract.contract_version
+            and artifact.approval_digest == approval_digest
+        )
+        if len(candidates) != 1:
+            raise WorkCompositionError("当前没有唯一且绑定最新审批的 ReportArtifact，不能发布。")
+        artifact = candidates[0]
+        try:
+            artifact_bytes = self.artifact_store.resolve(artifact.storage_key).read_bytes()
+        except (OSError, ReportArtifactError) as exc:
+            raise WorkCompositionError("当前 ReportArtifact 物理文件不可用，不能发布。") from exc
+        if f"sha256:{sha256(artifact_bytes).hexdigest()}" != artifact.content_sha256:
+            raise WorkCompositionError("当前 ReportArtifact 内容哈希校验失败，不能发布。")
+        enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
+        actor = _clean(enterprise.get("user_key")) if enterprise is not None else ""
+        if not actor or actor != item.requester_id:
+            raise WorkCompositionError("当前企业身份不是该任务的委派人，不能发布。")
+        publications = self.repository.list_publication_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        )
+        existing = next(
+            (publication for publication in publications if publication.artifact_id == artifact.artifact_id),
+            None,
+        )
+        if existing is not None:
+            saved = existing
+        else:
+            saved = self.repository.put_publication_record(PublicationRecord(
+                publication_id=publication_id(
+                    tenant_id=item.tenant_id,
+                    work_id=item.work_id,
+                    artifact_id=artifact.artifact_id,
+                    content_sha256=artifact.content_sha256,
+                ),
+                publication_version=max(
+                    (publication.publication_version for publication in publications),
+                    default=0,
+                )
+                + 1,
+                work_id=item.work_id,
+                tenant_id=item.tenant_id,
+                artifact_id=artifact.artifact_id,
+                content_sha256=artifact.content_sha256,
+                source_contract_version=artifact.source_contract_version,
+                approval_contract_version=artifact.approval_contract_version,
+                template_digest=artifact.template_digest,
+                policy_id=approval.policy_id,
+                status=PublicationStatus.PUBLISHED,
+                published_by=actor,
+                published_at=self._factory.clock(),
+                metadata={
+                    "pack_snapshot_id": item.pack_snapshot_id,
+                    "delivery_status": "not_delivered",
+                },
+            ))
+        if isinstance(state, dict):
+            current = self.repository.get_work(tenant_id=item.tenant_id, work_id=item.work_id)
+            self._publish_current_work(cast("dict[str, Any]", state), current)
+        return saved
+
     def _require_current_report_approval(
         self,
         item: WorkItem,
@@ -1174,9 +1277,24 @@ class IndustryReportWorkComposition:
                     "current": approval_is_current,
                 }
         artifacts = self.repository.list_artifact_records(tenant_id=item.tenant_id, work_id=item.work_id)
+        publications = self.repository.list_publication_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        )
         if artifacts:
             current_approval_digest = contract_digest(approval_contract) if approval_contract is not None else ""
             current_draft_digest = report_draft_digest(current_draft) if current_draft is not None else ""
+            artifact_current = {
+                artifact.artifact_id: (
+                    approval_is_current
+                    and approval_contract is not None
+                    and approval_contract.status is WorkContractStatus.CONFIRMED
+                    and artifact.source_digest == current_draft_digest
+                    and artifact.approval_digest == current_approval_digest
+                )
+                for artifact in artifacts
+            }
+            published_artifact_ids = {publication.artifact_id for publication in publications}
             summary["report_artifacts"] = [
                 {
                     "artifact_id": artifact.artifact_id,
@@ -1186,18 +1304,32 @@ class IndustryReportWorkComposition:
                     "size_bytes": artifact.size_bytes,
                     "report_draft_version": artifact.source_contract_version,
                     "approval_contract_version": artifact.approval_contract_version,
-                    "current": (
-                        approval_is_current
-                        and approval_contract is not None
-                        and approval_contract.status is WorkContractStatus.CONFIRMED
-                        and artifact.source_digest == current_draft_digest
-                        and artifact.approval_digest == current_approval_digest
+                    "current": artifact_current[artifact.artifact_id],
+                    "publication_status": (
+                        "published"
+                        if artifact.artifact_id in published_artifact_ids
+                        else artifact.metadata.get("publication_status")
                     ),
-                    "publication_status": artifact.metadata.get("publication_status"),
                     "delivery_status": artifact.metadata.get("delivery_status"),
                 }
                 for artifact in artifacts
             ]
+            if publications:
+                summary["report_publications"] = [
+                    {
+                        "publication_id": publication.publication_id,
+                        "publication_version": publication.publication_version,
+                        "status": publication.status.value,
+                        "artifact_id": publication.artifact_id,
+                        "content_sha256": publication.content_sha256,
+                        "report_draft_version": publication.source_contract_version,
+                        "approval_contract_version": publication.approval_contract_version,
+                        "policy_id": publication.policy_id,
+                        "current": artifact_current.get(publication.artifact_id, False),
+                        "delivery_status": publication.metadata.get("delivery_status"),
+                    }
+                    for publication in publications
+                ]
         return summary
 
     def _approval_matches_current_draft(

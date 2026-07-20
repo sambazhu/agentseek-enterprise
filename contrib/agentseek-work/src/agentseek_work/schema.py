@@ -25,6 +25,7 @@ from agentseek_work.models import (
     ClaimType,
     ClaimVerificationStatus,
     ExcerptStatus,
+    PublicationStatus,
     SnapshotStatus,
     SourceType,
     WorkContractStatus,
@@ -49,6 +50,7 @@ excerpt_status_values = _sql_values([status.value for status in ExcerptStatus])
 claim_type_values = _sql_values([claim_type.value for claim_type in ClaimType])
 claim_verification_status_values = _sql_values([status.value for status in ClaimVerificationStatus])
 claim_reviewer_status_values = _sql_values([status.value for status in ClaimReviewerStatus])
+publication_status_values = _sql_values([status.value for status in PublicationStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -341,6 +343,46 @@ work_artifacts = Table(
 
 Index("ix_work_artifacts_tenant_work", work_artifacts.c.tenant_id, work_artifacts.c.work_id)
 Index("ix_work_artifacts_content", work_artifacts.c.content_sha256)
+
+work_publications = Table(
+    "enterprise_work_publications",
+    metadata,
+    Column("publication_id", String(160), primary_key=True),
+    Column("publication_version", Integer, nullable=False),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column(
+        "artifact_id",
+        String(160),
+        ForeignKey("enterprise_work_artifacts.artifact_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("content_sha256", String(71), nullable=False),
+    Column("source_contract_version", Integer, nullable=False),
+    Column("approval_contract_version", Integer, nullable=False),
+    Column("template_digest", String(71), nullable=False),
+    Column("policy_id", String(128), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("published_by", String(128), nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    UniqueConstraint("work_id", "publication_version", name="uq_work_publications_version"),
+    UniqueConstraint("work_id", "artifact_id", name="uq_work_publications_artifact"),
+    CheckConstraint("publication_version > 0", name="ck_work_publication_version"),
+    CheckConstraint(
+        "source_contract_version > 0 AND approval_contract_version > 0",
+        name="ck_work_publication_contract_versions",
+    ),
+    CheckConstraint(f"status IN ({publication_status_values})", name="ck_work_publication_status"),
+)
+
+Index("ix_work_publications_tenant_work", work_publications.c.tenant_id, work_publications.c.work_id)
+Index("ix_work_publications_content", work_publications.c.content_sha256)
 
 work_budget_usage = Table(
     "enterprise_work_budget_usage",
