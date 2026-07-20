@@ -99,6 +99,20 @@ class ProjectSettings(BaseSettings):
         default="./runtime/work-artifacts",
         validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_PATH"),
     )
+    work_artifact_delivery_mode: str = Field(
+        default="disabled",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE"),
+    )
+    work_artifact_public_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL"),
+    )
+    work_artifact_grant_ttl_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=3600,
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS"),
+    )
     work_runtime_release: str = Field(
         default="",
         validation_alias=AliasChoices("AGENTSEEK_WORK_RUNTIME_RELEASE", "AGENTSEEK_LANGFUSE_RELEASE"),
@@ -190,6 +204,13 @@ class ProjectSettings(BaseSettings):
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path
+
+    def require_work_artifact_public_base_url(self) -> str:
+        if self.work_artifact_delivery_mode.strip().lower() != "signed_link":
+            raise RuntimeError("Set AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=signed_link before delivery.")
+        from agentseek_wecom.outbound import validate_artifact_download_base_url
+
+        return validate_artifact_download_base_url(self.work_artifact_public_base_url)
 
     def apply_openai_env_bridge(self) -> None:
         model = self.model.strip()

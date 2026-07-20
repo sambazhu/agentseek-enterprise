@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from agentseek_wecom.outbound import ArtifactDownloadGone
 from agentseek_work import (
     ClaimType,
     ExcerptStatus,
@@ -568,6 +569,14 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     artifacts = cast("list[dict[str, object]]", artifact_summary["report_artifacts"])
     assert artifacts[0]["current"] is True
 
+    with pytest.raises(WorkCompositionError, match="尚未形成唯一正式发布记录"):
+        composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="交付 ReportArtifact v1 给我",
+        )
+
     with pytest.raises(WorkCompositionError, match="未精确请求发布"):
         composition.publish_report_artifact(
             state,
@@ -616,6 +625,52 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
         "publication_status"
     ] == "published"
 
+    with pytest.raises(WorkCompositionError, match="未精确请求"):
+        composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="请交付 ReportArtifact v1 给我",
+        )
+    prepared = composition.prepare_report_delivery(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message=(
+            "from_userid=opaque|channel=$wecom|chat_id=opaque\n"
+            "---Date: 2026-07-20T09:00:00+08:00---\n"
+            "交付 ReportArtifact v1 给我"
+        ),
+    )
+    assert prepared.download_url.startswith(
+        f"https://reports.example.test/artifacts/{prepared.record.delivery_id}#"
+    )
+    assert prepared.grant_token not in prepared.record.grant_hash
+    delivery = composition.commit_report_delivery(prepared)
+    assert delivery.artifact_id == artifact.artifact_id
+    delivered_item = composition.current_work(state)
+    assert delivered_item is not None
+    assert delivered_item.status.value == "delivered"
+    download = composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
+    assert download.data == artifact_path.read_bytes()
+    assert download.filename == artifact.filename
+    with pytest.raises(ArtifactDownloadGone):
+        composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
+    delivery_summary = composition.current_work_summary(state)
+    assert delivery_summary is not None
+    deliveries = cast("list[dict[str, object]]", delivery_summary["report_deliveries"])
+    assert deliveries == [{
+        "delivery_id": delivery.delivery_id,
+        "delivery_version": 1,
+        "status": "delivered",
+        "artifact_id": artifact.artifact_id,
+        "publication_id": publication.publication_id,
+        "content_sha256": artifact.content_sha256,
+        "report_draft_version": 1,
+        "current": True,
+        "grant_state": "consumed",
+    }]
+
     revised_draft = replace(draft, markdown=f"{draft.markdown}\n\n修订说明。")
     revised = composition.save_report_draft(state, None, revised_draft)
     assert revised.contract_version == 2
@@ -626,12 +681,21 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     assert stale_artifacts[0]["current"] is False
     stale_publications = cast("list[dict[str, object]]", stale_summary["report_publications"])
     assert stale_publications[0]["current"] is False
+    stale_deliveries = cast("list[dict[str, object]]", stale_summary["report_deliveries"])
+    assert stale_deliveries[0]["current"] is False
     composition.confirm_report_draft(
         state,
         None,
         expected_version=2,
         latest_user_message="确认 ReportDraft v2",
     )
+    with pytest.raises(WorkCompositionError, match="版本不匹配"):
+        composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="交付 ReportArtifact v1 给我",
+        )
     with pytest.raises(WorkCompositionError, match="失效"):
         composition.render_report_artifact(
             state,
@@ -780,6 +844,8 @@ def _confirmed_brief_composition(
         pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
         artifact_store_root=tmp_path / "artifacts",
         template_asset_path=PACK_ROOT / "assets" / "neutral-industry-report-v1.docx",
+        artifact_public_base_url="https://reports.example.test/artifacts",
+        artifact_grant_ttl_seconds=3600,
         clock=lambda: NOW,
         id_factory=lambda: "work_draft_001",
     )

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
@@ -12,10 +12,21 @@ from typing import Any, cast
 from uuid import uuid4
 
 from agentseek_enterprise.runtime import EnterpriseRuntimeSettings
+from agentseek_wecom.outbound import (
+    ArtifactDownload,
+    ArtifactDownloadGone,
+    ArtifactDownloadNotFound,
+    register_artifact_download_resolver,
+)
 from agentseek_work import (
     LATEST_SCHEMA_VERSION,
     ArtifactRecord,
     CreateWorkResult,
+    DeliveryGrantConsumedError,
+    DeliveryGrantExpiredError,
+    DeliveryGrantNotFoundError,
+    DeliveryRecord,
+    DeliveryStatus,
     InteractionRoute,
     PublicationRecord,
     PublicationStatus,
@@ -72,6 +83,14 @@ from enterprise_wecom_digital_employee.report_brief import (
     ReportBrief,
     explicitly_confirms_report_brief,
     validate_report_brief_scope,
+)
+from enterprise_wecom_digital_employee.report_delivery import (
+    PreparedReportDelivery,
+    delivery_id,
+    explicitly_requests_report_delivery,
+    grant_digest,
+    grant_is_active,
+    new_grant_token,
 )
 from enterprise_wecom_digital_employee.report_draft import (
     REPORT_DRAFT_CONTRACT_TYPE,
@@ -179,6 +198,8 @@ class IndustryReportWorkComposition:
         pack_artifact_root: Path | None = None,
         artifact_store_root: Path | None = None,
         template_asset_path: Path | None = None,
+        artifact_public_base_url: str = "",
+        artifact_grant_ttl_seconds: int = 3600,
         budget_id: str = _BUDGET_ID,
         budget: WorkBudget = _DEFAULT_BUDGET,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -201,6 +222,8 @@ class IndustryReportWorkComposition:
             template_asset_path
             or loaded_pack.pack_root / "assets" / "neutral-industry-report-v1.docx"
         )
+        self.artifact_public_base_url = artifact_public_base_url.rstrip("/")
+        self.artifact_grant_ttl_seconds = artifact_grant_ttl_seconds
         self.research_template_path = self.pack_artifact_root / self.playbook.research_template_path
         self.pack_snapshot_id = pack_snapshot_id
         self.permissions_digest = _permissions_digest(self.profile)
@@ -938,6 +961,175 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), current)
         return saved
 
+    def prepare_report_delivery(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        latest_user_message: str,
+    ) -> PreparedReportDelivery:
+        """Prepare, but do not register, one self-delivery card and grant."""
+
+        if not explicitly_requests_report_delivery(
+            latest_user_message,
+            expected_version=expected_version,
+        ):
+            raise WorkCompositionError(
+                f"员工最新消息未精确请求‘交付 ReportArtifact v{expected_version} 给我’，"
+                "不能生成下载授权。"
+            )
+        if not self.artifact_public_base_url:
+            raise WorkCompositionError("当前未启用 signed_link Artifact 交付。")
+        item, draft_contract, draft = self.current_confirmed_report_draft(state, runtime_context)
+        if draft_contract.contract_version != expected_version:
+            raise WorkCompositionError("ReportArtifact 版本不匹配，请重新展示当前版本后再交付。")
+        approval_contract = self._require_current_report_approval(
+            item,
+            draft_contract=draft_contract,
+            draft=draft,
+        )
+        draft_digest = report_draft_digest(draft)
+        approval_digest = contract_digest(approval_contract)
+        artifacts = tuple(
+            artifact
+            for artifact in self.repository.list_artifact_records(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+            )
+            if artifact.artifact_format == REPORT_ARTIFACT_FORMAT_DOCX
+            and artifact.source_contract_version == expected_version
+            and artifact.source_digest == draft_digest
+            and artifact.approval_contract_version == approval_contract.contract_version
+            and artifact.approval_digest == approval_digest
+        )
+        if len(artifacts) != 1:
+            raise WorkCompositionError("当前没有唯一且绑定最新审批的 ReportArtifact，不能交付。")
+        artifact = artifacts[0]
+        publications = tuple(
+            publication
+            for publication in self.repository.list_publication_records(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+            )
+            if publication.artifact_id == artifact.artifact_id
+            and publication.content_sha256 == artifact.content_sha256
+        )
+        if len(publications) != 1:
+            raise WorkCompositionError("当前 ReportArtifact 尚未形成唯一正式发布记录，不能交付。")
+        publication = publications[0]
+        try:
+            artifact_bytes = self.artifact_store.resolve(artifact.storage_key).read_bytes()
+        except (OSError, ReportArtifactError) as exc:
+            raise WorkCompositionError("当前 ReportArtifact 物理文件不可用，不能交付。") from exc
+        if (
+            len(artifact_bytes) != artifact.size_bytes
+            or f"sha256:{sha256(artifact_bytes).hexdigest()}" != artifact.content_sha256
+        ):
+            raise WorkCompositionError("当前 ReportArtifact 内容完整性校验失败，不能交付。")
+        enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
+        actor = _clean(enterprise.get("user_key")) if enterprise is not None else ""
+        if not actor or actor != item.requester_id:
+            raise WorkCompositionError("当前企业身份不是该任务的委派人，不能交付。")
+        now = self._factory.clock()
+        deliveries = self.repository.list_delivery_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        )
+        existing = next(
+            (
+                delivery
+                for delivery in reversed(deliveries)
+                if delivery.artifact_id == artifact.artifact_id
+                and delivery.publication_id == publication.publication_id
+                and delivery.recipient_key == actor
+                and grant_is_active(delivery, now=now)
+            ),
+            None,
+        )
+        if existing is not None:
+            return PreparedReportDelivery(
+                record=existing,
+                grant_token="",
+                download_url="",
+                filename=artifact.filename,
+                already_delivered=True,
+            )
+        token = new_grant_token()
+        token_digest = grant_digest(token)
+        record = DeliveryRecord(
+            delivery_id=delivery_id(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                artifact_id=artifact.artifact_id,
+                recipient_key=actor,
+                grant_hash=token_digest,
+            ),
+            delivery_version=max((delivery.delivery_version for delivery in deliveries), default=0) + 1,
+            work_id=item.work_id,
+            tenant_id=item.tenant_id,
+            artifact_id=artifact.artifact_id,
+            publication_id=publication.publication_id,
+            content_sha256=artifact.content_sha256,
+            size_bytes=artifact.size_bytes,
+            recipient_key=actor,
+            grant_hash=token_digest,
+            grant_expires_at=now + timedelta(seconds=self.artifact_grant_ttl_seconds),
+            status=DeliveryStatus.DELIVERED,
+            delivered_by=actor,
+            delivered_at=now,
+            metadata={
+                "artifact_format": artifact.artifact_format,
+                "report_draft_version": artifact.source_contract_version,
+                "delivery_mode": "signed_link",
+                "recipient_binding": "requester",
+            },
+        )
+        return PreparedReportDelivery(
+            record=record,
+            grant_token=token,
+            download_url=f"{self.artifact_public_base_url}/{record.delivery_id}#{token}",
+            filename=artifact.filename,
+        )
+
+    def commit_report_delivery(self, prepared: PreparedReportDelivery) -> DeliveryRecord:
+        if prepared.already_delivered:
+            return prepared.record
+        delivered_at = self._factory.clock()
+        record = replace(
+            prepared.record,
+            delivered_at=delivered_at,
+            grant_expires_at=delivered_at + timedelta(seconds=self.artifact_grant_ttl_seconds),
+        )
+        return self.repository.put_delivery_record(record)
+
+    def redeem_report_delivery(self, delivery_id_value: str, grant_token: str) -> ArtifactDownload:
+        try:
+            delivery = self.repository.redeem_delivery_grant(
+                delivery_id=delivery_id_value,
+                grant_hash=grant_digest(grant_token),
+                consumed_at=self._factory.clock(),
+            )
+        except DeliveryGrantNotFoundError as exc:
+            raise ArtifactDownloadNotFound("download grant not found") from exc
+        except (DeliveryGrantConsumedError, DeliveryGrantExpiredError) as exc:
+            raise ArtifactDownloadGone("download grant is no longer active") from exc
+        try:
+            artifact = self.repository.get_artifact_record(
+                tenant_id=delivery.tenant_id,
+                artifact_id=delivery.artifact_id,
+            )
+            data = self.artifact_store.resolve(artifact.storage_key).read_bytes()
+        except (OSError, ReportArtifactError, WorkNotFoundError) as exc:
+            raise ArtifactDownloadGone("download artifact is unavailable") from exc
+        if (
+            artifact.content_sha256 != delivery.content_sha256
+            or len(data) != delivery.size_bytes
+            or f"sha256:{sha256(data).hexdigest()}" != delivery.content_sha256
+        ):
+            raise ArtifactDownloadGone("download artifact integrity check failed")
+        return ArtifactDownload(data=data, filename=artifact.filename, media_type=artifact.media_type)
+
     def _require_current_report_approval(
         self,
         item: WorkItem,
@@ -1285,6 +1477,10 @@ class IndustryReportWorkComposition:
             tenant_id=item.tenant_id,
             work_id=item.work_id,
         )
+        deliveries = self.repository.list_delivery_records(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+        )
         if artifacts:
             current_approval_digest = contract_digest(approval_contract) if approval_contract is not None else ""
             current_draft_digest = report_draft_digest(current_draft) if current_draft is not None else ""
@@ -1299,6 +1495,8 @@ class IndustryReportWorkComposition:
                 for artifact in artifacts
             }
             published_artifact_ids = {publication.artifact_id for publication in publications}
+            delivered_artifact_ids = {delivery.artifact_id for delivery in deliveries}
+            delivered_publication_ids = {delivery.publication_id for delivery in deliveries}
             summary["report_artifacts"] = [
                 {
                     "artifact_id": artifact.artifact_id,
@@ -1314,7 +1512,11 @@ class IndustryReportWorkComposition:
                         if artifact.artifact_id in published_artifact_ids
                         else artifact.metadata.get("publication_status")
                     ),
-                    "delivery_status": artifact.metadata.get("delivery_status"),
+                    "delivery_status": (
+                        "delivered"
+                        if artifact.artifact_id in delivered_artifact_ids
+                        else artifact.metadata.get("delivery_status")
+                    ),
                 }
                 for artifact in artifacts
             ]
@@ -1330,9 +1532,40 @@ class IndustryReportWorkComposition:
                         "approval_contract_version": publication.approval_contract_version,
                         "policy_id": publication.policy_id,
                         "current": artifact_current.get(publication.artifact_id, False),
-                        "delivery_status": publication.metadata.get("delivery_status"),
+                        "delivery_status": (
+                            "delivered"
+                            if publication.publication_id in delivered_publication_ids
+                            else publication.metadata.get("delivery_status")
+                        ),
                     }
                     for publication in publications
+                ]
+            if deliveries:
+                now = self._factory.clock()
+                current_publication_ids = {
+                    publication.publication_id
+                    for publication in publications
+                    if artifact_current.get(publication.artifact_id, False)
+                }
+                summary["report_deliveries"] = [
+                    {
+                        "delivery_id": delivery.delivery_id,
+                        "delivery_version": delivery.delivery_version,
+                        "status": delivery.status.value,
+                        "artifact_id": delivery.artifact_id,
+                        "publication_id": delivery.publication_id,
+                        "content_sha256": delivery.content_sha256,
+                        "report_draft_version": delivery.metadata.get("report_draft_version"),
+                        "current": delivery.publication_id in current_publication_ids,
+                        "grant_state": (
+                            "consumed"
+                            if delivery.grant_consumed_at is not None
+                            else "expired"
+                            if now >= delivery.grant_expires_at
+                            else "active"
+                        ),
+                    }
+                    for delivery in deliveries
                 ]
         return summary
 
@@ -1403,7 +1636,12 @@ def get_work_composition() -> IndustryReportWorkComposition:
         snapshot = repository.put_pack_snapshot(candidate)
     else:
         _verify_registered_snapshot(candidate, snapshot)
-    return IndustryReportWorkComposition(
+    public_base_url = (
+        settings.require_work_artifact_public_base_url()
+        if settings.work_artifact_delivery_mode.strip().lower() == "signed_link"
+        else ""
+    )
+    composition = IndustryReportWorkComposition(
         repository=repository,
         loaded_pack=loaded,
         pack_snapshot_id=snapshot.pack_snapshot_id,
@@ -1411,7 +1649,11 @@ def get_work_composition() -> IndustryReportWorkComposition:
         pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
         artifact_store_root=settings.resolved_work_artifact_path(),
         template_asset_path=settings.resolved_work_template_asset_path(),
+        artifact_public_base_url=public_base_url,
+        artifact_grant_ttl_seconds=settings.work_artifact_grant_ttl_seconds,
     )
+    register_artifact_download_resolver(composition.redeem_report_delivery)
+    return composition
 
 
 def _prepare_schema(engine: Engine, settings: ProjectSettings) -> None:
@@ -1637,7 +1879,7 @@ def _work_summary(item: WorkItem) -> dict[str, object]:
     }
 
 
-def _current_work_context(summary: Mapping[str, object]) -> str:
+def _current_work_context(summary: Mapping[str, object]) -> str:  # noqa: C901
     raw_file_ids = summary.get("input_file_ids")
     file_ids = [str(value) for value in raw_file_ids] if isinstance(raw_file_ids, list) else []
     lines = [
@@ -1701,6 +1943,17 @@ def _current_work_context(summary: Mapping[str, object]) -> str:
                 f"bound_report_draft_v{artifact.get('report_draft_version')} "
                 f"current={artifact.get('current')} publication={artifact.get('publication_status')} "
                 f"delivery={artifact.get('delivery_status')}"
+            )
+    deliveries = summary.get("report_deliveries")
+    if isinstance(deliveries, list):
+        for delivery in deliveries:
+            if not isinstance(delivery, Mapping):
+                continue
+            lines.append(
+                "report_delivery: "
+                f"delivery_v{delivery.get('delivery_version')} status={delivery.get('status')} "
+                f"bound_report_draft_v{delivery.get('report_draft_version')} "
+                f"current={delivery.get('current')} grant_state={delivery.get('grant_state')}"
             )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",

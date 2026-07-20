@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: Build, confirm, approve, and explicitly render a reviewable securities-industry report through discrete, versioned checkpoints. Keep Claims evidence-bound and keep artifact rendering separate from publication and delivery.
+description: Build, approve, publish, and explicitly deliver a securities-industry report through discrete, versioned checkpoints. Keep Claims evidence-bound and keep rendering, publication, delivery, and download separate.
 ---
 
 # Report writing
@@ -18,4 +18,5 @@ description: Build, confirm, approve, and explicitly render a reviewable securit
 11. Render only the current approved ReportDraft after that exact request. Use `render_report_docx_artifact`; do not fabricate an artifact ID, filename, digest, or storage result. PDF is not enabled in this slice.
 12. A rendered Artifact is still neither published nor delivered. Report only the ledger-backed artifact ID, content digest, current status, and explicit `not_published` / `not_delivered` state. Never expose a host filesystem path.
 13. Publish only after a later employee message exactly says `发布 ReportArtifact vN`. Call `publish_report_artifact` and rely on its server-side revalidation of the current Draft, Approval, Artifact bytes, digests, actor, and policy.
-14. Publication is an immutable ledger fact, not delivery. Stop after publication and state explicitly that no template card, file, signed link, or download endpoint was produced. Delivery remains unavailable in this slice.
+14. Publication is an immutable ledger fact, not delivery. Stop after publication and require a separate exact `交付 ReportArtifact vN 给我` request.
+15. Delivery is requester-only and requires the current published Artifact. Call `deliver_report_artifact`, relay its trusted card marker verbatim, and stop. Never expose the signed URL, grant token/hash, storage key, host path, OA account, or media ID. A delivered card is not proof that its one-time download was consumed.

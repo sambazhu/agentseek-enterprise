@@ -1,4 +1,4 @@
-"""Settings for the {{ cookiecutter.project_name }} runtime binding."""
+"""Settings for the Enterprise WeCom Digital Employee runtime binding."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class ProjectSettings(BaseSettings):
         ),
     )
     mcp_config_path: str = Field(
-        default="{{ cookiecutter.mcp_config_path }}",
+        default=".agents/mcp.json",
         validation_alias=AliasChoices("AGENTSEEK_MCP_CONFIG_PATH", "BUB_MCP_CONFIG_PATH"),
     )
     enterprise_store_sqlite_path: str = Field(
@@ -98,6 +98,20 @@ class ProjectSettings(BaseSettings):
     work_artifact_path: str = Field(
         default="./runtime/work-artifacts",
         validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_PATH"),
+    )
+    work_artifact_delivery_mode: str = Field(
+        default="disabled",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE"),
+    )
+    work_artifact_public_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL"),
+    )
+    work_artifact_grant_ttl_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=3600,
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS"),
     )
     work_runtime_release: str = Field(
         default="",
@@ -150,7 +164,7 @@ class ProjectSettings(BaseSettings):
         return init_chat_model(model=bare_model, **kwargs)
 
     def resolved_mcp_config_path(self) -> Path:
-        path = Path(self.mcp_config_path.strip() or "{{ cookiecutter.mcp_config_path }}")
+        path = Path(self.mcp_config_path.strip() or ".agents/mcp.json")
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path
@@ -190,6 +204,13 @@ class ProjectSettings(BaseSettings):
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path
+
+    def require_work_artifact_public_base_url(self) -> str:
+        if self.work_artifact_delivery_mode.strip().lower() != "signed_link":
+            raise RuntimeError("Set AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=signed_link before delivery.")
+        from agentseek_wecom.outbound import validate_artifact_download_base_url
+
+        return validate_artifact_download_base_url(self.work_artifact_public_base_url)
 
     def apply_openai_env_bridge(self) -> None:
         model = self.model.strip()

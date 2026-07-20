@@ -186,7 +186,13 @@ _REPORT_PUBLICATION_REF_RE = re.compile(
 )
 _REPORT_PUBLICATION_CLAIM_RE = re.compile(
     r"(?:已|已经)(?:正式)?发布|status\s*[=:：]\s*published|"
-    r"publication\s*[=:：]\s*published",
+    r"publication\s*[=:：]\s*published|(?:当前|现行)(?:正式)?发布版本|"
+    r"发布版本.{0,8}(?:当前|现行)",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_CURRENT_RE = re.compile(
+    r"current\s*[=:：]\s*true|(?:仍是|仍为|属于)?(?:当前|现行)(?:正式)?发布版本|"
+    r"发布版本.{0,8}(?:当前|现行)",
     re.IGNORECASE,
 )
 _REPORT_PUBLICATION_STALE_RE = re.compile(
@@ -204,10 +210,25 @@ _REPORT_PUBLICATION_LEDGER_TOOLS = frozenset({
     "get_current_work_status",
 })
 _REPORT_DELIVERY_CLAIM_RE = re.compile(
-    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:交付|发送)|"
-    r"(?:delivery|status)\s*[=:：]\s*delivered",
+    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:交付|发送|下载)|"
+    r"(?:delivery|status)\s*[=:：]\s*delivered|(?:已|已经)(?:交付|发送|下载)",
     re.IGNORECASE,
 )
+_REPORT_DELIVERY_REF_RE = re.compile(
+    r"report\s*artifact\s*(?:v|version|第)?\s*(\d+)\s*(?:版)?|"
+    r"bound_report_draft_v(\d+)",
+    re.IGNORECASE,
+)
+_REPORT_DELIVERY_STATUS_SUCCESS_RE = re.compile(
+    r"ReportDelivery\s+delivery_(?:id=[A-Za-z0-9_-]+|v\d+).{0,240}?"
+    r"status=delivered.{0,240}?bound_report_draft_v(\d+).{0,240}?current=(true|false)",
+    re.IGNORECASE,
+)
+_REPORT_DELIVERY_LEDGER_TOOLS = frozenset({
+    "deliver_report_artifact",
+    "get_current_report_deliveries",
+    "get_current_work_status",
+})
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "未检测到本轮账本支持的 ReportDraft，因此这次模型正文已被运行时守卫拦截，"
@@ -247,10 +268,15 @@ REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "请调用 publish_report_artifact、get_current_report_publications 或 get_current_work_status，"
     "并以工具返回的发布版本、Artifact 绑定和 current 状态为准。发布不等于交付或发送。"
 )
+REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到匹配的当前 ReportDelivery 账本记录，因此不能声称文件已交付、"
+    "已发送或已下载。请调用 deliver_report_artifact、get_current_report_deliveries "
+    "或 get_current_work_status，并以工具返回的 Artifact 绑定和 current 状态为准。"
+)
 _OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
 
 
-def enforce_m2_output_guard(
+def enforce_m2_output_guard(  # noqa: C901
     result: object,
     output: str,
     *,
@@ -276,6 +302,8 @@ def enforce_m2_output_guard(
         if _claims_unverified_report_brief_write(result, output)
         else "unverified_report_outline_write"
         if _claims_unverified_report_outline_write(result, output)
+        else "unverified_report_delivery"
+        if _claims_unverified_report_delivery(result, output)
         else "unverified_report_publication"
         if _claims_unverified_report_publication(result, output)
         else "unverified_report_artifact"
@@ -307,6 +335,8 @@ def enforce_m2_output_guard(
         return REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_publication":
         return REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_delivery":
+        return REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "ledger_backed_report_draft":
         return verified_draft_output
     if reason:
@@ -650,8 +680,6 @@ def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
 
 
 def _claims_unverified_report_artifact(result: object, output: str) -> bool:
-    if _REPORT_DELIVERY_CLAIM_RE.search(output):
-        return True
     if not _REPORT_ARTIFACT_CLAIM_RE.search(output):
         return False
     artifact_ids = set(_REPORT_ARTIFACT_ID_RE.findall(output))
@@ -662,6 +690,51 @@ def _claims_unverified_report_artifact(result: object, output: str) -> bool:
     if draft_versions:
         return not draft_versions.issubset(ledger_versions)
     return not ledger_ids
+
+
+def _claims_unverified_report_delivery(result: object, output: str) -> bool:
+    if not _REPORT_DELIVERY_CLAIM_RE.search(output):
+        return False
+    claims = {
+        int(first or second)
+        for first, second in _REPORT_DELIVERY_REF_RE.findall(output)
+        if first or second
+    }
+    states = _successful_report_delivery_states(result)
+    if not claims:
+        return not any(True in values for values in states.values())
+    return any(True not in states.get(version, set()) for version in claims)
+
+
+def _successful_report_delivery_states(result: object) -> dict[int, set[bool]]:  # noqa: C901
+    if not isinstance(result, Mapping):
+        return {}
+    states: dict[int, set[bool]] = {}
+    call_ids: set[str] = set()
+    messages = result.get("messages")
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for message in messages:
+            if _is_human_message(message):
+                call_ids.clear()
+                states.clear()
+                continue
+            call_ids.update(_tool_call_ids(message, _REPORT_DELIVERY_LEDGER_TOOLS))
+            tool_name, tool_call_id, content = _tool_result_parts(message)
+            if tool_name not in _REPORT_DELIVERY_LEDGER_TOOLS and tool_call_id not in call_ids:
+                continue
+            for version, current in _REPORT_DELIVERY_STATUS_SUCCESS_RE.findall(content):
+                states.setdefault(int(version), set()).add(current.lower() == "true")
+    work = result.get("current_work")
+    if isinstance(work, Mapping):
+        deliveries = work.get("report_deliveries")
+        if isinstance(deliveries, Sequence) and not isinstance(deliveries, (str, bytes)):
+            for delivery in deliveries:
+                if not isinstance(delivery, Mapping):
+                    continue
+                version = delivery.get("report_draft_version")
+                if isinstance(version, int) and not isinstance(version, bool):
+                    states.setdefault(version, set()).add(delivery.get("current") is True)
+    return states
 
 
 def _successful_report_artifact_states(result: object) -> tuple[set[str], set[int]]:
@@ -700,6 +773,12 @@ def _artifact_states_from_messages(messages: object) -> tuple[set[str], set[int]
 def _claims_unverified_report_publication(result: object, output: str) -> bool:
     if not _REPORT_PUBLICATION_CLAIM_RE.search(output):
         return False
+    if any(
+        _REPORT_PUBLICATION_STALE_RE.search(line)
+        and _REPORT_PUBLICATION_CURRENT_RE.search(line)
+        for line in output.splitlines()
+    ):
+        return True
     claims = _report_publication_claims(output)
     states = _successful_report_publication_states(result)
     if not claims:
@@ -714,7 +793,10 @@ def _report_publication_claims(output: str) -> tuple[tuple[int, bool], ...]:
         if not _REPORT_PUBLICATION_CLAIM_RE.search(line):
             continue
         version_text = match.group(1) or match.group(2)
-        claims.append((int(version_text), not bool(_REPORT_PUBLICATION_STALE_RE.search(line))))
+        current = bool(_REPORT_PUBLICATION_CURRENT_RE.search(line)) or not bool(
+            _REPORT_PUBLICATION_STALE_RE.search(line)
+        )
+        claims.append((int(version_text), current))
     return tuple(claims)
 
 

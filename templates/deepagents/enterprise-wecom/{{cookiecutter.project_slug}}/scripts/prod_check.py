@@ -9,7 +9,6 @@ import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 
-
 TRUE_VALUES = {"1", "true", "yes", "on"}
 PLACEHOLDER_MARKERS = ("<", ">", "changeme", "replace-me", "your-")
 
@@ -157,6 +156,15 @@ def check_wecom_outbound(env: dict[str, str], report: CheckReport) -> None:
         report.fail("signed_link Artifact delivery requires a clean HTTPS public base URL")
     else:
         report.ok("signed-link Artifact delivery base URL is configured")
+    try:
+        grant_ttl = int(env.get("AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS", "3600"))
+    except ValueError:
+        report.fail("AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS must be an integer from 1 to 3600")
+    else:
+        if not 1 <= grant_ttl <= 3600:
+            report.fail("AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS must be from 1 to 3600")
+        else:
+            report.ok("signed-link Artifact grant TTL is bounded")
 
 
 def check_identity(env: dict[str, str], project_root: Path, report: CheckReport) -> None:

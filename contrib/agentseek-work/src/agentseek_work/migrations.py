@@ -12,6 +12,7 @@ from agentseek_work.schema import (
     work_claim_evidence,
     work_claims,
     work_contracts,
+    work_deliveries,
     work_events,
     work_evidence,
     work_items,
@@ -19,7 +20,7 @@ from agentseek_work.schema import (
     work_sources,
 )
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
 _CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
@@ -68,6 +69,8 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_nine(connection)
     elif version == 10:
         _apply_revision_ten(connection)
+    elif version == 11:
+        _apply_revision_eleven(connection)
 
 
 def _apply_revision_four(connection: Connection) -> None:
@@ -300,6 +303,48 @@ def _apply_revision_ten(connection: Connection) -> None:
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(f"cannot apply work schema revision 10; enterprise_work_publications is missing: {joined}")
+    if connection.dialect.name == "postgresql":
+        values = ", ".join(f"'{status.value}'" for status in WorkStatus)
+        for table_name, constraint_name, column_name in (
+            (work_items.name, "ck_work_items_status", "status"),
+            (work_events.name, "ck_work_events_from_status", "from_status"),
+            (work_events.name, "ck_work_events_to_status", "to_status"),
+        ):
+            connection.exec_driver_sql(
+                f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} "
+                f"CHECK ({column_name} IN ({values}))"
+            )
+
+
+def _apply_revision_eleven(connection: Connection) -> None:
+    if not inspect(connection).has_table(work_deliveries.name):
+        raise RuntimeError("cannot apply work schema revision 11; enterprise_work_deliveries is missing")
+    required = {
+        "delivery_id",
+        "delivery_version",
+        "work_id",
+        "tenant_id",
+        "artifact_id",
+        "publication_id",
+        "content_sha256",
+        "size_bytes",
+        "recipient_key",
+        "grant_hash",
+        "grant_expires_at",
+        "grant_consumed_at",
+        "status",
+        "delivered_by",
+        "delivered_at",
+        "metadata",
+    }
+    existing = {str(column["name"]) for column in inspect(connection).get_columns(work_deliveries.name)}
+    missing = sorted(required - existing)
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"cannot apply work schema revision 11; enterprise_work_deliveries is missing: {joined}")
     if connection.dialect.name == "postgresql":
         values = ", ".join(f"'{status.value}'" for status in WorkStatus)
         for table_name, constraint_name, column_name in (

@@ -7,6 +7,7 @@ from enterprise_wecom_digital_employee.report_output_guard import (
     REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
+    REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE,
@@ -1043,4 +1044,38 @@ def test_delivery_claim_remains_blocked_after_publication_support() -> None:
         _result("交付 ReportArtifact v1", output),
         output,
         event_sink=lambda *_args, **_kwargs: None,
-    ) == REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
+    ) == REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_ledger_backed_current_delivery_claim_is_allowed() -> None:
+    output = "ReportArtifact v1 已交付给员工。"
+    result = _result("查看当前交付状态", output)
+    result["current_work"]["report_deliveries"] = [{
+        "delivery_version": 1,
+        "status": "delivered",
+        "report_draft_version": 1,
+        "current": True,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_stale_delivery_cannot_be_claimed_as_current() -> None:
+    output = "ReportArtifact v1 已交付给员工。"
+    result = _result("查看当前交付状态", output)
+    result["current_work"]["report_deliveries"] = [{
+        "delivery_version": 1,
+        "status": "delivered",
+        "report_draft_version": 1,
+        "current": False,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE

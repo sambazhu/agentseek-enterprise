@@ -721,7 +721,7 @@ M3 先以运行时前置切片启动：
    Mac mini 已在 `8b629ca` 完成能力矩阵、preflight、默认关闭的模板卡片活体探针及全量回归，
    验证文档为 `3ae928f`，M4-00 正式关闭。
 
-10. **M4-01 发布合同（已实现，待 Mac mini 复核）**：
+10. **M4-01 发布合同（已实现并经 Mac mini 复核 PASS）**：
 
     - schema rev10 新增不可变 `enterprise_work_publications`，绑定 Artifact、Draft、Approval、
       模板摘要、政策、发布人和时间。
@@ -732,7 +732,7 @@ M3 先以运行时前置切片启动：
     - 发布不等于交付；本切片不生成卡片、文件、签名链接或下载端点，delivery 仍为关闭。
     - Pack/Profile/report-writing 升级为 `1.8.0` / `1.7.0` / `1.4.0`，example 与 cookiecutter 同步。
 
-11. **M4-02 签名链接交付（后续）**：建立 delivery ledger、outbox、短期签名下载端点和
+11. **M4-02 签名链接交付（已实现，待 Mac mini 复核）**：建立 delivery ledger、一次性短期签名下载端点和
     template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed

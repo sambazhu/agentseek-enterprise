@@ -1,14 +1,52 @@
 from __future__ import annotations
 
+import re
+import secrets
+import threading
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from typing import Literal
-from urllib.parse import urlparse
+from typing import Any, Literal
+from urllib.parse import unquote, urlparse
 
 TransportMode = Literal["callback", "long_connection"]
 
 
 class UnsupportedWeComOutbound(RuntimeError):
     """Raised when a requested outbound action is unavailable on the transport."""
+
+
+class ArtifactDownloadError(RuntimeError):
+    """Base class for fail-closed Artifact download responses."""
+
+
+class ArtifactDownloadNotFound(ArtifactDownloadError):
+    """Raised without revealing which grant component was invalid."""
+
+
+class ArtifactDownloadGone(ArtifactDownloadError):
+    """Raised for an expired or already-consumed one-time grant."""
+
+
+@dataclass(frozen=True)
+class ArtifactDownload:
+    data: bytes
+    filename: str
+    media_type: str
+
+
+@dataclass(frozen=True)
+class TemplateCardIntent:
+    template_card: Mapping[str, Any]
+    on_succeeded: Callable[[], None]
+    on_failed: Callable[[str], None]
+    expires_at_monotonic: float
+
+
+_INTENT_MARKER_RE = re.compile(r"\[\[agentseek-wecom-template-card:([A-Za-z0-9_-]{32,128})\]\]")
+_INTENT_LOCK = threading.RLock()
+_INTENTS: dict[str, TemplateCardIntent] = {}
+_DOWNLOAD_RESOLVER: Callable[[str, str], ArtifactDownload] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,4 +124,56 @@ def validate_artifact_download_base_url(url: str) -> str:
         raise ValueError("artifact download base URL must use HTTPS")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("artifact download base URL must not contain credentials, query, or fragment")
+    decoded_path = unquote(parsed.path)
+    if (
+        "\\" in decoded_path
+        or "//" in decoded_path
+        or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+        or not re.fullmatch(r"/[A-Za-z0-9._~/-]*|", decoded_path)
+    ):
+        raise ValueError("artifact download base URL contains an unsafe path")
     return value
+
+
+def register_template_card_intent(intent: TemplateCardIntent) -> str:
+    intent_id = secrets.token_urlsafe(32)
+    with _INTENT_LOCK:
+        _drop_expired_intents()
+        _INTENTS[intent_id] = intent
+    return f"[[agentseek-wecom-template-card:{intent_id}]]"
+
+
+def take_template_card_intent(content: str) -> TemplateCardIntent | None:
+    match = _INTENT_MARKER_RE.search(content)
+    if match is None:
+        return None
+    with _INTENT_LOCK:
+        intent = _INTENTS.pop(match.group(1), None)
+    if intent is None or intent.expires_at_monotonic <= time.monotonic():
+        return None
+    return intent
+
+
+def has_template_card_intent_marker(content: str) -> bool:
+    return _INTENT_MARKER_RE.search(content) is not None
+
+
+def register_artifact_download_resolver(
+    resolver: Callable[[str, str], ArtifactDownload],
+) -> None:
+    global _DOWNLOAD_RESOLVER
+    _DOWNLOAD_RESOLVER = resolver
+
+
+def resolve_artifact_download(delivery_id: str, grant_token: str) -> ArtifactDownload:
+    resolver = _DOWNLOAD_RESOLVER
+    if resolver is None:
+        raise ArtifactDownloadNotFound("Artifact download is unavailable")
+    return resolver(delivery_id, grant_token)
+
+
+def _drop_expired_intents() -> None:
+    now = time.monotonic()
+    for intent_id, intent in tuple(_INTENTS.items()):
+        if intent.expires_at_monotonic <= now:
+            _INTENTS.pop(intent_id, None)

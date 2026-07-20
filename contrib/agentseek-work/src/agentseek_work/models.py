@@ -18,6 +18,7 @@ class WorkStatus(StrEnum):
     WAITING_REVIEW = "waiting_review"
     WAITING_APPROVAL = "waiting_approval"
     PUBLISHED = "published"
+    DELIVERED = "delivered"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -87,6 +88,10 @@ class ClaimReviewerStatus(StrEnum):
 
 class PublicationStatus(StrEnum):
     PUBLISHED = "published"
+
+
+class DeliveryStatus(StrEnum):
+    DELIVERED = "delivered"
 
 
 TERMINAL_WORK_STATUSES = frozenset({
@@ -538,6 +543,63 @@ class PublicationRecord:
         if self.status is not PublicationStatus.PUBLISHED:
             raise ValueError("publication status must be published")
         _require_aware(self.published_at, "published_at")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryRecord:
+    """A delivered card and its one-time, recipient-targeted download grant."""
+
+    delivery_id: str
+    delivery_version: int
+    work_id: str
+    tenant_id: str
+    artifact_id: str
+    publication_id: str
+    content_sha256: str
+    size_bytes: int
+    recipient_key: str
+    grant_hash: str
+    grant_expires_at: datetime
+    status: DeliveryStatus
+    delivered_by: str
+    delivered_at: datetime
+    grant_consumed_at: datetime | None = None
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:  # noqa: C901
+        for field_name in (
+            "delivery_id",
+            "work_id",
+            "tenant_id",
+            "artifact_id",
+            "publication_id",
+            "recipient_key",
+            "delivered_by",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        for field_name in ("content_sha256", "grant_hash"):
+            value = getattr(self, field_name)
+            if len(value) != 71 or not value.startswith("sha256:"):
+                raise ValueError(f"{field_name} must be a canonical sha256 digest")
+            try:
+                int(value.removeprefix("sha256:"), 16)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a canonical sha256 digest") from exc
+        if self.delivery_version <= 0:
+            raise ValueError("delivery_version must be greater than zero")
+        if self.size_bytes <= 0:
+            raise ValueError("size_bytes must be greater than zero")
+        if self.status is not DeliveryStatus.DELIVERED:
+            raise ValueError("delivery status must be delivered")
+        for field_name in ("grant_expires_at", "delivered_at"):
+            _require_aware(getattr(self, field_name), field_name)
+        if self.grant_expires_at <= self.delivered_at:
+            raise ValueError("grant_expires_at must be later than delivered_at")
+        if self.grant_consumed_at is not None:
+            _require_aware(self.grant_consumed_at, "grant_consumed_at")
+            if self.grant_consumed_at < self.delivered_at:
+                raise ValueError("grant_consumed_at must not be earlier than delivered_at")
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 

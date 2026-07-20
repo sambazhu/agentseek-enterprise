@@ -140,6 +140,20 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_RESPONSE_URL_PROBE_DELAY_SECONDS",
         ),
     )
+    artifact_delivery_mode: Literal["disabled", "signed_link"] = Field(
+        default="disabled",
+        validation_alias=AliasChoices(
+            "BUB_WORK_ARTIFACT_DELIVERY_MODE",
+            "AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE",
+        ),
+    )
+    artifact_public_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WORK_ARTIFACT_PUBLIC_BASE_URL",
+            "AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL",
+        ),
+    )
     welcome_text: str = Field(
         default="你好，我是你的企业数字员工。",
         validation_alias=AliasChoices("BUB_WECOM_WELCOME_TEXT", "AGENTSEEK_WECOM_WELCOME_TEXT"),

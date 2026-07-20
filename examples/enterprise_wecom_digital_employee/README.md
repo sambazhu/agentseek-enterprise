@@ -499,13 +499,22 @@ The callback transport is intentionally explicit:
 ```env
 AGENTSEEK_WECOM_TRANSPORT_MODE=callback
 AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=disabled
+# Enable only after this HTTPS base URL routes to the gateway:
+# AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=signed_link
+# AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL=https://reports.example.com/artifacts
+# AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS=3600
 ```
 
 The official AI Bot callback `response_url` is one-shot, expires after one
 hour, and supports only `markdown` and `template_card`; it cannot carry a DOCX
 `file` message. AgentSeek therefore fails closed on direct-file configuration.
-M4 keeps the verified callback channel and will deliver a current published
-Artifact through a short-lived signed HTTPS link in a template card. Direct
+M4-02 can deliver a current published Artifact to its authenticated requester
+through a one-time, short-lived signed HTTPS link in a `text_notice` card.
+The URL fragment carries the raw grant only to the browser; PostgreSQL stores
+its SHA-256 digest, and the redemption endpoint validates the content-addressed
+DOCX bytes before one-time download. The callback transport has no browser SSO
+assertion, so this is requester-bound bearer delivery, not a second identity
+login at download time. Direct
 file attachment requires a later migration to the mutually exclusive AI Bot
 long-connection transport. Inspect the local decision before deployment:
 

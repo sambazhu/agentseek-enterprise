@@ -10,10 +10,17 @@ from typing import Any
 from agentseek_files.inbound import InboundFileResult
 from agentseek_files.models import FileRecord
 from agentseek_files.store import FileStoreError
-from agentseek_wecom.channel import WeComChannel
+from agentseek_wecom.channel import StreamReply, WeComChannel
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComJsonCrypto
 from agentseek_wecom.media import MediaDownload
+from agentseek_wecom.outbound import (
+    ArtifactDownload,
+    ArtifactDownloadGone,
+    TemplateCardIntent,
+    register_artifact_download_resolver,
+    register_template_card_intent,
+)
 from bub.channels.message import ChannelMessage
 from fastapi.testclient import TestClient
 from republic import StreamEvent
@@ -910,6 +917,84 @@ def test_template_card_probe_fails_closed_when_callback_has_no_url() -> None:
     assert payload["stream"]["finish"] is True
     assert "未包含 response_url" in payload["stream"]["content"]
     assert sender.card_calls == []
+
+
+def test_registered_template_card_intent_sends_once_then_commits() -> None:
+    sender = FakeResponseUrlSender()
+    committed: list[str] = []
+    failed: list[str] = []
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(enabled=False),
+        response_url_sender=sender,
+    )
+    marker = register_template_card_intent(TemplateCardIntent(
+        template_card={
+            "card_type": "text_notice",
+            "main_title": {"title": "报告已交付"},
+            "card_action": {"type": 1, "url": "https://reports.example.test/artifacts/delivery#token"},
+        },
+        on_succeeded=lambda: committed.append("ok"),
+        on_failed=failed.append,
+        expires_at_monotonic=10**12,
+    ))
+    stream = StreamReply(
+        stream_id="stream-delivery",
+        session_id="session-redacted",
+        chat_id="chat-redacted",
+        from_userid=None,
+        response_url="https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=sensitive",
+    )
+
+    first = asyncio.run(channel._deliver_response_url_once(stream, marker))
+    replay = asyncio.run(channel._deliver_response_url_once(stream, marker))
+
+    assert first == "succeeded"
+    assert replay == "skipped"
+    assert len(sender.card_calls) == 1
+    assert sender.calls == []
+    assert committed == ["ok"]
+    assert failed == []
+
+
+def test_signed_artifact_endpoint_uses_fragment_token_and_one_time_redeem() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def resolve(delivery_id: str, token: str) -> ArtifactDownload:
+        calls.append((delivery_id, token))
+        if len(calls) > 1:
+            raise ArtifactDownloadGone("consumed")
+        return ArtifactDownload(
+            data=b"docx-bytes",
+            filename="report-v1.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    register_artifact_download_resolver(resolve)
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            artifact_delivery_mode="signed_link",
+            artifact_public_base_url="https://reports.example.test/artifacts",
+        ),
+    )
+    delivery_id = f"delivery_{'a' * 64}"
+    client = TestClient(channel.app)
+
+    page = client.get(f"/artifacts/{delivery_id}")
+    download = client.post(f"/artifacts/{delivery_id}/redeem", content=b"one-time-token")
+    replay = client.post(f"/artifacts/{delivery_id}/redeem", content=b"one-time-token")
+
+    assert page.status_code == 200
+    assert "window.location.hash.slice(1)" in page.text
+    assert "one-time-token" not in page.text
+    assert page.headers["cache-control"] == "no-store"
+    assert download.status_code == 200
+    assert download.content == b"docx-bytes"
+    assert "report-v1.docx" in download.headers["content-disposition"]
+    assert replay.status_code == 410
+    assert calls == [(delivery_id, "one-time-token"), (delivery_id, "one-time-token")]
 
 
 def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> None:

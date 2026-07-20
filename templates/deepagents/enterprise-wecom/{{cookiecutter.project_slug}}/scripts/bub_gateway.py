@@ -78,6 +78,16 @@ def _guard_logfire_configure() -> None:
     logfire.configure = configure_without_required_token
 
 
+def _initialize_signed_link_delivery() -> None:
+    if os.environ.get("AGENTSEEK_WORK_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    if os.environ.get("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE", "disabled").strip() != "signed_link":
+        return
+    from {{ cookiecutter.project_slug }}.work_composition import get_work_composition
+
+    get_work_composition()
+
+
 def main() -> None:
     _load_project_env_file()
     _apply_project_bub_aliases()
@@ -85,6 +95,7 @@ def main() -> None:
 
     apply_agentseek_env_aliases()
     _guard_logfire_configure()
+    _initialize_signed_link_delivery()
 
     from bub.__main__ import app
 

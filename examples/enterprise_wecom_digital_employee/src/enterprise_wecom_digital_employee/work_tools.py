@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 
+from agentseek_wecom.outbound import TemplateCardIntent, register_template_card_intent
 from agentseek_work import (
     ActiveWorkConflictError,
     SourceRecord,
@@ -206,6 +208,20 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                     f"bound_report_draft_v{publication.get('report_draft_version')}，"
                     f"current={str(bool(publication.get('current'))).lower()}，"
                     f"delivery={publication.get('delivery_status')}。"
+                )
+        deliveries = summary.get("report_deliveries")
+        if isinstance(deliveries, list):
+            for delivery in deliveries:
+                if not isinstance(delivery, Mapping):
+                    continue
+                lines.append(
+                    "当前 ReportDelivery："
+                    f"delivery_v{delivery.get('delivery_version')}，"
+                    f"status={delivery.get('status')}，"
+                    f"artifact_id={delivery.get('artifact_id')}，"
+                    f"bound_report_draft_v{delivery.get('report_draft_version')}，"
+                    f"current={str(bool(delivery.get('current'))).lower()}，"
+                    f"grant_state={delivery.get('grant_state')}。"
                 )
         return "\n".join(lines)
 
@@ -704,6 +720,81 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             )
         return "\n".join(lines)
 
+    @tool("deliver_report_artifact")
+    def deliver_report_artifact(expected_version: int, runtime: ToolRuntime) -> str:
+        """Deliver one exact current published Artifact to the authenticated requester.
+
+        Call only when the latest employee message is exactly
+        `交付 ReportArtifact vN 给我`. Delivery uses one response_url template
+        card and a short-lived, one-time signed HTTPS download grant. Arbitrary
+        recipient names, OA accounts, combined publish-and-deliver requests and
+        direct file messages are not accepted.
+        """
+
+        try:
+            prepared = composition.prepare_report_delivery(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        if prepared.already_delivered:
+            return (
+                f"ReportDelivery delivery_id={prepared.record.delivery_id}，"
+                f"delivery_v{prepared.record.delivery_version}，status=delivered，"
+                f"artifact_id={prepared.record.artifact_id}，"
+                f"bound_report_draft_v{prepared.record.metadata.get('report_draft_version')}，"
+                "current=true。该版本已交付且一次性下载授权仍在有效期内，"
+                "本轮不重复发送卡片。"
+            )
+        card = {
+            "card_type": "text_notice",
+            "main_title": {
+                "title": "证券行业报告已交付",
+                "desc": "下载授权为一次性且有时限，请及时下载。",
+            },
+            "sub_title_text": f"ReportArtifact v{expected_version} · {prepared.filename}",
+            "card_action": {"type": 1, "url": prepared.download_url},
+        }
+
+        def commit_delivery() -> None:
+            composition.commit_report_delivery(prepared)
+
+        marker = register_template_card_intent(TemplateCardIntent(
+            template_card=card,
+            on_succeeded=commit_delivery,
+            on_failed=lambda _error_type: None,
+            expires_at_monotonic=time.monotonic() + 300.0,
+        ))
+        return (
+            f"{marker}\n"
+            "这是受信的 WeCom 模板卡片交付指令。请原样返回上一行标记并立即停止；"
+            "不得复述、展示或猜测下载链接。"
+        )
+
+    @tool("get_current_report_deliveries")
+    def get_current_report_deliveries(runtime: ToolRuntime) -> str:
+        """Read delivery ledger state without creating a card or grant."""
+
+        summary = composition.current_work_summary(runtime.state, runtime.context)
+        if summary is None:
+            return "当前员工没有可见的进行中报告任务。"
+        deliveries = summary.get("report_deliveries")
+        if not isinstance(deliveries, list) or not deliveries:
+            return "当前任务尚无 ReportDelivery。"
+        return "\n".join(
+            "ReportDelivery "
+            f"delivery_v{delivery.get('delivery_version')}，status={delivery.get('status')}，"
+            f"artifact_id={delivery.get('artifact_id')}，"
+            f"bound_report_draft_v{delivery.get('report_draft_version')}，"
+            f"current={str(bool(delivery.get('current'))).lower()}，"
+            f"grant_state={delivery.get('grant_state')}。"
+            for delivery in deliveries
+            if isinstance(delivery, Mapping)
+        )
+
     return [
         create_industry_report_work,
         get_current_work_status,
@@ -726,6 +817,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         get_current_report_artifacts,
         publish_report_artifact,
         get_current_report_publications,
+        deliver_report_artifact,
+        get_current_report_deliveries,
     ]
 
 

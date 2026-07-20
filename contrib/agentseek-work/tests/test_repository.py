@@ -11,6 +11,8 @@ from agentseek_work.models import (
     ClaimReviewerStatus,
     ClaimType,
     ClaimVerificationStatus,
+    DeliveryRecord,
+    DeliveryStatus,
     EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
@@ -27,6 +29,9 @@ from agentseek_work.models import (
 )
 from agentseek_work.repository import (
     ActiveWorkConflictError,
+    DeliveryGrantConsumedError,
+    DeliveryGrantExpiredError,
+    DeliveryGrantNotFoundError,
     NonJsonValueError,
     SQLAlchemyWorkRepository,
     WorkConflictError,
@@ -39,6 +44,7 @@ from agentseek_work.schema import (
     work_claim_evidence,
     work_claims,
     work_contracts,
+    work_deliveries,
     work_evidence,
     work_publications,
     work_sources,
@@ -240,6 +246,32 @@ def make_publication(
         published_by="employee_001",
         published_at=published_at,
         metadata={"delivery_status": "not_delivered"},
+    )
+
+
+def make_delivery(
+    publication: PublicationRecord | None = None,
+    *,
+    version: int = 1,
+    delivered_at: datetime = NOW + timedelta(seconds=3),
+) -> DeliveryRecord:
+    current = publication or make_publication()
+    return DeliveryRecord(
+        delivery_id=f"delivery_{'f' * 64}",
+        delivery_version=version,
+        work_id=current.work_id,
+        tenant_id=current.tenant_id,
+        artifact_id=current.artifact_id,
+        publication_id=current.publication_id,
+        content_sha256=current.content_sha256,
+        size_bytes=4096,
+        recipient_key="employee_001",
+        grant_hash=f"sha256:{'9' * 64}",
+        grant_expires_at=delivered_at + timedelta(minutes=30),
+        status=DeliveryStatus.DELIVERED,
+        delivered_by="employee_001",
+        delivered_at=delivered_at,
+        metadata={"delivery_mode": "signed_link"},
     )
 
 
@@ -466,6 +498,22 @@ def test_revision_ten_creates_publication_ledger() -> None:
     assert work_publications.name in set(inspect(engine).get_table_names())
 
 
+def test_revision_eleven_creates_delivery_ledger() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    assert work_deliveries.name in set(inspect(engine).get_table_names())
+    columns = {column["name"] for column in inspect(engine).get_columns(work_deliveries.name)}
+    assert {
+        "delivery_id",
+        "publication_id",
+        "recipient_key",
+        "grant_hash",
+        "grant_expires_at",
+        "grant_consumed_at",
+    } <= columns
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -588,6 +636,62 @@ def test_publication_binding_must_match_registered_artifact(
     with pytest.raises(WorkConflictError, match="binding does not match"):
         repository.put_publication_record(
             replace(make_publication(artifact), content_sha256=f"sha256:{'f' * 64}")
+        )
+
+
+def test_delivery_record_is_atomic_idempotent_and_grant_is_one_time(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    artifact = repository.put_artifact_record(make_artifact())
+    publication = repository.put_publication_record(make_publication(artifact))
+    delivery = make_delivery(publication)
+
+    assert repository.put_delivery_record(delivery) == delivery
+    assert repository.put_delivery_record(delivery) == delivery
+    assert repository.list_delivery_records(
+        tenant_id=delivery.tenant_id,
+        work_id=delivery.work_id,
+    ) == (delivery,)
+    item = repository.get_work(tenant_id=delivery.tenant_id, work_id=delivery.work_id)
+    assert item.status is WorkStatus.DELIVERED
+    assert [event.event_type for event in repository.list_events(
+        tenant_id=delivery.tenant_id,
+        work_id=delivery.work_id,
+    )] == ["artifact_registered", "publication_registered", "delivery_registered"]
+
+    consumed_at = delivery.delivered_at + timedelta(minutes=1)
+    consumed = repository.redeem_delivery_grant(
+        delivery_id=delivery.delivery_id,
+        grant_hash=delivery.grant_hash,
+        consumed_at=consumed_at,
+    )
+    assert consumed.grant_consumed_at == consumed_at
+    with pytest.raises(DeliveryGrantConsumedError):
+        repository.redeem_delivery_grant(
+            delivery_id=delivery.delivery_id,
+            grant_hash=delivery.grant_hash,
+            consumed_at=consumed_at + timedelta(seconds=1),
+        )
+    with pytest.raises(DeliveryGrantNotFoundError):
+        repository.redeem_delivery_grant(
+            delivery_id=delivery.delivery_id,
+            grant_hash=f"sha256:{'8' * 64}",
+            consumed_at=consumed_at,
+        )
+
+
+def test_expired_delivery_grant_fails_closed(repository: SQLAlchemyWorkRepository) -> None:
+    repository.create_work(make_item())
+    artifact = repository.put_artifact_record(make_artifact())
+    publication = repository.put_publication_record(make_publication(artifact))
+    delivery = repository.put_delivery_record(make_delivery(publication))
+
+    with pytest.raises(DeliveryGrantExpiredError):
+        repository.redeem_delivery_grant(
+            delivery_id=delivery.delivery_id,
+            grant_hash=delivery.grant_hash,
+            consumed_at=delivery.grant_expires_at,
         )
 
 

@@ -4,10 +4,12 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -23,6 +25,14 @@ from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.media import MediaDownload, WeComMediaClient, decode_encoding_aes_key
 from agentseek_wecom.messages import make_text, make_text_stream
+from agentseek_wecom.outbound import (
+    ArtifactDownloadGone,
+    ArtifactDownloadNotFound,
+    has_template_card_intent_marker,
+    resolve_artifact_download,
+    take_template_card_intent,
+    validate_artifact_download_base_url,
+)
 from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
@@ -316,6 +326,61 @@ class WeComChannel(Channel):
         @app.get("/health")
         async def health() -> dict[str, Any]:
             return {"ok": True, "channel": self.name, "enabled": self.enabled}
+
+        if self.settings.artifact_delivery_mode == "signed_link":
+            base_url = validate_artifact_download_base_url(self.settings.artifact_public_base_url)
+            download_path = urlparse(base_url).path.rstrip("/")
+
+            @app.get(f"{download_path}/{{delivery_id}}")
+            async def artifact_download_page(delivery_id: str) -> Response:
+                if not re.fullmatch(r"delivery_[a-f0-9]{64}", delivery_id):
+                    raise HTTPException(status_code=404, detail="download grant not found")
+                nonce = uuid4().hex
+                body = _artifact_redemption_page(nonce=nonce)
+                return Response(
+                    content=body,
+                    media_type="text/html",
+                    headers={
+                        "Cache-Control": "no-store",
+                        "Content-Security-Policy": (
+                            "default-src 'none'; connect-src 'self'; "
+                            f"script-src 'nonce-{nonce}'; style-src 'unsafe-inline'"
+                        ),
+                        "Referrer-Policy": "no-referrer",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+
+            @app.post(f"{download_path}/{{delivery_id}}/redeem")
+            async def redeem_artifact_download(delivery_id: str, request: Request) -> Response:
+                token_bytes = await request.body()
+                if not token_bytes or len(token_bytes) > 512:
+                    raise HTTPException(status_code=404, detail="download grant not found")
+                try:
+                    grant_token = token_bytes.decode("ascii")
+                    download = await asyncio.to_thread(
+                        resolve_artifact_download,
+                        delivery_id,
+                        grant_token,
+                    )
+                except (UnicodeDecodeError, ArtifactDownloadNotFound) as exc:
+                    raise HTTPException(status_code=404, detail="download grant not found") from exc
+                except ArtifactDownloadGone as exc:
+                    raise HTTPException(status_code=410, detail="download grant is no longer active") from exc
+                filename = download.filename.replace('"', "").replace("\r", "").replace("\n", "")
+                disposition = (
+                    f'attachment; filename="report.docx"; '
+                    f"filename*=UTF-8''{quote(filename, safe='')}"
+                )
+                return Response(
+                    content=download.data,
+                    media_type=download.media_type,
+                    headers={
+                        "Cache-Control": "no-store",
+                        "Content-Disposition": disposition,
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
 
         return app
 
@@ -1055,16 +1120,29 @@ class WeComChannel(Channel):
         # response_url is a one-shot capability. Claim it before network I/O so
         # competing terminal paths can never send duplicate employee messages.
         stream.response_url_consumed = True
+        intent = take_template_card_intent(content)
+        if intent is None and has_template_card_intent_marker(content):
+            content = "交付意图已失效，请重新发送精确交付命令。"
         try:
-            await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)
+            if intent is None:
+                await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)
+            else:
+                await asyncio.to_thread(
+                    self._response_url_sender.send_template_card,
+                    response_url,
+                    intent.template_card,
+                )
+                await asyncio.to_thread(intent.on_succeeded)
         except Exception as exc:
+            if intent is not None:
+                await asyncio.to_thread(intent.on_failed, type(exc).__name__)
             logger.warning(
                 "wecom.response_url delivery failed stream_id={} error_type={}",
                 stream.stream_id,
                 type(exc).__name__,
             )
             _emit_enterprise_event(
-                "wecom_response_url_delivery",
+                "wecom_template_card_delivery" if intent is not None else "wecom_response_url_delivery",
                 status="error",
                 stream_id=stream.stream_id,
                 session_id=stream.session_id,
@@ -1073,13 +1151,14 @@ class WeComChannel(Channel):
             )
             return "delivery_error"
         _emit_enterprise_event(
-            "wecom_response_url_delivery",
+            "wecom_template_card_delivery" if intent is not None else "wecom_response_url_delivery",
             status="succeeded",
             stream_id=stream.stream_id,
             session_id=stream.session_id,
             content_chars=len(content),
         )
         return "succeeded"
+
 
     @staticmethod
     def _queue_session_id(message: ChannelMessage) -> str:
@@ -1390,6 +1469,27 @@ class WeComChannel(Channel):
         )
         setattr(message, _STREAM_ID_ATTR, stream_id)
         await self._run_receive(message)
+
+
+def _artifact_redemption_page(*, nonce: str) -> str:
+    return (
+        "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>下载报告</title></head><body><p id='status'>正在校验一次性下载授权…</p>"
+        f"<script nonce='{nonce}'>"
+        "const token=window.location.hash.slice(1);history.replaceState(null,'',window.location.pathname);"
+        "const status=document.getElementById('status');"
+        "if(!token){status.textContent='下载授权无效或已被消费。';}else{"
+        "fetch(window.location.pathname+'/redeem',"
+        "{method:'POST',headers:{'Content-Type':'text/plain'},body:token,credentials:'omit'})"
+        ".then(async response=>{if(!response.ok)throw new Error('gone');"
+        "const blob=await response.blob();const url=URL.createObjectURL(blob);"
+        "const link=document.createElement('a');link.href=url;link.download='report.docx';"
+        "document.body.appendChild(link);link.click();URL.revokeObjectURL(url);link.remove();"
+        "status.textContent='下载已开始；该链接不能再次使用。';})"
+        ".catch(()=>{status.textContent='下载授权已过期、已使用或无效。';});}"
+        "</script></body></html>"
+    )
 
 
 def _extract_from_userid(data: dict[str, Any]) -> str | None:

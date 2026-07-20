@@ -21,6 +21,8 @@ from agentseek_work.models import (
     ClaimReviewerStatus,
     ClaimType,
     ClaimVerificationStatus,
+    DeliveryRecord,
+    DeliveryStatus,
     EvidenceRecord,
     ExcerptStatus,
     PackSnapshot,
@@ -45,6 +47,7 @@ from agentseek_work.schema import (
     work_claim_evidence,
     work_claims,
     work_contracts,
+    work_deliveries,
     work_events,
     work_evidence,
     work_items,
@@ -79,6 +82,22 @@ class ActiveWorkConflictError(WorkConflictError):
 
 class WorkContractConflictError(WorkConflictError):
     """Raised when a versioned WorkItem contract violates its lifecycle contract."""
+
+
+class DeliveryGrantError(WorkRepositoryError):
+    """Base class for one-time delivery grant redemption failures."""
+
+
+class DeliveryGrantNotFoundError(DeliveryGrantError):
+    """Raised without revealing whether a delivery ID or grant digest was wrong."""
+
+
+class DeliveryGrantExpiredError(DeliveryGrantError):
+    """Raised when a delivery grant has passed its frozen expiry."""
+
+
+class DeliveryGrantConsumedError(DeliveryGrantError):
+    """Raised when a one-time delivery grant has already been redeemed."""
 
 
 class NonJsonValueError(WorkRepositoryError):
@@ -890,6 +909,158 @@ class SQLAlchemyWorkRepository:
             )
             return tuple(_row_to_publication(row) for row in rows)
 
+    def put_delivery_record(self, delivery: DeliveryRecord) -> DeliveryRecord:
+        """Record one successful card delivery and advance its WorkItem atomically."""
+
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(
+                    connection,
+                    tenant_id=delivery.tenant_id,
+                    work_id=delivery.work_id,
+                )
+                item_row = (
+                    connection
+                    .execute(
+                        select(work_items)
+                        .where(
+                            work_items.c.tenant_id == delivery.tenant_id,
+                            work_items.c.work_id == delivery.work_id,
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one()
+                )
+                _require_delivery_bindings(connection, delivery)
+                existing_row = (
+                    connection
+                    .execute(
+                        select(work_deliveries).where(
+                            work_deliveries.c.tenant_id == delivery.tenant_id,
+                            work_deliveries.c.delivery_id == delivery.delivery_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing_row is not None:
+                    existing = _row_to_delivery(existing_row)
+                    if existing != delivery:
+                        _raise_delivery_record_conflict(delivery.delivery_id)
+                    return existing
+
+                item = _row_to_item(item_row)
+                result = _delivery_transition(item, delivery)
+                values = _item_to_values(result.item)
+                values.pop("work_id")
+                values.pop("tenant_id")
+                connection.execute(insert(work_deliveries).values(**_delivery_values(delivery)))
+                updated = connection.execute(
+                    update(work_items)
+                    .where(
+                        work_items.c.tenant_id == delivery.tenant_id,
+                        work_items.c.work_id == delivery.work_id,
+                        work_items.c.version == item.version,
+                    )
+                    .values(**values)
+                )
+                if updated.rowcount != 1:
+                    _raise_optimistic_concurrency(delivery.work_id)
+                connection.execute(insert(work_events).values(**_event_to_values(result.event)))
+                return delivery
+        except (WorkNotFoundError, WorkConflictError, OptimisticConcurrencyError):
+            raise
+        except IntegrityError as exc:
+            try:
+                existing = self.get_delivery_record(
+                    tenant_id=delivery.tenant_id,
+                    delivery_id=delivery.delivery_id,
+                )
+            except WorkNotFoundError:
+                self._raise_write_error(exc, "delivery registration failed")
+            if existing == delivery:
+                return existing
+            self._raise_write_error(exc, "delivery registration failed")
+        except StatementError as exc:
+            self._raise_write_error(exc, "delivery registration failed")
+
+    def get_delivery_record(self, *, tenant_id: str, delivery_id: str) -> DeliveryRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_deliveries).where(
+                        work_deliveries.c.tenant_id == tenant_id,
+                        work_deliveries.c.delivery_id == delivery_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"delivery {delivery_id} was not found for tenant")
+            return _row_to_delivery(row)
+
+    def list_delivery_records(self, *, tenant_id: str, work_id: str) -> tuple[DeliveryRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_deliveries)
+                    .where(
+                        work_deliveries.c.tenant_id == tenant_id,
+                        work_deliveries.c.work_id == work_id,
+                    )
+                    .order_by(work_deliveries.c.delivery_version, work_deliveries.c.delivery_id)
+                )
+                .mappings()
+                .all()
+            )
+            return tuple(_row_to_delivery(row) for row in rows)
+
+    def redeem_delivery_grant(
+        self,
+        *,
+        delivery_id: str,
+        grant_hash: str,
+        consumed_at: datetime,
+    ) -> DeliveryRecord:
+        """Atomically consume a one-time grant without exposing tenant lookup oracles."""
+
+        if consumed_at.tzinfo is None or consumed_at.utcoffset() is None:
+            raise ValueError("consumed_at must be timezone-aware")
+        with self.engine.begin() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_deliveries)
+                    .where(work_deliveries.c.delivery_id == delivery_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None or str(row["grant_hash"]) != grant_hash:
+                raise DeliveryGrantNotFoundError("delivery grant was not found")
+            delivery = _row_to_delivery(row)
+            if delivery.grant_consumed_at is not None:
+                raise DeliveryGrantConsumedError("delivery grant has already been consumed")
+            if consumed_at >= delivery.grant_expires_at:
+                raise DeliveryGrantExpiredError("delivery grant has expired")
+            updated = connection.execute(
+                update(work_deliveries)
+                .where(
+                    work_deliveries.c.delivery_id == delivery_id,
+                    work_deliveries.c.grant_consumed_at.is_(None),
+                )
+                .values(grant_consumed_at=consumed_at)
+            )
+            if updated.rowcount != 1:
+                raise DeliveryGrantConsumedError("delivery grant has already been consumed")
+            return replace(delivery, grant_consumed_at=consumed_at)
+
     def commit_transition(
         self,
         *,
@@ -1525,6 +1696,10 @@ def _raise_publication_record_conflict(publication_id: str) -> NoReturn:
     raise WorkConflictError(f"publication record {publication_id} already exists with different values")
 
 
+def _raise_delivery_record_conflict(delivery_id: str) -> NoReturn:
+    raise WorkConflictError(f"delivery record {delivery_id} already exists with different values")
+
+
 def _require_publication_artifact(
     connection: Connection,
     publication: PublicationRecord,
@@ -1552,6 +1727,47 @@ def _require_publication_artifact(
     ):
         raise WorkConflictError("publication binding does not match the immutable Artifact")
     return artifact
+
+
+def _require_delivery_bindings(
+    connection: Connection,
+    delivery: DeliveryRecord,
+) -> None:
+    publication_row = (
+        connection
+        .execute(
+            select(work_publications).where(
+                work_publications.c.tenant_id == delivery.tenant_id,
+                work_publications.c.publication_id == delivery.publication_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    artifact_row = (
+        connection
+        .execute(
+            select(work_artifacts).where(
+                work_artifacts.c.tenant_id == delivery.tenant_id,
+                work_artifacts.c.artifact_id == delivery.artifact_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if publication_row is None or artifact_row is None:
+        raise WorkConflictError("delivery requires registered Publication and Artifact records")
+    publication = _row_to_publication(publication_row)
+    artifact = _row_to_artifact(artifact_row)
+    if (
+        publication.work_id != delivery.work_id
+        or publication.artifact_id != delivery.artifact_id
+        or publication.content_sha256 != delivery.content_sha256
+        or artifact.work_id != delivery.work_id
+        or artifact.content_sha256 != delivery.content_sha256
+        or artifact.size_bytes != delivery.size_bytes
+    ):
+        raise WorkConflictError("delivery binding does not match Publication and Artifact records")
 
 
 def _require_source_binding(connection: Connection, evidence: EvidenceRecord) -> None:
@@ -2274,6 +2490,52 @@ def _row_to_publication(row: RowMapping | Mapping[str, Any]) -> PublicationRecor
     )
 
 
+def _delivery_values(delivery: DeliveryRecord) -> dict[str, Any]:
+    return {
+        "delivery_id": delivery.delivery_id,
+        "delivery_version": delivery.delivery_version,
+        "work_id": delivery.work_id,
+        "tenant_id": delivery.tenant_id,
+        "artifact_id": delivery.artifact_id,
+        "publication_id": delivery.publication_id,
+        "content_sha256": delivery.content_sha256,
+        "size_bytes": delivery.size_bytes,
+        "recipient_key": delivery.recipient_key,
+        "grant_hash": delivery.grant_hash,
+        "grant_expires_at": delivery.grant_expires_at,
+        "grant_consumed_at": delivery.grant_consumed_at,
+        "status": delivery.status.value,
+        "delivered_by": delivery.delivered_by,
+        "delivered_at": delivery.delivered_at,
+        "metadata": _json_document(dict(delivery.metadata), "delivery metadata"),
+    }
+
+
+def _row_to_delivery(row: RowMapping | Mapping[str, Any]) -> DeliveryRecord:
+    return DeliveryRecord(
+        delivery_id=str(row["delivery_id"]),
+        delivery_version=int(row["delivery_version"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        artifact_id=str(row["artifact_id"]),
+        publication_id=str(row["publication_id"]),
+        content_sha256=str(row["content_sha256"]),
+        size_bytes=int(row["size_bytes"]),
+        recipient_key=str(row["recipient_key"]),
+        grant_hash=str(row["grant_hash"]),
+        grant_expires_at=_aware_datetime(row["grant_expires_at"]),
+        grant_consumed_at=(
+            _aware_datetime(row["grant_consumed_at"])
+            if row["grant_consumed_at"] is not None
+            else None
+        ),
+        status=DeliveryStatus(str(row["status"])),
+        delivered_by=str(row["delivered_by"]),
+        delivered_at=_aware_datetime(row["delivered_at"]),
+        metadata=dict(row["metadata"]),
+    )
+
+
 def _item_to_values(item: WorkItem) -> dict[str, Any]:
     return {
         "work_id": item.work_id,
@@ -2482,7 +2744,7 @@ def _publication_transition(item: WorkItem, publication: PublicationRecord) -> T
             payload_digest=publication.content_sha256,
             policy_decision=publication.policy_id,
         )
-    if item.status is not WorkStatus.PUBLISHED:
+    if item.status not in {WorkStatus.PUBLISHED, WorkStatus.DELIVERED}:
         raise WorkConflictError(
             f"work item status {item.status.value} cannot register a report publication"
         )
@@ -2500,12 +2762,53 @@ def _publication_transition(item: WorkItem, publication: PublicationRecord) -> T
             actor_type=ActorType.REQUESTER,
             actor_id=publication.published_by,
             phase=item.current_phase,
-            from_status=WorkStatus.PUBLISHED,
-            to_status=WorkStatus.PUBLISHED,
+            from_status=item.status,
+            to_status=item.status,
             work_version=next_item.version,
             payload_digest=publication.content_sha256,
             policy_decision=publication.policy_id,
             occurred_at=publication.published_at,
+        ),
+    )
+
+
+def _delivery_transition(item: WorkItem, delivery: DeliveryRecord) -> TransitionResult:
+    if delivery.delivered_at < item.updated_at:
+        raise ValueError("delivered_at must not be earlier than the current WorkItem updated_at")
+    event_id = f"delivery-{delivery.delivery_id}"
+    if item.status is WorkStatus.PUBLISHED:
+        from agentseek_work.state_machine import transition_work_item
+
+        return transition_work_item(
+            item,
+            to_status=WorkStatus.DELIVERED,
+            expected_version=item.version,
+            event_id=event_id,
+            event_type="delivery_registered",
+            actor_type=ActorType.REQUESTER,
+            actor_id=delivery.delivered_by,
+            occurred_at=delivery.delivered_at,
+            payload_digest=delivery.content_sha256,
+            policy_decision="recipient-bound-signed-link",
+        )
+    if item.status is not WorkStatus.DELIVERED:
+        raise WorkConflictError(f"work item status {item.status.value} cannot register a report delivery")
+    next_item = replace(item, version=item.version + 1, updated_at=delivery.delivered_at)
+    return TransitionResult(
+        item=next_item,
+        event=WorkEvent(
+            event_id=event_id,
+            work_id=item.work_id,
+            event_type="delivery_registered",
+            actor_type=ActorType.REQUESTER,
+            actor_id=delivery.delivered_by,
+            phase=item.current_phase,
+            from_status=WorkStatus.DELIVERED,
+            to_status=WorkStatus.DELIVERED,
+            work_version=next_item.version,
+            payload_digest=delivery.content_sha256,
+            policy_decision="recipient-bound-signed-link",
+            occurred_at=delivery.delivered_at,
         ),
     )
 

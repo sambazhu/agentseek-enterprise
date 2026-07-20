@@ -55,6 +55,17 @@ def test_outbound_preflight_validates_signed_link_base_url() -> None:
 
     assert failures == []
 
+
+def test_outbound_preflight_rejects_unbounded_signed_link_ttl() -> None:
+    failures, _warnings = _check({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "callback",
+        "AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE": "signed_link",
+        "AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL": "https://reports.example.test/artifacts",
+        "AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS": "3601",
+    })
+
+    assert failures == ["AGENTSEEK_WORK_ARTIFACT_GRANT_TTL_SECONDS must be from 1 to 3600"]
+
     failures, _ = _check({
         "AGENTSEEK_WECOM_TRANSPORT_MODE": "callback",
         "AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE": "signed_link",

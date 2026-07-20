@@ -24,6 +24,7 @@ from agentseek_work.models import (
     ClaimReviewerStatus,
     ClaimType,
     ClaimVerificationStatus,
+    DeliveryStatus,
     ExcerptStatus,
     PublicationStatus,
     SnapshotStatus,
@@ -51,6 +52,7 @@ claim_type_values = _sql_values([claim_type.value for claim_type in ClaimType])
 claim_verification_status_values = _sql_values([status.value for status in ClaimVerificationStatus])
 claim_reviewer_status_values = _sql_values([status.value for status in ClaimReviewerStatus])
 publication_status_values = _sql_values([status.value for status in PublicationStatus])
+delivery_status_values = _sql_values([status.value for status in DeliveryStatus])
 
 schema_versions = Table(
     "enterprise_work_schema_versions",
@@ -383,6 +385,52 @@ work_publications = Table(
 
 Index("ix_work_publications_tenant_work", work_publications.c.tenant_id, work_publications.c.work_id)
 Index("ix_work_publications_content", work_publications.c.content_sha256)
+
+work_deliveries = Table(
+    "enterprise_work_deliveries",
+    metadata,
+    Column("delivery_id", String(160), primary_key=True),
+    Column("delivery_version", Integer, nullable=False),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column(
+        "artifact_id",
+        String(160),
+        ForeignKey("enterprise_work_artifacts.artifact_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column(
+        "publication_id",
+        String(160),
+        ForeignKey("enterprise_work_publications.publication_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("content_sha256", String(71), nullable=False),
+    Column("size_bytes", BigInteger, nullable=False),
+    Column("recipient_key", String(128), nullable=False),
+    Column("grant_hash", String(71), nullable=False),
+    Column("grant_expires_at", DateTime(timezone=True), nullable=False),
+    Column("grant_consumed_at", DateTime(timezone=True), nullable=True),
+    Column("status", String(32), nullable=False),
+    Column("delivered_by", String(128), nullable=False),
+    Column("delivered_at", DateTime(timezone=True), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    UniqueConstraint("work_id", "delivery_version", name="uq_work_deliveries_version"),
+    UniqueConstraint("grant_hash", name="uq_work_deliveries_grant"),
+    CheckConstraint("delivery_version > 0", name="ck_work_delivery_version"),
+    CheckConstraint("size_bytes > 0", name="ck_work_delivery_size"),
+    CheckConstraint("grant_expires_at > delivered_at", name="ck_work_delivery_expiry"),
+    CheckConstraint(f"status IN ({delivery_status_values})", name="ck_work_delivery_status"),
+)
+
+Index("ix_work_deliveries_tenant_work", work_deliveries.c.tenant_id, work_deliveries.c.work_id)
+Index("ix_work_deliveries_content", work_deliveries.c.content_sha256)
+Index("ix_work_deliveries_recipient", work_deliveries.c.recipient_key)
 
 work_budget_usage = Table(
     "enterprise_work_budget_usage",

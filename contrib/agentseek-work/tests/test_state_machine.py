@@ -70,10 +70,14 @@ def test_happy_path_produces_versioned_immutable_events() -> None:
 
 def test_draft_can_cross_the_explicit_publication_checkpoint() -> None:
     published = transition(make_item(), WorkStatus.PUBLISHED)
+    delivered = transition(published.item, WorkStatus.DELIVERED)
 
     assert published.item.status is WorkStatus.PUBLISHED
+    assert delivered.item.status is WorkStatus.DELIVERED
     assert published.item.version == 1
+    assert delivered.item.version == 2
     assert not published.item.is_terminal
+    assert not delivered.item.is_terminal
 
 
 @pytest.mark.parametrize(

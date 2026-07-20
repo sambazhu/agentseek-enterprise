@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from hashlib import sha256
 
+from {{ cookiecutter.project_slug }}.channel_command import authenticated_user_command_text
+
 _PUBLISH_REQUEST_RE = re.compile(
     r"^\s*发布\s+report\s*artifact\s*[vV](\d+)\s*[。.!！]?\s*$",
     re.IGNORECASE,
@@ -12,7 +14,7 @@ _PUBLISH_REQUEST_RE = re.compile(
 def explicitly_requests_report_publication(message: str, *, expected_version: int) -> bool:
     """Accept only one exact publication action bound to one Artifact version."""
 
-    match = _PUBLISH_REQUEST_RE.fullmatch(str(message or ""))
+    match = _PUBLISH_REQUEST_RE.fullmatch(authenticated_user_command_text(message))
     return bool(match and expected_version > 0 and int(match.group(1)) == expected_version)
 
 

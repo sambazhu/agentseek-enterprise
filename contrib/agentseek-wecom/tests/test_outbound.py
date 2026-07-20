@@ -58,6 +58,9 @@ def test_validate_artifact_download_base_url(value: str, expected: str) -> None:
         "https://user:secret@reports.example.test",
         "https://reports.example.test?token=secret",
         "https://reports.example.test/#fragment",
+        "https://reports.example.test/../admin",
+        "https://reports.example.test/%2e%2e/admin",
+        "https://reports.example.test/{delivery_id}",
     ],
 )
 def test_validate_artifact_download_base_url_rejects_unsafe_values(value: str) -> None:
