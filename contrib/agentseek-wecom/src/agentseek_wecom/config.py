@@ -126,6 +126,13 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_RESPONSE_URL_PROBE_TRIGGER",
         ),
     )
+    response_url_template_card_probe_trigger: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_RESPONSE_URL_TEMPLATE_CARD_PROBE_TRIGGER",
+            "AGENTSEEK_WECOM_RESPONSE_URL_TEMPLATE_CARD_PROBE_TRIGGER",
+        ),
+    )
     response_url_probe_delay_seconds: float = Field(
         default=5.0,
         validation_alias=AliasChoices(

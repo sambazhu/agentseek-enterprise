@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -64,9 +65,13 @@ class FakeMediaClient:
 class FakeResponseUrlSender:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.card_calls: list[tuple[str, dict[str, Any]]] = []
 
     def send_markdown(self, response_url: str, content: str) -> None:
         self.calls.append((response_url, content))
+
+    def send_template_card(self, response_url: str, template_card: Mapping[str, Any]) -> None:
+        self.card_calls.append((response_url, dict(template_card)))
 
 
 class FakeFileService:
@@ -834,6 +839,77 @@ def test_response_url_probe_fails_closed_when_callback_has_no_url() -> None:
     assert payload["stream"]["finish"] is True
     assert "未包含 response_url" in payload["stream"]["content"]
     assert sender.calls == []
+
+
+def test_template_card_probe_consumes_url_once_without_dispatching_to_agent() -> None:
+    sender = FakeResponseUrlSender()
+    received: list[ChannelMessage] = []
+    channel = WeComChannel(
+        on_receive=received.append,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            userid_resolve_mode="",
+            response_url_template_card_probe_trigger="probe-template-card",
+            response_url_probe_delay_seconds=0.01,
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> dict[str, Any]:
+        response = await channel._handle_plain_message({
+            "msgid": "probe-card-message",
+            "msgtype": "text",
+            "from": {"userid": "probe-user"},
+            "responseurl": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=sensitive",
+            "text": {"content": "probe-template-card"},
+        })
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(response or "{}")
+
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["finish"] is True
+    assert "模板卡片探针已启动" in payload["stream"]["content"]
+    assert received == []
+    assert len(sender.card_calls) == 1
+    response_url, card = sender.card_calls[0]
+    assert response_url.endswith("response_code=sensitive")
+    assert card["card_type"] == "text_notice"
+    assert card["card_action"] == {
+        "type": 1,
+        "url": "https://developer.work.weixin.qq.com/document/path/101138",
+    }
+
+
+def test_template_card_probe_fails_closed_when_callback_has_no_url() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            token="token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            userid_resolve_mode="",
+            response_url_template_card_probe_trigger="probe-template-card",
+        ),
+        response_url_sender=sender,
+    )
+
+    response = asyncio.run(
+        channel._handle_plain_message({
+            "msgid": "probe-card-message",
+            "msgtype": "text",
+            "from": {"userid": "probe-user"},
+            "text": {"content": "probe-template-card"},
+        })
+    )
+    payload = json.loads(response or "{}")
+
+    assert payload["stream"]["finish"] is True
+    assert "未包含 response_url" in payload["stream"]["content"]
+    assert sender.card_calls == []
 
 
 def test_duplicate_msgid_reuses_stream_and_skips_dispatch_while_running() -> None:

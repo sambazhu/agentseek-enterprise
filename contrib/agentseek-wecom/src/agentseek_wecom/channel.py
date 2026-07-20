@@ -5,7 +5,7 @@ import contextlib
 import json
 import os
 import time
-from collections.abc import AsyncGenerator, AsyncIterable
+from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from uuid import uuid4
@@ -60,6 +60,12 @@ class InboundFileServiceProtocol(Protocol):
 
 class ResponseUrlSenderProtocol(Protocol):
     def send_markdown(self, response_url: str, content: str) -> None: ...
+
+    def send_template_card(
+        self,
+        response_url: str,
+        template_card: Mapping[str, Any],
+    ) -> None: ...
 
 
 @dataclass
@@ -336,6 +342,9 @@ class WeComChannel(Channel):
         trigger = self.settings.response_url_probe_trigger
         if trigger and content == trigger:
             return await self._handle_response_url_probe(data)
+        card_trigger = self.settings.response_url_template_card_probe_trigger
+        if card_trigger and content == card_trigger:
+            return await self._handle_response_url_template_card_probe(data)
         return await self._dispatch_user_message(data, content)
 
     async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
@@ -372,6 +381,57 @@ class WeComChannel(Channel):
             _emit_enterprise_event("wecom_response_url_probe", status="error", error_type=type(exc).__name__)
         else:
             _emit_enterprise_event("wecom_response_url_probe", status="succeeded")
+
+    async def _handle_response_url_template_card_probe(self, data: dict[str, Any]) -> str:
+        from_userid = _extract_from_userid(data)
+        stream = await self._create_stream(
+            session_id=f"wecom:{from_userid or 'unknown'}",
+            chat_id=from_userid or "wecom:unknown",
+            from_userid=from_userid,
+        )
+        response_url = _extract_response_url(data)
+        if not response_url:
+            stream.update(content="模板卡片探针失败：回调未包含 response_url。", finish=True)
+            return await self._stream_response(stream.stream_id)
+
+        stream.update(content="模板卡片探针已启动，请等待第二条消息。", finish=True)
+        task = asyncio.create_task(
+            self._run_response_url_template_card_probe(response_url),
+            name=f"agentseek-wecom.response-url-template-card-probe.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+        return await self._stream_response(stream.stream_id)
+
+    async def _run_response_url_template_card_probe(self, response_url: str) -> None:
+        await asyncio.sleep(max(self.settings.response_url_probe_delay_seconds, 0.0))
+        card = {
+            "card_type": "text_notice",
+            "main_title": {
+                "title": "AgentSeek M4-00 出站协议探针",
+                "desc": "AI Bot response_url 模板卡片发送成功",
+            },
+            "sub_title_text": "当前回调模式将使用模板卡片承载受控 Artifact 下载链接。",
+            "card_action": {
+                "type": 1,
+                "url": "https://developer.work.weixin.qq.com/document/path/101138",
+            },
+        }
+        try:
+            await asyncio.to_thread(
+                self._response_url_sender.send_template_card,
+                response_url,
+                card,
+            )
+        except Exception as exc:
+            logger.warning("wecom.response_url_template_card_probe failed error_type={}", type(exc).__name__)
+            _emit_enterprise_event(
+                "wecom_response_url_template_card_probe",
+                status="error",
+                error_type=type(exc).__name__,
+            )
+        else:
+            _emit_enterprise_event("wecom_response_url_template_card_probe", status="succeeded")
 
     async def _handle_voice(self, data: dict[str, Any]) -> str:
         content = str((data.get("voice") or {}).get("content") or "")

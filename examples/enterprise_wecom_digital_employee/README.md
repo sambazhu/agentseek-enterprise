@@ -513,6 +513,18 @@ long-connection transport. Inspect the local decision before deployment:
 uv run --offline python scripts/probe_wecom_outbound.py
 ```
 
+For an M4-00 live protocol check, temporarily set an exact trigger, restart via
+`scripts/run_gateway.sh`, and send that exact text from a test employee:
+
+```env
+AGENTSEEK_WECOM_RESPONSE_URL_TEMPLATE_CARD_PROBE_TRIGGER=M4-00模板卡片探针
+```
+
+The callback must acknowledge the probe and the one-shot `response_url` must
+deliver exactly one visible `text_notice` card without entering the Agent. Clear
+the trigger and restart the gateway immediately after the check. This probe does
+not publish or deliver an Artifact.
+
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
 ```bash
