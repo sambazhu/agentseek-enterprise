@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError, StatementError
 from agentseek_work.models import (
     TERMINAL_WORK_STATUSES,
     ActorType,
+    ArtifactRecord,
     BudgetAmount,
     BudgetReservation,
     BudgetReservationStatus,
@@ -35,6 +36,7 @@ from agentseek_work.models import (
 )
 from agentseek_work.schema import (
     pack_snapshots,
+    work_artifacts,
     work_budget_reservations,
     work_budget_usage,
     work_budgets,
@@ -635,6 +637,131 @@ class SQLAlchemyWorkRepository:
                 .all()
             )
             return tuple(_row_to_claim(connection, row) for row in rows)
+
+    def put_artifact_record(self, artifact: ArtifactRecord) -> ArtifactRecord:
+        """Register one immutable artifact and attach it to its WorkItem atomically."""
+
+        try:
+            with self.engine.begin() as connection:
+                _require_owned_work(
+                    connection,
+                    tenant_id=artifact.tenant_id,
+                    work_id=artifact.work_id,
+                )
+                item_row = (
+                    connection
+                    .execute(
+                        select(work_items)
+                        .where(
+                            work_items.c.tenant_id == artifact.tenant_id,
+                            work_items.c.work_id == artifact.work_id,
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one()
+                )
+                existing_row = (
+                    connection
+                    .execute(
+                        select(work_artifacts).where(
+                            work_artifacts.c.tenant_id == artifact.tenant_id,
+                            work_artifacts.c.artifact_id == artifact.artifact_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing_row is not None:
+                    existing = _row_to_artifact(existing_row)
+                    if existing != artifact:
+                        _raise_artifact_record_conflict(artifact.artifact_id)
+                    stored = existing
+                else:
+                    connection.execute(insert(work_artifacts).values(**_artifact_values(artifact)))
+                    stored = artifact
+                artifact_ids = [str(value) for value in item_row["artifact_ids"]]
+                if artifact.artifact_id not in artifact_ids:
+                    artifact_ids.append(artifact.artifact_id)
+                    next_version = int(item_row["version"]) + 1
+                    connection.execute(
+                        update(work_items)
+                        .where(
+                            work_items.c.tenant_id == artifact.tenant_id,
+                            work_items.c.work_id == artifact.work_id,
+                        )
+                        .values(
+                            artifact_ids=_json_document(artifact_ids, "artifact_ids"),
+                            version=next_version,
+                            updated_at=max(_aware_datetime(item_row["updated_at"]), artifact.created_at),
+                        )
+                    )
+                    event = WorkEvent(
+                        event_id=f"artifact-{artifact.artifact_id}",
+                        work_id=artifact.work_id,
+                        event_type="artifact_registered",
+                        actor_type=ActorType.REQUESTER,
+                        actor_id=artifact.created_by,
+                        phase=str(item_row["current_phase"]),
+                        from_status=WorkStatus(str(item_row["status"])),
+                        to_status=WorkStatus(str(item_row["status"])),
+                        work_version=next_version,
+                        payload_digest=artifact.content_sha256,
+                        policy_decision="approved-current-draft",
+                        occurred_at=artifact.created_at,
+                    )
+                    connection.execute(insert(work_events).values(**_event_to_values(event)))
+                return stored
+        except WorkNotFoundError:
+            raise
+        except IntegrityError as exc:
+            try:
+                existing = self.get_artifact_record(
+                    tenant_id=artifact.tenant_id,
+                    artifact_id=artifact.artifact_id,
+                )
+            except WorkNotFoundError:
+                self._raise_write_error(exc, "artifact registration failed")
+            if existing == artifact:
+                return existing
+            self._raise_write_error(exc, "artifact registration failed")
+        except StatementError as exc:
+            self._raise_write_error(exc, "artifact registration failed")
+
+    def get_artifact_record(self, *, tenant_id: str, artifact_id: str) -> ArtifactRecord:
+        with self.engine.connect() as connection:
+            row = (
+                connection
+                .execute(
+                    select(work_artifacts).where(
+                        work_artifacts.c.tenant_id == tenant_id,
+                        work_artifacts.c.artifact_id == artifact_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise WorkNotFoundError(f"artifact {artifact_id} was not found for tenant")
+            return _row_to_artifact(row)
+
+    def list_artifact_records(self, *, tenant_id: str, work_id: str) -> tuple[ArtifactRecord, ...]:
+        with self.engine.connect() as connection:
+            _require_owned_work(connection, tenant_id=tenant_id, work_id=work_id)
+            rows = (
+                connection
+                .execute(
+                    select(work_artifacts)
+                    .where(
+                        work_artifacts.c.tenant_id == tenant_id,
+                        work_artifacts.c.work_id == work_id,
+                    )
+                    .order_by(work_artifacts.c.created_at, work_artifacts.c.artifact_id)
+                )
+                .mappings()
+                .all()
+            )
+            return tuple(_row_to_artifact(row) for row in rows)
 
     def commit_transition(
         self,
@@ -1261,6 +1388,10 @@ def _raise_evidence_record_conflict(evidence_id: str) -> NoReturn:
 
 def _raise_claim_record_conflict(claim_id: str) -> NoReturn:
     raise WorkConflictError(f"claim record {claim_id} already exists with different values")
+
+
+def _raise_artifact_record_conflict(artifact_id: str) -> NoReturn:
+    raise WorkConflictError(f"artifact record {artifact_id} already exists with different values")
 
 
 def _require_source_binding(connection: Connection, evidence: EvidenceRecord) -> None:
@@ -1890,6 +2021,56 @@ def _row_to_claim(connection: Connection, row: RowMapping | Mapping[str, Any]) -
         evidence_ids=evidence_ids,
         verification_status=ClaimVerificationStatus(str(row["verification_status"])),
         reviewer_status=ClaimReviewerStatus(str(row["reviewer_status"])),
+        created_at=_aware_datetime(row["created_at"]),
+        metadata=dict(row["metadata"]),
+    )
+
+
+def _artifact_values(artifact: ArtifactRecord) -> dict[str, Any]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "work_id": artifact.work_id,
+        "tenant_id": artifact.tenant_id,
+        "artifact_type": artifact.artifact_type,
+        "artifact_format": artifact.artifact_format,
+        "media_type": artifact.media_type,
+        "content_sha256": artifact.content_sha256,
+        "size_bytes": artifact.size_bytes,
+        "storage_key": artifact.storage_key,
+        "filename": artifact.filename,
+        "source_contract_type": artifact.source_contract_type,
+        "source_contract_version": artifact.source_contract_version,
+        "source_digest": artifact.source_digest,
+        "approval_contract_version": artifact.approval_contract_version,
+        "approval_digest": artifact.approval_digest,
+        "template_ref": artifact.template_ref,
+        "template_digest": artifact.template_digest,
+        "created_by": artifact.created_by,
+        "created_at": artifact.created_at,
+        "metadata": _json_document(dict(artifact.metadata), "artifact metadata"),
+    }
+
+
+def _row_to_artifact(row: RowMapping | Mapping[str, Any]) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_id=str(row["artifact_id"]),
+        work_id=str(row["work_id"]),
+        tenant_id=str(row["tenant_id"]),
+        artifact_type=str(row["artifact_type"]),
+        artifact_format=str(row["artifact_format"]),
+        media_type=str(row["media_type"]),
+        content_sha256=str(row["content_sha256"]),
+        size_bytes=int(row["size_bytes"]),
+        storage_key=str(row["storage_key"]),
+        filename=str(row["filename"]),
+        source_contract_type=str(row["source_contract_type"]),
+        source_contract_version=int(row["source_contract_version"]),
+        source_digest=str(row["source_digest"]),
+        approval_contract_version=int(row["approval_contract_version"]),
+        approval_digest=str(row["approval_digest"]),
+        template_ref=str(row["template_ref"]),
+        template_digest=str(row["template_digest"]),
+        created_by=str(row["created_by"]),
         created_at=_aware_datetime(row["created_at"]),
         metadata=dict(row["metadata"]),
     )

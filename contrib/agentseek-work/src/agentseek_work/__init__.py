@@ -1,6 +1,7 @@
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations, current_schema_version
 from agentseek_work.models import (
     ActorType,
+    ArtifactRecord,
     BudgetAmount,
     BudgetReservation,
     BudgetReservationStatus,
@@ -64,6 +65,7 @@ __all__ = [
     "LATEST_SCHEMA_VERSION",
     "ActiveWorkConflictError",
     "ActorType",
+    "ArtifactRecord",
     "BudgetAmount",
     "BudgetExceededError",
     "BudgetReservation",

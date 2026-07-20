@@ -8,6 +8,7 @@ from agentseek_work.models import TERMINAL_WORK_STATUSES
 from agentseek_work.schema import (
     metadata,
     schema_versions,
+    work_artifacts,
     work_claim_evidence,
     work_claims,
     work_contracts,
@@ -16,7 +17,7 @@ from agentseek_work.schema import (
     work_sources,
 )
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
 _CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
@@ -61,6 +62,8 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_seven(connection)
     elif version == 8:
         _apply_revision_eight(connection)
+    elif version == 9:
+        _apply_revision_nine(connection)
 
 
 def _apply_revision_four(connection: Connection) -> None:
@@ -235,3 +238,35 @@ def _apply_revision_eight(connection: Connection) -> None:
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"cannot apply work schema revision 8; {table_name} is missing: {joined}")
+
+
+def _apply_revision_nine(connection: Connection) -> None:
+    if not inspect(connection).has_table(work_artifacts.name):
+        raise RuntimeError("cannot apply work schema revision 9; enterprise_work_artifacts is missing")
+    required = {
+        "artifact_id",
+        "work_id",
+        "tenant_id",
+        "artifact_type",
+        "artifact_format",
+        "media_type",
+        "content_sha256",
+        "size_bytes",
+        "storage_key",
+        "filename",
+        "source_contract_type",
+        "source_contract_version",
+        "source_digest",
+        "approval_contract_version",
+        "approval_digest",
+        "template_ref",
+        "template_digest",
+        "created_by",
+        "created_at",
+        "metadata",
+    }
+    existing = {str(column["name"]) for column in inspect(connection).get_columns(work_artifacts.name)}
+    missing = sorted(required - existing)
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(f"cannot apply work schema revision 9; enterprise_work_artifacts is missing: {joined}")

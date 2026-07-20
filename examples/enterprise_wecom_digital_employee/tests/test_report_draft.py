@@ -475,6 +475,15 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     assert approval.report_draft_version == 1
     assert approval.report_draft_digest == report_draft_digest(draft)
 
+    with pytest.raises(WorkCompositionError, match="尚未完成内容审批"):
+        composition.render_report_artifact(
+            state,
+            None,
+            expected_version=1,
+            artifact_format="docx",
+            latest_user_message="生成 ReportDraft v1 DOCX",
+        )
+
     with pytest.raises(WorkCompositionError, match="未显式批准 ReportDraft v1"):
         composition.approve_report_draft(
             state,
@@ -519,19 +528,68 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
         "current": True,
     }
 
+    with pytest.raises(WorkCompositionError, match="未显式请求生成"):
+        composition.render_report_artifact(
+            state,
+            None,
+            expected_version=1,
+            artifact_format="docx",
+            latest_user_message="批准 ReportDraft v1",
+        )
+    artifact = composition.render_report_artifact(
+        state,
+        None,
+        expected_version=1,
+        artifact_format="docx",
+        latest_user_message="生成 ReportDraft v1 DOCX",
+    )
+    replay_artifact = composition.render_report_artifact(
+        state,
+        None,
+        expected_version=1,
+        artifact_format="docx",
+        latest_user_message="导出 ReportDraft v1 Word 文档",
+    )
+
+    assert artifact == replay_artifact
+    assert artifact.source_contract_version == 1
+    assert artifact.approval_contract_version == 1
+    assert artifact.metadata["publication_status"] == "not_published"
+    assert artifact.metadata["delivery_status"] == "not_delivered"
+    artifact_path = composition.artifact_store.resolve(artifact.storage_key)
+    assert artifact_path.is_file()
+    assert artifact.content_sha256 == f"sha256:{sha256(artifact_path.read_bytes()).hexdigest()}"
+    assert not artifact.storage_key.startswith("/")
+    stored_item = composition.current_work(state)
+    assert stored_item is not None
+    assert stored_item.artifact_ids == (artifact.artifact_id,)
+    artifact_summary = composition.current_work_summary(state)
+    assert artifact_summary is not None
+    artifacts = cast("list[dict[str, object]]", artifact_summary["report_artifacts"])
+    assert artifacts[0]["current"] is True
+
     revised_draft = replace(draft, markdown=f"{draft.markdown}\n\n修订说明。")
     revised = composition.save_report_draft(state, None, revised_draft)
     assert revised.contract_version == 2
     stale_summary = composition.current_work_summary(state)
     assert stale_summary is not None
     assert cast("dict[str, object]", stale_summary["report_approval"])["current"] is False
-
+    stale_artifacts = cast("list[dict[str, object]]", stale_summary["report_artifacts"])
+    assert stale_artifacts[0]["current"] is False
     composition.confirm_report_draft(
         state,
         None,
         expected_version=2,
         latest_user_message="确认 ReportDraft v2",
     )
+    with pytest.raises(WorkCompositionError, match="失效"):
+        composition.render_report_artifact(
+            state,
+            None,
+            expected_version=2,
+            artifact_format="docx",
+            latest_user_message="生成 ReportDraft v2 DOCX",
+        )
     pending_v2 = composition.request_report_approval(
         state,
         None,
@@ -670,6 +728,8 @@ def _confirmed_brief_composition(
         pack_snapshot_id=snapshot.pack_snapshot_id,
         runtime_release="enterprise-wecom-v0.1.0-m3",
         pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
+        artifact_store_root=tmp_path / "artifacts",
+        template_asset_path=PACK_ROOT / "assets" / "neutral-industry-report-v1.docx",
         clock=lambda: NOW,
         id_factory=lambda: "work_draft_001",
     )

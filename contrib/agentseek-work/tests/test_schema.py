@@ -1,5 +1,6 @@
 from agentseek_work.schema import (
     pack_snapshots,
+    work_artifacts,
     work_budget_reservations,
     work_budget_usage,
     work_contracts,
@@ -81,3 +82,13 @@ def test_postgresql_work_source_ddl_is_tenant_scoped_and_provenance_checked() ->
     assert "CONSTRAINT ck_work_source_type CHECK" in ddl
     assert "CONSTRAINT ck_work_source_snapshot_status CHECK" in ddl
     assert "CONSTRAINT ck_work_source_excerpt_status CHECK" in ddl
+
+
+def test_postgresql_work_artifact_ddl_is_content_addressed_and_bound() -> None:
+    ddl = str(CreateTable(work_artifacts).compile(dialect=postgresql.dialect()))
+
+    assert "content_sha256 VARCHAR(71) NOT NULL" in ddl
+    assert "storage_key VARCHAR(1024) NOT NULL" in ddl
+    assert "FOREIGN KEY(work_id) REFERENCES enterprise_work_items (work_id) ON DELETE RESTRICT" in ddl
+    assert "CONSTRAINT uq_work_artifacts_render_binding UNIQUE" in ddl
+    assert "CONSTRAINT ck_work_artifact_size CHECK" in ddl

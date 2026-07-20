@@ -95,6 +95,10 @@ class ProjectSettings(BaseSettings):
         default="./digital_employees/industry-report/assets/neutral-industry-report-v1.docx",
         validation_alias=AliasChoices("AGENTSEEK_WORK_TEMPLATE_ASSET_PATH"),
     )
+    work_artifact_path: str = Field(
+        default="./runtime/work-artifacts",
+        validation_alias=AliasChoices("AGENTSEEK_WORK_ARTIFACT_PATH"),
+    )
     work_runtime_release: str = Field(
         default="",
         validation_alias=AliasChoices("AGENTSEEK_WORK_RUNTIME_RELEASE", "AGENTSEEK_LANGFUSE_RELEASE"),
@@ -177,6 +181,12 @@ class ProjectSettings(BaseSettings):
 
     def resolved_work_template_asset_path(self) -> Path:
         path = Path(self.work_template_asset_path.strip())
+        if path.is_absolute():
+            return path
+        return PROJECT_ROOT / path
+
+    def resolved_work_artifact_path(self) -> Path:
+        path = Path(self.work_artifact_path.strip() or "./runtime/work-artifacts")
         if path.is_absolute():
             return path
         return PROJECT_ROOT / path

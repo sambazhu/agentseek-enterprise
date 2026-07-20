@@ -14,6 +14,7 @@ from uuid import uuid4
 from agentseek_enterprise.runtime import EnterpriseRuntimeSettings
 from agentseek_work import (
     LATEST_SCHEMA_VERSION,
+    ArtifactRecord,
     CreateWorkResult,
     InteractionRoute,
     RouteRequest,
@@ -52,6 +53,17 @@ from enterprise_wecom_digital_employee.report_approval import (
     approval_state,
     explicitly_approves_report_draft,
     explicitly_requests_report_approval,
+)
+from enterprise_wecom_digital_employee.report_artifact import (
+    REPORT_ARTIFACT_FORMAT_DOCX,
+    REPORT_ARTIFACT_MEDIA_TYPE_DOCX,
+    REPORT_ARTIFACT_TYPE,
+    ContentAddressedArtifactStore,
+    ReportArtifactError,
+    artifact_id,
+    contract_digest,
+    explicitly_requests_report_artifact,
+    render_report_docx,
 )
 from enterprise_wecom_digital_employee.report_brief import (
     REPORT_BRIEF_CONTRACT_TYPE,
@@ -159,6 +171,8 @@ class IndustryReportWorkComposition:
         pack_snapshot_id: str,
         runtime_release: str,
         pack_artifact_root: Path | None = None,
+        artifact_store_root: Path | None = None,
+        template_asset_path: Path | None = None,
         budget_id: str = _BUDGET_ID,
         budget: WorkBudget = _DEFAULT_BUDGET,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -174,6 +188,13 @@ class IndustryReportWorkComposition:
             if playbook.playbook_id == self.playbook_id and playbook.version == playbook_version
         )
         self.pack_artifact_root = pack_artifact_root or loaded_pack.pack_root
+        self.artifact_store = ContentAddressedArtifactStore(
+            artifact_store_root or loaded_pack.pack_root / "runtime" / "work-artifacts"
+        )
+        self.template_asset_path = (
+            template_asset_path
+            or loaded_pack.pack_root / "assets" / "neutral-industry-report-v1.docx"
+        )
         self.research_template_path = self.pack_artifact_root / self.playbook.research_template_path
         self.pack_snapshot_id = pack_snapshot_id
         self.permissions_digest = _permissions_digest(self.profile)
@@ -731,6 +752,143 @@ class IndustryReportWorkComposition:
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return approved
 
+    def render_report_artifact(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None,
+        *,
+        expected_version: int,
+        artifact_format: str,
+        latest_user_message: str,
+    ) -> ArtifactRecord:
+        """Render one current approved draft into an immutable DOCX artifact."""
+
+        if not explicitly_requests_report_artifact(
+            latest_user_message,
+            expected_version=expected_version,
+            artifact_format=artifact_format,
+        ):
+            raise WorkCompositionError(
+                f"员工最新消息未显式请求生成 ReportDraft v{expected_version} DOCX，不能渲染文件。"
+            )
+        if artifact_format != REPORT_ARTIFACT_FORMAT_DOCX:
+            raise WorkCompositionError("当前仅支持 DOCX Artifact；PDF 尚未启用。")
+        item, draft_contract, draft = self.current_confirmed_report_draft(state, runtime_context)
+        if draft_contract.contract_version != expected_version:
+            raise WorkCompositionError("ReportDraft 版本不匹配，请重新展示当前版本后再渲染。")
+        approval_contract = self._require_current_report_approval(
+            item,
+            draft_contract=draft_contract,
+            draft=draft,
+        )
+        template_ref, template_digest, template_bytes = self._read_verified_docx_template()
+        try:
+            rendered = render_report_docx(markdown=draft.markdown, template_bytes=template_bytes)
+            blob = self.artifact_store.put(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                data=rendered,
+                suffix=artifact_format,
+            )
+        except ReportArtifactError as exc:
+            raise WorkCompositionError(f"DOCX Artifact 渲染失败：{exc}") from exc
+        draft_digest = report_draft_digest(draft)
+        approval_digest = contract_digest(approval_contract)
+        record = ArtifactRecord(
+            artifact_id=artifact_id(
+                tenant_id=item.tenant_id,
+                work_id=item.work_id,
+                content_sha256=blob.content_sha256,
+                source_digest=draft_digest,
+                approval_digest=approval_digest,
+                template_digest=template_digest,
+            ),
+            work_id=item.work_id,
+            tenant_id=item.tenant_id,
+            artifact_type=REPORT_ARTIFACT_TYPE,
+            artifact_format=artifact_format,
+            media_type=REPORT_ARTIFACT_MEDIA_TYPE_DOCX,
+            content_sha256=blob.content_sha256,
+            size_bytes=blob.size_bytes,
+            storage_key=blob.storage_key,
+            filename=f"industry-report-draft-v{expected_version}.docx",
+            source_contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+            source_contract_version=expected_version,
+            source_digest=draft_digest,
+            approval_contract_version=approval_contract.contract_version,
+            approval_digest=approval_digest,
+            template_ref=template_ref,
+            template_digest=template_digest,
+            created_by=item.requester_id,
+            created_at=self._factory.clock(),
+            metadata={
+                "report_outline_version": draft.report_outline_version,
+                "report_brief_version": draft.report_brief_version,
+                "pack_snapshot_id": item.pack_snapshot_id,
+                "publication_status": "not_published",
+                "delivery_status": "not_delivered",
+            },
+        )
+        saved = self.repository.put_artifact_record(record)
+        if isinstance(state, dict):
+            current = self.repository.get_work(tenant_id=item.tenant_id, work_id=item.work_id)
+            self._publish_current_work(cast("dict[str, Any]", state), current)
+        return saved
+
+    def _require_current_report_approval(
+        self,
+        item: WorkItem,
+        *,
+        draft_contract: WorkContractSnapshot,
+        draft: ReportDraft,
+    ) -> WorkContractSnapshot:
+        approval_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+        )
+        if approval_contract is None or approval_contract.status is not WorkContractStatus.CONFIRMED:
+            raise WorkCompositionError("当前 ReportDraft 尚未完成内容审批，不能渲染 Artifact。")
+        try:
+            approval = ReportApproval.from_contract(approval_contract)
+        except (TypeError, ValueError) as exc:
+            raise WorkCompositionError("当前 ReportApproval 合同无效，不能渲染 Artifact。") from exc
+        outline_contract = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            contract_type=REPORT_OUTLINE_CONTRACT_TYPE,
+        )
+        try:
+            outline = ReportOutline.from_contract(outline_contract) if outline_contract else None
+        except (TypeError, ValueError):
+            outline = None
+        if not self._approval_matches_current_draft(
+            item,
+            approval,
+            draft_contract=draft_contract,
+            draft=draft,
+            outline_contract=outline_contract,
+            outline=outline,
+        ):
+            raise WorkCompositionError("当前 ReportApproval 已失效或未绑定最新 ReportDraft，不能渲染 Artifact。")
+        return approval_contract
+
+    def _read_verified_docx_template(self) -> tuple[str, str, bytes]:
+        asset = next(
+            (candidate for candidate in self.loaded_pack.assets if candidate.artifact_ref == _ASSET_REF),
+            None,
+        )
+        if asset is None:
+            raise WorkCompositionError("当前 PackSnapshot 未声明批准的 DOCX 模板资产。")
+        try:
+            template_bytes = self.template_asset_path.read_bytes()
+        except OSError as exc:
+            raise WorkCompositionError("无法读取批准的 DOCX 模板资产。") from exc
+        template_digest = f"sha256:{sha256(template_bytes).hexdigest()}"
+        if template_digest != f"sha256:{asset.sha256}":
+            raise WorkCompositionError("DOCX 模板资产摘要与 PackSnapshot 声明不一致。")
+        return asset.artifact_ref, template_digest, template_bytes
+
     def _require_draft_bindings(
         self,
         item: WorkItem,
@@ -1003,7 +1161,7 @@ class IndustryReportWorkComposition:
             except (TypeError, ValueError):
                 pass
             else:
-                current = self._approval_matches_current_draft(
+                approval_is_current = self._approval_matches_current_draft(
                     item,
                     approval,
                     draft_contract=draft_contract,
@@ -1016,8 +1174,33 @@ class IndustryReportWorkComposition:
                     "status": approval_state(approval_contract),
                     "report_draft_version": approval.report_draft_version,
                     "policy_id": approval.policy_id,
-                    "current": current,
+                    "current": approval_is_current,
                 }
+        artifacts = self.repository.list_artifact_records(tenant_id=item.tenant_id, work_id=item.work_id)
+        if artifacts:
+            current_approval_digest = contract_digest(approval_contract) if approval_contract is not None else ""
+            current_draft_digest = report_draft_digest(current_draft) if current_draft is not None else ""
+            summary["report_artifacts"] = [
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "format": artifact.artifact_format,
+                    "filename": artifact.filename,
+                    "content_sha256": artifact.content_sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "report_draft_version": artifact.source_contract_version,
+                    "approval_contract_version": artifact.approval_contract_version,
+                    "current": (
+                        approval_is_current
+                        and approval_contract is not None
+                        and approval_contract.status is WorkContractStatus.CONFIRMED
+                        and artifact.source_digest == current_draft_digest
+                        and artifact.approval_digest == current_approval_digest
+                    ),
+                    "publication_status": artifact.metadata.get("publication_status"),
+                    "delivery_status": artifact.metadata.get("delivery_status"),
+                }
+                for artifact in artifacts
+            ]
         return summary
 
     def _approval_matches_current_draft(
@@ -1093,6 +1276,8 @@ def get_work_composition() -> IndustryReportWorkComposition:
         pack_snapshot_id=snapshot.pack_snapshot_id,
         runtime_release=settings.require_work_runtime_release(),
         pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
+        artifact_store_root=settings.resolved_work_artifact_path(),
+        template_asset_path=settings.resolved_work_template_asset_path(),
     )
 
 
@@ -1313,6 +1498,7 @@ def _work_summary(item: WorkItem) -> dict[str, object]:
         "pack_snapshot_id": item.pack_snapshot_id,
         "runtime_release": item.runtime_release,
         "input_file_ids": list(item.input_file_ids),
+        "artifact_ids": list(item.artifact_ids),
         "updated_at": item.updated_at.isoformat(),
         "allowed_next_actions": ["provide_input", "cancel", "query_status"],
     }
@@ -1371,6 +1557,18 @@ def _current_work_context(summary: Mapping[str, object]) -> str:
             f"bound_report_draft_v{approval.get('report_draft_version')} "
             f"current={approval.get('current')} policy={approval.get('policy_id')}"
         )
+    artifacts = summary.get("report_artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if not isinstance(artifact, Mapping):
+                continue
+            lines.append(
+                "report_artifact: "
+                f"id={artifact.get('artifact_id')} format={artifact.get('format')} "
+                f"bound_report_draft_v{artifact.get('report_draft_version')} "
+                f"current={artifact.get('current')} publication={artifact.get('publication_status')} "
+                f"delivery={artifact.get('delivery_status')}"
+            )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",
         "[/CurrentWork]",

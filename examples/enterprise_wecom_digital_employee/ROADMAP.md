@@ -669,7 +669,7 @@ M3 先以运行时前置切片启动：
    Mac mini 已在 `ae34958` 完成离散检查点、Draft 精确确认、账本真实性和回归活体复核，
    验证文档为 `e0fbfe8`，M3-03 正式关闭。
 
-7. **M3-04A ReportApproval 内容审批合同（已实现，待 Mac mini 活体关闭）**：
+7. **M3-04A ReportApproval 内容审批合同（已完成）**：
 
    - confirmed ReportDraft 只有在员工最新消息精确提交 `ReportDraft vN` 审批后，才建立
      独立、版本化的 `report-approval` provisional 合同；审批合同绑定 Draft 精确版本、
@@ -684,8 +684,22 @@ M3 先以运行时前置切片启动：
    - 补齐 Outline 确认后的确定性下一步 nudge，并约束 Draft 重放必须调用账本工具，不得从记忆复述正文。
    - schema 保持 rev8；Pack/Profile 升级为 `1.6.0` / `1.5.0`，`report-writing` 升级为 `1.2.0`。
 
-8. **M3-04B Artifact 渲染（后续）**：只允许当前 approved ReportDraft 进入 DOCX/PDF
-   内容寻址渲染，记录 artifact ID、sha256、模板与渲染版本；仍不自动发布或交付。
+   Mac mini 已在 `f58fa76` 完成审批合同、stale 失效、账本真实性及全量回归活体复核，
+   验证文档为 `c793090`，M3-04A 正式关闭。
+
+8. **M3-04B Artifact 渲染（已实现，待 Mac mini 活体关闭）**：
+
+   - 第一阶段只启用 DOCX；PDF 留到后续切片，避免把两套渲染器同时引入审批边界。
+   - 只有当前 `ReportApproval approved + current=true`，且员工显式请求精确
+     `生成 ReportDraft vN DOCX`，才能从绑定的 ReportDraft Markdown 渲染文件。
+   - schema rev9 新增不可变 `enterprise_work_artifacts` 账本；Artifact 绑定 Draft digest、
+     Approval digest、可信模板 digest 和 PackSnapshot，文件采用 sha256 内容寻址。
+   - 数据库仅保存相对 storage key，不保存宿主机绝对路径；Artifact 元数据与
+     `WorkItem.artifact_ids` 在同一事务登记，重复渲染同一输入保持幂等。
+   - 渲染不等于发布或交付；状态固定为 `not_published` / `not_delivered`，M4 才引入
+     delivery ledger、outbox 和员工文件投递。
+   - Pack/Profile 升级为 `1.7.0` / `1.6.0`，`report-writing` 升级为 `1.3.0`；example
+     和 cookiecutter 保持同步。
 
 9. **M4 发布与交付（后续）**：发布和员工文件交付使用独立显式动作、delivery ledger、
    exactly-once/outbox 与恢复机制；审批、渲染、发布和交付继续保持分离。

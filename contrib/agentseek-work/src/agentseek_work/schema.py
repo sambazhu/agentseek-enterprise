@@ -296,6 +296,52 @@ work_claim_evidence = Table(
 
 Index("ix_work_claim_evidence_evidence", work_claim_evidence.c.evidence_id)
 
+work_artifacts = Table(
+    "enterprise_work_artifacts",
+    metadata,
+    Column("artifact_id", String(160), primary_key=True),
+    Column(
+        "work_id",
+        String(128),
+        ForeignKey("enterprise_work_items.work_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("tenant_id", String(128), nullable=False),
+    Column("artifact_type", String(64), nullable=False),
+    Column("artifact_format", String(32), nullable=False),
+    Column("media_type", String(128), nullable=False),
+    Column("content_sha256", String(71), nullable=False),
+    Column("size_bytes", BigInteger, nullable=False),
+    Column("storage_key", String(1024), nullable=False),
+    Column("filename", String(256), nullable=False),
+    Column("source_contract_type", String(128), nullable=False),
+    Column("source_contract_version", Integer, nullable=False),
+    Column("source_digest", String(71), nullable=False),
+    Column("approval_contract_version", Integer, nullable=False),
+    Column("approval_digest", String(71), nullable=False),
+    Column("template_ref", String(512), nullable=False),
+    Column("template_digest", String(71), nullable=False),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("metadata", json_document, nullable=False),
+    UniqueConstraint(
+        "work_id",
+        "artifact_format",
+        "source_digest",
+        "approval_digest",
+        "template_digest",
+        name="uq_work_artifacts_render_binding",
+    ),
+    CheckConstraint("size_bytes > 0", name="ck_work_artifact_size"),
+    CheckConstraint(
+        "source_contract_version > 0 AND approval_contract_version > 0",
+        name="ck_work_artifact_contract_versions",
+    ),
+)
+
+Index("ix_work_artifacts_tenant_work", work_artifacts.c.tenant_id, work_artifacts.c.work_id)
+Index("ix_work_artifacts_content", work_artifacts.c.content_sha256)
+
 work_budget_usage = Table(
     "enterprise_work_budget_usage",
     metadata,

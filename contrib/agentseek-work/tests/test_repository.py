@@ -6,6 +6,7 @@ import pytest
 from agentseek_work.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 from agentseek_work.models import (
     ActorType,
+    ArtifactRecord,
     ClaimRecord,
     ClaimReviewerStatus,
     ClaimType,
@@ -32,6 +33,7 @@ from agentseek_work.repository import (
 )
 from agentseek_work.schema import (
     schema_versions,
+    work_artifacts,
     work_claim_evidence,
     work_claims,
     work_contracts,
@@ -184,6 +186,32 @@ def make_claim(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> C
         reviewer_status=ClaimReviewerStatus.PENDING,
         created_at=NOW,
         metadata={"report_outline_version": 1},
+    )
+
+
+def make_artifact(*, tenant_id: str = "tenant_001", work_id: str = "work_001") -> ArtifactRecord:
+    digest = f"sha256:{'a' * 64}"
+    return ArtifactRecord(
+        artifact_id=f"artifact_{'b' * 64}",
+        work_id=work_id,
+        tenant_id=tenant_id,
+        artifact_type="report",
+        artifact_format="docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content_sha256=digest,
+        size_bytes=4096,
+        storage_key=f"{tenant_id}/{work_id}/docx/{'a' * 64}.docx",
+        filename="industry-report-draft-v1.docx",
+        source_contract_type="report-draft",
+        source_contract_version=1,
+        source_digest=digest,
+        approval_contract_version=1,
+        approval_digest=f"sha256:{'c' * 64}",
+        template_ref="trusted-asset://strategic-report-docx/1.0.0",
+        template_digest=f"sha256:{'d' * 64}",
+        created_by="employee_001",
+        created_at=NOW,
+        metadata={"publication_status": "not_published"},
     )
 
 
@@ -396,6 +424,13 @@ def test_revision_eight_creates_evidence_claim_and_binding_tables() -> None:
     assert {work_evidence.name, work_claims.name, work_claim_evidence.name} <= table_names
 
 
+def test_revision_nine_creates_artifact_ledger() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
+    assert work_artifacts.name in set(inspect(engine).get_table_names())
+
+
 def test_create_is_idempotent_within_tenant(repository: SQLAlchemyWorkRepository) -> None:
     original = make_item()
     first = repository.create_work(original)
@@ -451,6 +486,27 @@ def test_evidence_and_claim_records_are_immutable_scoped_and_idempotent(
     with pytest.raises(WorkConflictError, match="different WorkItem"):
         repository.put_evidence_record(replace(evidence, evidence_id="evidence_other", work_id="work_002"))
     assert source.source_id == evidence.source_id
+
+
+def test_artifact_record_is_immutable_scoped_idempotent_and_attached(
+    repository: SQLAlchemyWorkRepository,
+) -> None:
+    repository.create_work(make_item())
+    artifact = make_artifact()
+
+    assert repository.put_artifact_record(artifact) == artifact
+    assert repository.put_artifact_record(artifact) == artifact
+    assert repository.get_artifact_record(tenant_id=artifact.tenant_id, artifact_id=artifact.artifact_id) == artifact
+    assert repository.list_artifact_records(tenant_id=artifact.tenant_id, work_id=artifact.work_id) == (artifact,)
+    item = repository.get_work(tenant_id=artifact.tenant_id, work_id=artifact.work_id)
+    assert item.artifact_ids == (artifact.artifact_id,)
+    assert item.version == 1
+    events = repository.list_events(tenant_id=artifact.tenant_id, work_id=artifact.work_id)
+    assert [(event.event_type, event.work_version) for event in events] == [("artifact_registered", 1)]
+    with pytest.raises(WorkConflictError, match="different values"):
+        repository.put_artifact_record(replace(artifact, filename="changed.docx"))
+    with pytest.raises(WorkNotFoundError):
+        repository.get_artifact_record(tenant_id="tenant_other", artifact_id=artifact.artifact_id)
 
 
 def test_different_request_is_rejected_when_same_playbook_scope_is_active(

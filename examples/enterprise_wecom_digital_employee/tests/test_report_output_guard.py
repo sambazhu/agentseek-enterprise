@@ -5,6 +5,7 @@ from typing import Any
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
     REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE,
+    REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE,
     REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE,
@@ -891,3 +892,74 @@ def test_terminal_or_non_intake_work_is_not_guarded() -> None:
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == output
+
+
+def test_unverified_report_artifact_claim_is_blocked() -> None:
+    output = "ReportDraft v999 DOCX Artifact 已生成。"
+
+    assert enforce_m2_output_guard(
+        _result("生成 ReportDraft v999 DOCX", output),
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_ledger_backed_report_artifact_claim_is_allowed() -> None:
+    artifact_id = f"artifact_{'a' * 64}"
+    tool_output = (
+        f"ReportArtifact artifact_id={artifact_id}，format=docx，bound_report_draft_v1，"
+        f"content_sha256=sha256:{'b' * 64}，size_bytes=4096，current=true，"
+        "publication=not_published，delivery=not_delivered。DOCX Artifact 已生成并登记。"
+    )
+    output = f"DOCX Artifact 已生成：artifact_id={artifact_id}。"
+    result = _result("生成 ReportDraft v1 DOCX", output)
+    result["messages"] = [
+        HumanMessage(content="生成 ReportDraft v1 DOCX"),
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "render_report_docx_artifact",
+                "args": {"expected_version": 1},
+                "id": "call_artifact",
+                "type": "tool_call",
+            }],
+        ),
+        ToolMessage(
+            content=tool_output,
+            name="render_report_docx_artifact",
+            tool_call_id="call_artifact",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_report_artifact_claim_rejects_mismatched_ledger_id() -> None:
+    result = _result("查看当前工作状态", "DOCX Artifact 已生成：artifact_id=artifact_fake。")
+    result["current_work"]["report_artifacts"] = [{
+        "artifact_id": "artifact_real",
+        "report_draft_version": 1,
+        "current": True,
+    }]
+    output = "DOCX Artifact 已生成：artifact_id=artifact_fake。"
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_report_publication_or_delivery_claim_is_blocked_without_a_delivery_ledger() -> None:
+    output = "报告已经发布并交付给员工。"
+
+    assert enforce_m2_output_guard(
+        _result("发布报告", output),
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE

@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: Build, confirm, and approve a reviewable securities-industry Markdown draft through discrete, versioned checkpoints. Keep factual and inferential Claims evidence-bound, disclose unresolved questions, and never imply rendering, publication, or artifact delivery.
+description: Build, confirm, approve, and explicitly render a reviewable securities-industry report through discrete, versioned checkpoints. Keep Claims evidence-bound and keep artifact rendering separate from publication and delivery.
 ---
 
 # Report writing
@@ -14,4 +14,6 @@ description: Build, confirm, and approve a reviewable securities-industry Markdo
 7. If a current draft already exists and the employee requests it again, call `get_current_report_draft` or the idempotent draft tools. Never reproduce Markdown from conversation memory.
 8. Confirm a draft only after the employee explicitly names the exact `ReportDraft vN`. Confirmation records requester acceptance of that review draft, not final approval, and the turn must stop after confirmation.
 9. Submit a confirmed draft for approval only after an exact `提交 ReportDraft vN 审批` request. Approve it only after the authenticated approver separately says `批准 ReportDraft vN`. Both transitions must use their ledger tools and bind the exact Draft digest.
-10. Content approval is not rendering, publication, or delivery. Do not generate DOCX/PDF, publish the report, or deliver an artifact.
+10. Content approval is not rendering, publication, or delivery. After approval, stop and tell the employee that a separate exact `生成 ReportDraft vN DOCX` request is required.
+11. Render only the current approved ReportDraft after that exact request. Use `render_report_docx_artifact`; do not fabricate an artifact ID, filename, digest, or storage result. PDF is not enabled in this slice.
+12. A rendered Artifact is still neither published nor delivered. Report only the ledger-backed artifact ID, content digest, current status, and explicit `not_published` / `not_delivered` state. Never expose a host filesystem path.

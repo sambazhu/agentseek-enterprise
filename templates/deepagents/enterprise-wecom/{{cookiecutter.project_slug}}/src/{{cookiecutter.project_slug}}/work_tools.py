@@ -175,6 +175,24 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                     "审批人如批准该内容，请明确回复"
                     f"“批准 ReportDraft v{approval.get('report_draft_version')}”。"
                 )
+            elif approval.get("status") == "approved" and approval.get("current") is True:
+                lines.append(
+                    "如需生成文件，请另行回复"
+                    f"“生成 ReportDraft v{approval.get('report_draft_version')} DOCX”。"
+                )
+        artifacts = summary.get("report_artifacts")
+        if isinstance(artifacts, list):
+            for artifact in artifacts:
+                if not isinstance(artifact, Mapping):
+                    continue
+                lines.append(
+                    "当前 ReportArtifact："
+                    f"artifact_id={artifact.get('artifact_id')}，format={artifact.get('format')}，"
+                    f"bound_report_draft_v{artifact.get('report_draft_version')}，"
+                    f"current={str(bool(artifact.get('current'))).lower()}，"
+                    f"publication={artifact.get('publication_status')}，"
+                    f"delivery={artifact.get('delivery_status')}。"
+                )
         return "\n".join(lines)
 
     @tool("save_report_brief")
@@ -559,7 +577,62 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"ReportApproval contract_v{contract.contract_version}，status=approved，"
             f"bound_report_draft_v{expected_version}。ReportDraft v{expected_version} 内容已批准。"
             "批准不等于发布或交付，本轮不会生成 DOCX/PDF，也不会发送文件。"
+            f"如需生成文件，请另行回复“生成 ReportDraft v{expected_version} DOCX”。"
         )
+
+    @tool("render_report_docx_artifact")
+    def render_report_docx_artifact(expected_version: int, runtime: ToolRuntime) -> str:
+        """Render one exact approved, current ReportDraft into an immutable DOCX.
+
+        Call only when the latest employee message explicitly asks to generate or
+        export `ReportDraft vN` as DOCX/Word. The server requires a current approved
+        ReportApproval and exact version/digest bindings. Rendering creates an
+        Artifact ledger record only; it never publishes or delivers the file.
+        """
+
+        try:
+            artifact = composition.render_report_artifact(
+                runtime.state,
+                runtime.context,
+                expected_version=expected_version,
+                artifact_format="docx",
+                latest_user_message=_latest_user_message_text(runtime),
+            )
+        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+        return (
+            f"ReportArtifact artifact_id={artifact.artifact_id}，format=docx，"
+            f"bound_report_draft_v{artifact.source_contract_version}，"
+            f"content_sha256={artifact.content_sha256}，size_bytes={artifact.size_bytes}，"
+            "current=true，publication=not_published，delivery=not_delivered。"
+            "DOCX Artifact 已生成并登记，但尚未发布或交付。"
+        )
+
+    @tool("get_current_report_artifacts")
+    def get_current_report_artifacts(runtime: ToolRuntime) -> str:
+        """Read immutable report Artifact metadata without exposing host paths."""
+
+        summary = composition.current_work_summary(runtime.state, runtime.context)
+        if summary is None:
+            return "当前员工没有可见的进行中报告任务。"
+        artifacts = summary.get("report_artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            return "当前任务尚未生成 ReportArtifact。"
+        lines: list[str] = []
+        for artifact in artifacts:
+            if not isinstance(artifact, Mapping):
+                continue
+            lines.append(
+                "ReportArtifact "
+                f"artifact_id={artifact.get('artifact_id')}，format={artifact.get('format')}，"
+                f"bound_report_draft_v{artifact.get('report_draft_version')}，"
+                f"content_sha256={artifact.get('content_sha256')}，"
+                f"size_bytes={artifact.get('size_bytes')}，"
+                f"current={str(bool(artifact.get('current'))).lower()}，"
+                f"publication={artifact.get('publication_status')}，"
+                f"delivery={artifact.get('delivery_status')}。"
+            )
+        return "\n".join(lines)
 
     return [
         create_industry_report_work,
@@ -579,6 +652,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         request_report_approval,
         get_current_report_approval,
         approve_report_draft,
+        render_report_docx_artifact,
+        get_current_report_artifacts,
     ]
 
 

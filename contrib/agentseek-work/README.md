@@ -29,10 +29,12 @@ Implemented M1 and M2-01 slices contain:
   digests, license and snapshot status, plus idempotent repository operations.
 - immutable, tenant-scoped `EvidenceRecord` excerpts and `ClaimRecord` assertions,
   with explicit many-to-many Claim/Evidence bindings and review status fields.
+- immutable, tenant-scoped `ArtifactRecord` metadata with Draft/Approval/template
+  digest bindings and atomic attachment to `WorkItem.artifact_ids`.
 
 The repository uses JSONB for `brief` and identifier snapshots on PostgreSQL.
 SQLite is used only for portable transaction-semantics tests. A deployment must
-apply schema revision 8 to PostgreSQL before enabling M3 Evidence/Claim persistence.
+apply schema revision 9 to PostgreSQL before enabling M3 Artifact persistence.
 
 `PhaseWorker` reserves the phase's declared maximum resource use before the
 playbook can call a model or external service. It settles actual aggregate use
@@ -46,9 +48,9 @@ not import the enterprise WeCom template or report-writing modules.
 
 It does not contain WeCom protocol handling, employee identity lookup, report-writing rules,
 file parsing, MCP configuration, or DOCX rendering. Contract confirmation is not the later
-general approval ledger. The package does not yet provide approval decisions, outbox delivery,
-Profile loading, pack content storage, a production scheduler
-channel, or a concrete report playbook. Pack content loading, Profile authorization,
+general approval ledger. The package persists Artifact metadata but does not own blob storage,
+renderers, approval decisions, publication, outbox delivery, Profile loading, pack content
+storage, a production scheduler channel, or a concrete report playbook. Pack content loading, Profile authorization,
 Profile-scoped Skill materialization, and WorkItem factory policy belong to the template;
 this package persists generic ledger/snapshot metadata, validates bindings, and enforces
 server-owned routing contracts.

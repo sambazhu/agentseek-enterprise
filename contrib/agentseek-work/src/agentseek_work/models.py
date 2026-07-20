@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any
 
@@ -423,6 +424,67 @@ class ClaimRecord:
             raise ValueError("evidence_ids must not contain duplicates")
         if self.verification_status is ClaimVerificationStatus.VERIFIED and not self.evidence_ids:
             raise ValueError("a verified claim requires evidence_ids")
+        _require_aware(self.created_at, "created_at")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRecord:
+    """Immutable metadata for one content-addressed WorkItem output artifact."""
+
+    artifact_id: str
+    work_id: str
+    tenant_id: str
+    artifact_type: str
+    artifact_format: str
+    media_type: str
+    content_sha256: str
+    size_bytes: int
+    storage_key: str
+    filename: str
+    source_contract_type: str
+    source_contract_version: int
+    source_digest: str
+    approval_contract_version: int
+    approval_digest: str
+    template_ref: str
+    template_digest: str
+    created_by: str
+    created_at: datetime
+    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "artifact_id",
+            "work_id",
+            "tenant_id",
+            "artifact_type",
+            "artifact_format",
+            "media_type",
+            "storage_key",
+            "filename",
+            "source_contract_type",
+            "template_ref",
+            "created_by",
+        ):
+            _require_text(getattr(self, field_name), field_name)
+        for field_name in ("content_sha256", "source_digest", "approval_digest", "template_digest"):
+            value = getattr(self, field_name)
+            if len(value) != 71 or not value.startswith("sha256:"):
+                raise ValueError(f"{field_name} must be a canonical sha256 digest")
+            try:
+                int(value.removeprefix("sha256:"), 16)
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a canonical sha256 digest") from exc
+        if self.size_bytes <= 0:
+            raise ValueError("size_bytes must be greater than zero")
+        if self.source_contract_version <= 0 or self.approval_contract_version <= 0:
+            raise ValueError("artifact contract versions must be greater than zero")
+        storage_path = PurePosixPath(self.storage_key)
+        if storage_path.is_absolute() or ".." in storage_path.parts:
+            raise ValueError("storage_key must be a safe relative path")
+        if PurePosixPath(self.filename).name != self.filename:
+            raise ValueError("filename must not contain a path")
         _require_aware(self.created_at, "created_at")
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 

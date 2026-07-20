@@ -161,6 +161,29 @@ _REPORT_APPROVAL_LEDGER_TOOLS = frozenset({
     "get_current_work_status",
     "approve_report_draft",
 })
+_REPORT_ARTIFACT_CLAIM_RE = re.compile(
+    r"(?:ReportArtifact|artifact_id=|DOCX\s*(?:Artifact|文件|文档)?).{0,40}"
+    r"(?:已|已经)(?:生成|渲染|创建|登记)|"
+    r"(?:已|已经)(?:生成|渲染|创建|登记).{0,40}(?:ReportArtifact|DOCX|artifact_id=)",
+    re.IGNORECASE,
+)
+_REPORT_ARTIFACT_ID_RE = re.compile(r"artifact_id=([A-Za-z0-9_-]+)", re.IGNORECASE)
+_REPORT_ARTIFACT_DRAFT_VERSION_RE = re.compile(r"bound_report_draft_v(\d+)", re.IGNORECASE)
+_REPORT_ARTIFACT_STATUS_SUCCESS_RE = re.compile(
+    r"ReportArtifact\s+artifact_id=([A-Za-z0-9_-]+)[，,]\s*format=(docx)[，,]"
+    r"\s*bound_report_draft_v(\d+).{0,240}?current=(true|false)",
+    re.IGNORECASE,
+)
+_REPORT_ARTIFACT_LEDGER_TOOLS = frozenset({
+    "render_report_docx_artifact",
+    "get_current_report_artifacts",
+    "get_current_work_status",
+})
+_REPORT_PUBLISH_DELIVERY_CLAIM_RE = re.compile(
+    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:发布|交付|发送)|"
+    r"(?:publication|delivery|status)\s*[=:：]\s*(?:published|delivered)",
+    re.IGNORECASE,
+)
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "未检测到本轮账本支持的 ReportDraft，因此这次模型正文已被运行时守卫拦截，"
@@ -189,6 +212,11 @@ REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "请调用 request_report_approval、get_current_report_approval、get_current_work_status "
     "或 approve_report_draft，并以工具返回的精确 Draft 版本和审批状态为准。"
     "批准不等于发布、渲染或交付。"
+)
+REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE = (
+    "未检测到匹配的 ReportArtifact 账本记录，因此不能声称 DOCX 已生成、已发布或已交付。"
+    "请调用 render_report_docx_artifact、get_current_report_artifacts 或 get_current_work_status，"
+    "并以工具返回的 artifact_id、Draft 版本和 current 状态为准。渲染不等于发布或交付。"
 )
 _OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
 
@@ -219,6 +247,8 @@ def enforce_m2_output_guard(
         if _claims_unverified_report_brief_write(result, output)
         else "unverified_report_outline_write"
         if _claims_unverified_report_outline_write(result, output)
+        else "unverified_report_artifact"
+        if _claims_unverified_report_artifact(result, output)
         else "unverified_report_draft_write"
         if _claims_unverified_report_draft_write(result, output)
         else "unverified_report_approval"
@@ -242,6 +272,8 @@ def enforce_m2_output_guard(
         return REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_approval":
         return REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_artifact":
+        return REPORT_ARTIFACT_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "ledger_backed_report_draft":
         return verified_draft_output
     if reason:
@@ -582,6 +614,74 @@ def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
             if isinstance(version, int) and not isinstance(version, bool) and status in {"pending", "approved"}:
                 states.setdefault(version, set()).add(status)
     return states
+
+
+def _claims_unverified_report_artifact(result: object, output: str) -> bool:
+    if _REPORT_PUBLISH_DELIVERY_CLAIM_RE.search(output):
+        return True
+    if not _REPORT_ARTIFACT_CLAIM_RE.search(output):
+        return False
+    artifact_ids = set(_REPORT_ARTIFACT_ID_RE.findall(output))
+    draft_versions = {int(value) for value in _REPORT_ARTIFACT_DRAFT_VERSION_RE.findall(output)}
+    ledger_ids, ledger_versions = _successful_report_artifact_states(result)
+    if artifact_ids:
+        return not artifact_ids.issubset(ledger_ids)
+    if draft_versions:
+        return not draft_versions.issubset(ledger_versions)
+    return not ledger_ids
+
+
+def _successful_report_artifact_states(result: object) -> tuple[set[str], set[int]]:
+    if not isinstance(result, Mapping):
+        return set(), set()
+    artifact_ids, draft_versions = _artifact_states_from_messages(result.get("messages"))
+    work_ids, work_versions = _artifact_states_from_work(result.get("current_work"))
+    return artifact_ids | work_ids, draft_versions | work_versions
+
+
+def _artifact_states_from_messages(messages: object) -> tuple[set[str], set[int]]:
+    artifact_ids: set[str] = set()
+    draft_versions: set[int] = set()
+    call_ids: set[str] = set()
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return artifact_ids, draft_versions
+    for message in messages:
+        if _is_human_message(message):
+            call_ids.clear()
+            artifact_ids.clear()
+            draft_versions.clear()
+            continue
+        call_ids.update(_tool_call_ids(message, _REPORT_ARTIFACT_LEDGER_TOOLS))
+        tool_name, tool_call_id, content = _tool_result_parts(message)
+        if tool_name not in _REPORT_ARTIFACT_LEDGER_TOOLS and tool_call_id not in call_ids:
+            continue
+        for artifact_id, artifact_format, draft_version, _current in _REPORT_ARTIFACT_STATUS_SUCCESS_RE.findall(
+            content
+        ):
+            if artifact_format.lower() == "docx":
+                artifact_ids.add(artifact_id)
+                draft_versions.add(int(draft_version))
+    return artifact_ids, draft_versions
+
+
+def _artifact_states_from_work(work: object) -> tuple[set[str], set[int]]:
+    artifact_ids: set[str] = set()
+    draft_versions: set[int] = set()
+    if not isinstance(work, Mapping):
+        return artifact_ids, draft_versions
+    artifacts = work.get("report_artifacts")
+    if not isinstance(artifacts, Sequence) or isinstance(artifacts, (str, bytes)):
+        return artifact_ids, draft_versions
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping):
+            continue
+        artifact_id = str(artifact.get("artifact_id") or "").strip()
+        draft_version = artifact.get("report_draft_version")
+        if artifact_id:
+            artifact_ids.add(artifact_id)
+        if isinstance(draft_version, int) and not isinstance(draft_version, bool):
+            draft_versions.add(draft_version)
+    return artifact_ids, draft_versions
 
 
 def _append_outline_confirmation_nudge(result: object, output: str) -> str:
