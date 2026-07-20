@@ -7,6 +7,7 @@ import importlib.util
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 PLACEHOLDER_MARKERS = ("<", ">", "changeme", "replace-me", "your-")
@@ -61,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
     check_model(env, report)
     check_wecom(env, report)
+    check_wecom_outbound(env, report)
     check_identity(env, project_root, report)
     check_memory(env, project_root, report)
     check_contextseek(env, project_root, report)
@@ -121,6 +123,39 @@ def check_wecom(env: dict[str, str], report: CheckReport) -> None:
         require(env, report, key)
     if env.get("AGENTSEEK_WECOM_USERID_RESOLVE_MODE") != "openuserid_to_userid":
         report.warn("AGENTSEEK_WECOM_USERID_RESOLVE_MODE should usually be openuserid_to_userid")
+
+
+def check_wecom_outbound(env: dict[str, str], report: CheckReport) -> None:
+    transport = env.get("AGENTSEEK_WECOM_TRANSPORT_MODE", "callback").strip()
+    if transport != "callback":
+        report.fail("this gateway implements AGENTSEEK_WECOM_TRANSPORT_MODE=callback only")
+        return
+    report.ok("WeCom AI Bot callback transport selected")
+
+    delivery_mode = env.get("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE", "disabled").strip()
+    if delivery_mode == "disabled":
+        report.ok("outbound Artifact delivery is disabled")
+        return
+    if delivery_mode == "direct_file":
+        report.fail("AI Bot callback response_url cannot deliver file messages; use signed_link or disabled")
+        return
+    if delivery_mode != "signed_link":
+        report.fail("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE must be disabled or signed_link")
+        return
+
+    base_url = env.get("AGENTSEEK_WORK_ARTIFACT_PUBLIC_BASE_URL", "").strip()
+    parsed = urlparse(base_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        report.fail("signed_link Artifact delivery requires a clean HTTPS public base URL")
+    else:
+        report.ok("signed-link Artifact delivery base URL is configured")
 
 
 def check_identity(env: dict[str, str], project_root: Path, report: CheckReport) -> None:

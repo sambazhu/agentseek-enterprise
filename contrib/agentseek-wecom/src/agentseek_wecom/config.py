@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,6 +20,13 @@ class WeComSettings(BaseSettings):
     enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("BUB_WECOM_ENABLED", "AGENTSEEK_WECOM_ENABLED"),
+    )
+    transport_mode: Literal["callback"] = Field(
+        default="callback",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_TRANSPORT_MODE",
+            "AGENTSEEK_WECOM_TRANSPORT_MODE",
+        ),
     )
     host: str = Field(
         default="0.0.0.0",

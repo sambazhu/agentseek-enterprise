@@ -4,8 +4,11 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from agentseek_wecom.outbound import require_outbound_message_type
 
 
 @dataclass(frozen=True)
@@ -16,13 +19,27 @@ class WeComResponseUrlSender:
     timeout_seconds: float = 10.0
 
     def send_markdown(self, response_url: str, content: str) -> None:
+        require_outbound_message_type("callback", "markdown")
+        self._send_payload(
+            response_url,
+            {"msgtype": "markdown", "markdown": {"content": content}},
+        )
+
+    def send_template_card(self, response_url: str, template_card: Mapping[str, Any]) -> None:
+        require_outbound_message_type("callback", "template_card")
+        card = dict(template_card)
+        if not isinstance(card.get("card_type"), str) or not card["card_type"].strip():
+            raise ValueError("template card requires a non-empty card_type")
+        self._send_payload(
+            response_url,
+            {"msgtype": "template_card", "template_card": card},
+        )
+
+    def _send_payload(self, response_url: str, payload: Mapping[str, Any]) -> None:
         self._validate_response_url(response_url)
         request = urllib.request.Request(
             response_url,
-            data=json.dumps(
-                {"msgtype": "markdown", "markdown": {"content": content}},
-                ensure_ascii=False,
-            ).encode("utf-8"),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             method="POST",
         )

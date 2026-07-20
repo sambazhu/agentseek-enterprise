@@ -16,6 +16,8 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - inbound WeCom AI Bot file/image/video/mixed media intake through
   `agentseek-files`, with AES decrypt, HMAC-scoped storage, and
   `[CurrentFiles]` prompt context.
+- an executable WeCom outbound capability probe that keeps callback-mode
+  Artifact delivery fail-closed until a signed HTTPS download endpoint exists.
 
 ## Inputs
 
@@ -48,6 +50,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
   scripts/
     import_department_knowledge.py
     probe_department_knowledge.py
+    probe_wecom_outbound.py
     prod_check.py
     run_gateway.sh
   skills/

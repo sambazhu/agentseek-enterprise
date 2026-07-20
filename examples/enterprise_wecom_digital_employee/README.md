@@ -494,6 +494,25 @@ Queue status and rejection finish in the callback only. Callbacks without
 legacy stream-polling path, while pending file extraction always uses the
 deferred path.
 
+The callback transport is intentionally explicit:
+
+```env
+AGENTSEEK_WECOM_TRANSPORT_MODE=callback
+AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=disabled
+```
+
+The official AI Bot callback `response_url` is one-shot, expires after one
+hour, and supports only `markdown` and `template_card`; it cannot carry a DOCX
+`file` message. AgentSeek therefore fails closed on direct-file configuration.
+M4 keeps the verified callback channel and will deliver a current published
+Artifact through a short-lived signed HTTPS link in a template card. Direct
+file attachment requires a later migration to the mutually exclusive AI Bot
+long-connection transport. Inspect the local decision before deployment:
+
+```bash
+uv run --offline python scripts/probe_wecom_outbound.py
+```
+
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
 ```bash

@@ -687,7 +687,7 @@ M3 先以运行时前置切片启动：
    Mac mini 已在 `f58fa76` 完成审批合同、stale 失效、账本真实性及全量回归活体复核，
    验证文档为 `c793090`，M3-04A 正式关闭。
 
-8. **M3-04B Artifact 渲染（已实现，待 Mac mini 活体关闭）**：
+8. **M3-04B Artifact 渲染（已关闭）**：
 
    - 第一阶段只启用 DOCX；PDF 留到后续切片，避免把两套渲染器同时引入审批边界。
    - 只有当前 `ReportApproval approved + current=true`，且员工显式请求精确
@@ -701,8 +701,28 @@ M3 先以运行时前置切片启动：
    - Pack/Profile 升级为 `1.7.0` / `1.6.0`，`report-writing` 升级为 `1.3.0`；example
      和 cookiecutter 保持同步。
 
-9. **M4 发布与交付（后续）**：发布和员工文件交付使用独立显式动作、delivery ledger、
-   exactly-once/outbox 与恢复机制；审批、渲染、发布和交付继续保持分离。
+   Mac mini 已在 `85fb791` 完成 schema rev9、审批门、内容寻址 DOCX、幂等、stale、
+   独立模板 smoke 和全量回归活体复核，验证文档为 `48e379f`。M3 从 Brief 到 Artifact
+   的完整闭环正式关闭。
+
+9. **M4-00 企微出站协议冻结（已实现，待 Mac mini 复核）**：
+
+   - 当前部署固定为 AI Bot HTTP callback。官方 `response_url` 每个只可调用一次、有效期一小时，
+     仅支持 `markdown` 与 `template_card`，不支持 `file`。
+   - 官方 AI Bot 长连接支持临时素材上传、文件回复和主动推送，但与 callback 模式互斥；AgentSeek
+     当前尚未实现该传输，不在 v0.1.0 临时切换。
+   - `agentseek-wecom` 发布机器可读的两种传输能力矩阵，callback 下请求 `file` 必须 fail-closed；
+     `response_url` 新增官方 `template_card` 发送形状。
+   - 示例和模板提供 `probe_wecom_outbound.py`；production preflight 拒绝 callback + direct_file
+     的无效组合，并只接受干净 HTTPS 基址的 `signed_link` 配置。
+   - v0.1.0 决策：保留已验证 callback，M4 用模板卡片发送短期签名下载链接。消息投递 exactly-once
+     与文件下载重试分开记账；直接附件留给后续长连接迁移。
+
+10. **M4-01 发布合同（后续）**：Artifact 发布使用独立显式动作和 publication ledger，
+    不自动交付。
+
+11. **M4-02 签名链接交付（后续）**：建立 delivery ledger、outbox、短期签名下载端点和
+    template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化

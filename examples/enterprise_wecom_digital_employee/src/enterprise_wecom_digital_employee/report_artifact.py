@@ -230,12 +230,17 @@ def _markdown_paragraphs(markdown: str) -> tuple[str, ...]:
             style = "Title" if level == 1 else f"Heading{level - 1}"
             paragraphs.append(_paragraph(heading.group(2), style=style))
             continue
+        blockquote = re.match(r"^\s*>+\s?(.*)$", line)
+        if blockquote:
+            paragraphs.append(_paragraph(blockquote.group(1)))
+            continue
         if re.match(r"^\s*[-*+]\s+", line):
             text = re.sub(r"^\s*[-*+]\s+", "", line)
             paragraphs.append(_paragraph(f"• {text}"))
             continue
-        if re.match(r"^\s*\d+[.)]\s+", line):
-            paragraphs.append(_paragraph(line.strip()))
+        ordered = re.match(r"^\s*(\d+)[.)]\s+(.*)$", line)
+        if ordered:
+            paragraphs.append(_paragraph(f"{ordered.group(1)}. {ordered.group(2)}"))
             continue
         paragraphs.append(_paragraph(line.strip()))
     return tuple(paragraphs)

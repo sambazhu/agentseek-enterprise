@@ -45,7 +45,10 @@ def test_explicit_docx_request_is_exact_and_fail_closed(message: str, expected: 
 
 def test_docx_render_is_deterministic_and_contains_approved_markdown(tmp_path: Path) -> None:
     template = TEMPLATE_PATH.read_bytes()
-    markdown = "# 证券行业报告\n\n## 执行摘要\n\n- 结论一 [source_1]\n- 风险提示"
+    markdown = (
+        "# 证券行业报告\n\n## 执行摘要\n\n> 状态：可审阅初稿\n"
+        "- 结论一 [source_1]\n* 风险提示\n1) 第一项"
+    )
 
     first = render_report_docx(markdown=markdown, template_bytes=template)
     second = render_report_docx(markdown=markdown, template_bytes=template)
@@ -58,6 +61,12 @@ def test_docx_render_is_deterministic_and_contains_approved_markdown(tmp_path: P
         xml = document.read("word/document.xml").decode()
         assert "证券行业报告" in xml
         assert "执行摘要" in xml
+        assert "状态：可审阅初稿" in xml
+        assert "&gt; 状态：可审阅初稿" not in xml
+        assert "• 结论一 [source_1]" in xml
+        assert "• 风险提示" in xml
+        assert "1. 第一项" in xml
+        assert "1) 第一项" not in xml
         assert "结论一 [source_1]" in xml
         assert "2025年中国证券行业" not in xml
         assert '<w:headerReference w:type="default" r:id="rId9"/>' in xml
