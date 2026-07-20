@@ -1019,6 +1019,23 @@ def test_stale_publication_cannot_be_claimed_as_current() -> None:
     ) == REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
 
 
+def test_stale_artifact_cannot_be_described_as_current_publication_version() -> None:
+    output = "历史旧版 ReportArtifact v1 仍是当前正式发布版本。"
+    result = _result("查看当前发布状态", output)
+    result["current_work"]["report_publications"] = [{
+        "publication_version": 1,
+        "status": "published",
+        "report_draft_version": 1,
+        "current": False,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
 def test_delivery_claim_remains_blocked_after_publication_support() -> None:
     output = "ReportArtifact v1 已交付给员工。"
 

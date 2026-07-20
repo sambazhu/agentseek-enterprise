@@ -186,7 +186,13 @@ _REPORT_PUBLICATION_REF_RE = re.compile(
 )
 _REPORT_PUBLICATION_CLAIM_RE = re.compile(
     r"(?:已|已经)(?:正式)?发布|status\s*[=:：]\s*published|"
-    r"publication\s*[=:：]\s*published",
+    r"publication\s*[=:：]\s*published|(?:当前|现行)(?:正式)?发布版本|"
+    r"发布版本.{0,8}(?:当前|现行)",
+    re.IGNORECASE,
+)
+_REPORT_PUBLICATION_CURRENT_RE = re.compile(
+    r"current\s*[=:：]\s*true|(?:仍是|仍为|属于)?(?:当前|现行)(?:正式)?发布版本|"
+    r"发布版本.{0,8}(?:当前|现行)",
     re.IGNORECASE,
 )
 _REPORT_PUBLICATION_STALE_RE = re.compile(
@@ -700,6 +706,12 @@ def _artifact_states_from_messages(messages: object) -> tuple[set[str], set[int]
 def _claims_unverified_report_publication(result: object, output: str) -> bool:
     if not _REPORT_PUBLICATION_CLAIM_RE.search(output):
         return False
+    if any(
+        _REPORT_PUBLICATION_STALE_RE.search(line)
+        and _REPORT_PUBLICATION_CURRENT_RE.search(line)
+        for line in output.splitlines()
+    ):
+        return True
     claims = _report_publication_claims(output)
     states = _successful_report_publication_states(result)
     if not claims:
@@ -714,7 +726,10 @@ def _report_publication_claims(output: str) -> tuple[tuple[int, bool], ...]:
         if not _REPORT_PUBLICATION_CLAIM_RE.search(line):
             continue
         version_text = match.group(1) or match.group(2)
-        claims.append((int(version_text), not bool(_REPORT_PUBLICATION_STALE_RE.search(line))))
+        current = bool(_REPORT_PUBLICATION_CURRENT_RE.search(line)) or not bool(
+            _REPORT_PUBLICATION_STALE_RE.search(line)
+        )
+        claims.append((int(version_text), current))
     return tuple(claims)
 
 

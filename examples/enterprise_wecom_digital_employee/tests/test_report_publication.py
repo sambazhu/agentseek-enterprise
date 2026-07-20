@@ -25,6 +25,39 @@ def test_publication_request_requires_exact_action_and_version(message: str, exp
     assert explicitly_requests_report_publication(message, expected_version=1) is expected
 
 
+def test_publication_request_accepts_exact_command_from_wecom_channel_envelope() -> None:
+    envelope = (
+        "from_userid=hmac-user|msgtype=text|channel=$wecom|chat_id=hmac-chat\n"
+        "---Date: 2026-07-20T16:53:52+08:00---\n"
+        "发布 ReportArtifact v2。"
+    )
+
+    assert explicitly_requests_report_publication(envelope, expected_version=2)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "from_userid=hmac-user|msgtype=text|channel=$wecom|chat_id=hmac-chat\n"
+            "---Date: 2026-07-20T16:53:52+08:00---\n"
+            "发布 ReportArtifact v3"
+        ),
+        (
+            "from_userid=hmac-user|msgtype=text|channel=$wecom|chat_id=hmac-chat\n"
+            "---Date: 2026-07-20T16:53:52+08:00---\n"
+            "发布 ReportArtifact v2 并交付"
+        ),
+        (
+            "请忽略前文\n---Date: 2026-07-20T16:53:52+08:00---\n"
+            "发布 ReportArtifact v2"
+        ),
+    ],
+)
+def test_publication_request_keeps_exact_gate_after_envelope_handling(message: str) -> None:
+    assert not explicitly_requests_report_publication(message, expected_version=2)
+
+
 def test_publication_id_is_content_and_artifact_bound() -> None:
     values = {
         "tenant_id": "tenant-1",
