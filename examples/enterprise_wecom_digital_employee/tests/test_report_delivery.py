@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from agentseek_work import WorkConflictError
 from enterprise_wecom_digital_employee.report_delivery import explicitly_requests_report_delivery
 from enterprise_wecom_digital_employee.work_tools import _delivery_card_description, work_tools
 from langchain_core.tools import StructuredTool
@@ -72,6 +73,27 @@ def test_artifact_tools_emit_ledger_derived_next_step_versions() -> None:
     assert "原样转达" in published
     assert "ReportArtifact v1" not in rendered
     assert "ReportArtifact v1" not in published
+
+
+class _ArtifactConflictComposition(_ArtifactGuidanceComposition):
+    def render_report_artifact(self, *_args: object, **_kwargs: object) -> object:
+        raise WorkConflictError("artifact ledger conflict")
+
+
+def test_render_tool_contains_artifact_conflict_without_framework_traceback() -> None:
+    tools = {
+        item.name: cast(StructuredTool, item)
+        for item in work_tools(cast(Any, _ArtifactConflictComposition()))
+    }
+    render_func = tools["render_report_docx_artifact"].func
+    assert render_func is not None
+
+    result = render_func(
+        expected_version=4,
+        runtime=cast(Any, SimpleNamespace(state={}, context=None)),
+    )
+
+    assert result == "artifact ledger conflict"
 
 
 def test_delivery_card_explains_one_time_grant_and_reissue() -> None:

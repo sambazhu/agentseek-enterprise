@@ -38,6 +38,7 @@ from agentseek_work import (
     ToolContract,
     ToolContractRegistry,
     WorkBudget,
+    WorkConflictError,
     WorkContractConflictError,
     WorkContractSnapshot,
     WorkContractStatus,
@@ -858,11 +859,37 @@ class IndustryReportWorkComposition:
                 "delivery_status": "not_delivered",
             },
         )
-        saved = self.repository.put_artifact_record(record)
+        saved = self._put_artifact_idempotently(record)
         if isinstance(state, dict):
             current = self.repository.get_work(tenant_id=item.tenant_id, work_id=item.work_id)
             self._publish_current_work(cast("dict[str, Any]", state), current)
         return saved
+
+    def _put_artifact_idempotently(self, record: ArtifactRecord) -> ArtifactRecord:
+        try:
+            existing = self.repository.get_artifact_record(
+                tenant_id=record.tenant_id,
+                artifact_id=record.artifact_id,
+            )
+        except WorkNotFoundError:
+            existing = None
+        if existing is not None and _same_artifact_identity(existing, record):
+            return existing
+        try:
+            return self.repository.put_artifact_record(record)
+        except WorkConflictError as conflict:
+            # A concurrent renderer may have registered the same content after
+            # the initial lookup. Only that exact immutable identity is a replay.
+            try:
+                existing = self.repository.get_artifact_record(
+                    tenant_id=record.tenant_id,
+                    artifact_id=record.artifact_id,
+                )
+            except WorkNotFoundError as missing:
+                raise conflict from missing
+            if not _same_artifact_identity(existing, record):
+                raise
+            return existing
 
     def publish_report_artifact(
         self,
@@ -1971,6 +1998,32 @@ def _current_work_context(summary: Mapping[str, object]) -> str:  # noqa: C901
 def _optional(value: str) -> str | None:
     cleaned = value.strip()
     return cleaned or None
+
+
+def _same_artifact_identity(left: ArtifactRecord, right: ArtifactRecord) -> bool:
+    """Compare immutable ledger identity while ignoring observation-time metadata."""
+
+    fields = (
+        "artifact_id",
+        "work_id",
+        "tenant_id",
+        "artifact_type",
+        "artifact_format",
+        "media_type",
+        "content_sha256",
+        "size_bytes",
+        "storage_key",
+        "filename",
+        "source_contract_type",
+        "source_contract_version",
+        "source_digest",
+        "approval_contract_version",
+        "approval_digest",
+        "template_ref",
+        "template_digest",
+        "created_by",
+    )
+    return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
 def _clean(value: object) -> str:

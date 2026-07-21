@@ -9,6 +9,7 @@ from agentseek_work import (
     ActiveWorkConflictError,
     SourceRecord,
     SourceType,
+    WorkConflictError,
     WorkContractStatus,
     WorkItem,
 )
@@ -628,7 +629,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
                 artifact_format="docx",
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+        except (OSError, TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportArtifact artifact_id={artifact.artifact_id}，format=docx，"

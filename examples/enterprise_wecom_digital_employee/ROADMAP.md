@@ -734,9 +734,14 @@ M3 先以运行时前置切片启动：
 
 11. **M4-02 签名链接交付（Mac mini 活体 PASS，已关闭）**：建立 delivery ledger、一次性短期签名下载端点和
     template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。
-12. **M4-03 浏览器侧下载 SSO（待企业身份源决策）**：在一次性 grant 之外校验浏览器使用者身份，
-    并与 Delivery.recipient_key 绑定。实施前必须确定使用企业 OIDC/SAML 还是企微网页授权，以及 IdP 端点、
-    client/agent 授权和 HTTPS 回调域名。不使用第二个 bearer cookie 冒充身份认证。
+12. **M4-03 浏览器侧下载 SSO（v0.1.x 后续安全加固，已延期）**：v0.1.0 保留已经活体验证的短时、
+    recipient-bound、一次性 signed-link grant，不把尚未确定身份源的浏览器 SSO 作为 RC/GA 前置。
+    后续实施前必须确定使用企业 OIDC/SAML 还是企微网页授权，以及 IdP 端点、client/agent 授权和
+    HTTPS 回调域名；届时在 grant 之外校验浏览器身份并与 Delivery.recipient_key 绑定，不使用第二个
+    bearer cookie 冒充身份认证。
+13. **RC 可靠性收口（进行中）**：功能范围冻结后只处理阻断稳定性与账本幂等缺陷。Artifact 精确重渲染
+    必须返回同一内容寻址记录，不新增 Artifact、事件或 WorkItem 版本；render/publish/deliver 的精确动作
+    均由模型调用动作工具、服务端决定幂等，不由模型以只读查询替代动作。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化

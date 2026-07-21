@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
@@ -544,6 +544,21 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
         artifact_format="docx",
         latest_user_message="生成 ReportDraft v1 DOCX",
     )
+    item_after_render = composition.current_work(state)
+    assert item_after_render is not None
+    version_after_render = item_after_render.version
+    artifact_events_after_render = tuple(
+        event
+        for event in composition.repository.list_events(
+            tenant_id="tenant-test",
+            work_id="work_draft_001",
+        )
+        if event.event_type == "artifact_registered"
+    )
+    composition._factory = replace(
+        composition._factory,
+        clock=lambda: NOW + timedelta(minutes=5),
+    )
     replay_artifact = composition.render_report_artifact(
         state,
         None,
@@ -553,6 +568,23 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     )
 
     assert artifact == replay_artifact
+    assert replay_artifact.created_at == NOW
+    assert len(composition.repository.list_artifact_records(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+    )) == 1
+    replay_events = tuple(
+        event
+        for event in composition.repository.list_events(
+            tenant_id="tenant-test",
+            work_id="work_draft_001",
+        )
+        if event.event_type == "artifact_registered"
+    )
+    assert replay_events == artifact_events_after_render
+    item_after_replay = composition.current_work(state)
+    assert item_after_replay is not None
+    assert item_after_replay.version == version_after_render
     assert artifact.source_contract_version == 1
     assert artifact.approval_contract_version == 1
     assert artifact.metadata["publication_status"] == "not_published"

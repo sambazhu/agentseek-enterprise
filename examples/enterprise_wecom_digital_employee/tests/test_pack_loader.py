@@ -49,12 +49,12 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.9.2"
+    assert loaded.pack_version == "1.9.3"
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
-    assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.2")
+    assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.8.2"
+    assert loaded.profile.profile_version == "1.8.3"
     assert len(loaded.profile.knowledge_refs) == 1
     knowledge = loaded.profile.knowledge_refs[0]
     assert knowledge.server == "department-knowledge"
@@ -64,7 +64,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert knowledge.default_mode == "hybrid"
     assert loaded.skill_digests == (
         "sha256:a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e",
-        "sha256:312e8190e0d2f5969323df586138e4aaa5dfe56b4f94c3594bcc154e1eb6a406",
+        "sha256:3c3385c3502f6faa9fcbe7e5820afe64a9384a167913b9adf3f66a628fc6ca08",
     )
     assert loaded.playbooks[0].entrypoint.endswith("reports.playbook:build_playbook")
     assert loaded.playbooks[0].research_template_ref.startswith("skill://report-intake@1.1.0/")
