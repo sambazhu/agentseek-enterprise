@@ -939,6 +939,64 @@ def test_ledger_backed_report_artifact_claim_is_allowed() -> None:
         result,
         output,
         event_sink=lambda *_args, **_kwargs: None,
+    ) == f"{output}\n\n如需发布，请精确回复“发布 ReportArtifact v1”。"
+
+
+def test_render_action_appends_ledger_version_nudge_when_model_paraphrases() -> None:
+    artifact_id = f"artifact_{'a' * 64}"
+    output = "DOCX 已生成。"
+    result = _result("生成 ReportDraft v4 DOCX", output)
+    result["messages"] = [
+        HumanMessage(content="生成 ReportDraft v4 DOCX"),
+        AIMessage(content="", tool_calls=[{
+            "name": "render_report_docx_artifact",
+            "args": {"expected_version": 4},
+            "id": "call_render_v4",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                f"ReportArtifact artifact_id={artifact_id}，format=docx，"
+                f"bound_report_draft_v4，content_sha256=sha256:{'b' * 64}，"
+                "size_bytes=4096，current=true，publication=not_published，"
+                "delivery=not_delivered。DOCX Artifact 已生成并登记。"
+            ),
+            name="render_report_docx_artifact",
+            tool_call_id="call_render_v4",
+        ),
+        AIMessage(content=output),
+    ]
+
+    guarded = enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    )
+
+    assert guarded == "DOCX 已生成。\n\n如需发布，请精确回复“发布 ReportArtifact v4”。"
+
+
+def test_render_action_does_not_duplicate_existing_exact_nudge() -> None:
+    output = "DOCX 已生成。如需发布，请精确回复“发布 ReportArtifact v4”。"
+    result = _result("生成 ReportDraft v4 DOCX", output)
+    result["messages"] = [
+        HumanMessage(content="生成 ReportDraft v4 DOCX"),
+        ToolMessage(
+            content=(
+                f"ReportArtifact artifact_id=artifact_current，format=docx，"
+                f"bound_report_draft_v4，content_sha256=sha256:{'b' * 64}，"
+                "size_bytes=4096，current=true。"
+            ),
+            name="render_report_docx_artifact",
+            tool_call_id="call_render_v4",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
     ) == output
 
 
@@ -1001,7 +1059,42 @@ def test_ledger_backed_report_publication_claim_is_allowed() -> None:
         result,
         output,
         event_sink=lambda *_args, **_kwargs: None,
-    ) == output
+    ) == f"{output}\n\n如需交付，请精确回复“交付 ReportArtifact v1 给我”。"
+
+
+def test_publish_action_appends_ledger_version_nudge_when_model_paraphrases() -> None:
+    output = "报告已经正式发布。"
+    result = _result("发布 ReportArtifact v4", output)
+    result["messages"] = [
+        HumanMessage(content="发布 ReportArtifact v4"),
+        AIMessage(content="", tool_calls=[{
+            "name": "publish_report_artifact",
+            "args": {"expected_version": 4},
+            "id": "call_publish_v4",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "ReportPublication publication_id=publication_current，publication_v3，"
+                "status=published，artifact_id=artifact_current，bound_report_draft_v4，"
+                f"content_sha256=sha256:{'c' * 64}，current=true，delivery=not_delivered。"
+            ),
+            name="publish_report_artifact",
+            tool_call_id="call_publish_v4",
+        ),
+        AIMessage(content=output),
+    ]
+
+    guarded = enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    )
+
+    assert guarded == (
+        "报告已经正式发布。\n\n"
+        "如需交付，请精确回复“交付 ReportArtifact v4 给我”。"
+    )
 
 
 def test_stale_publication_cannot_be_claimed_as_current() -> None:

@@ -741,7 +741,9 @@ M3 先以运行时前置切片启动：
     bearer cookie 冒充身份认证。
 13. **RC 可靠性收口（进行中）**：功能范围冻结后只处理阻断稳定性与账本幂等缺陷。Artifact 精确重渲染
     必须返回同一内容寻址记录，不新增 Artifact、事件或 WorkItem 版本；render/publish/deliver 的精确动作
-    均由模型调用动作工具、服务端决定幂等，不由模型以只读查询替代动作。
+    均由模型调用动作工具、服务端决定幂等，不由模型以只读查询替代动作。render/publish 的下一步命令由
+    output guard 在模型漏转述时按本轮成功账本工具结果确定性补齐；RC 自动化与 Mac mini 活体验收矩阵见
+    `V0.1.0_RC_IMPLEMENTATION.md`。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化

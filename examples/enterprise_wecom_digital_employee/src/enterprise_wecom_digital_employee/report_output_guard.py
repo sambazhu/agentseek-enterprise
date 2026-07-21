@@ -298,6 +298,8 @@ REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "或 get_current_work_status，并以工具返回的 Artifact 绑定和 current 状态为准。"
 )
 _OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
+_ARTIFACT_PUBLICATION_NUDGE = "如需发布，请精确回复“发布 ReportArtifact v{version}”。"
+_ARTIFACT_DELIVERY_NUDGE = "如需交付，请精确回复“交付 ReportArtifact v{version} 给我”。"
 
 
 def enforce_m2_output_guard(  # noqa: C901
@@ -365,7 +367,7 @@ def enforce_m2_output_guard(  # noqa: C901
         return verified_draft_output
     if reason:
         return M2_OUTPUT_BLOCKED_MESSAGE
-    return _append_outline_confirmation_nudge(result, output)
+    return _append_deterministic_nudges(result, output)
 
 
 def _active_m2_work(result: object) -> Mapping[str, object] | None:
@@ -925,10 +927,68 @@ def _artifact_states_from_work(work: object) -> tuple[set[str], set[int]]:
     return artifact_ids, draft_versions
 
 
+def _append_deterministic_nudges(result: object, output: str) -> str:
+    output = _append_outline_confirmation_nudge(result, output)
+    render_version = _successful_artifact_render_version_in_turn(result)
+    if render_version is not None and f"发布 ReportArtifact v{render_version}" not in output:
+        output = f"{output.rstrip()}\n\n{_ARTIFACT_PUBLICATION_NUDGE.format(version=render_version)}"
+    publication_version = _successful_artifact_publication_version_in_turn(result)
+    if publication_version is not None and f"交付 ReportArtifact v{publication_version} 给我" not in output:
+        output = f"{output.rstrip()}\n\n{_ARTIFACT_DELIVERY_NUDGE.format(version=publication_version)}"
+    return output
+
+
 def _append_outline_confirmation_nudge(result: object, output: str) -> str:
     if "生成可审阅初稿" in output or not _successful_outline_confirmation_in_turn(result):
         return output
     return f"{output.rstrip()}\n\n{_OUTLINE_CONFIRMATION_NUDGE}"
+
+
+def _successful_artifact_render_version_in_turn(result: object) -> int | None:
+    versions = _successful_action_versions(
+        result,
+        tool_name="render_report_docx_artifact",
+        status_pattern=_REPORT_ARTIFACT_STATUS_SUCCESS_RE,
+        version_group=3,
+    )
+    return versions[-1] if versions else None
+
+
+def _successful_artifact_publication_version_in_turn(result: object) -> int | None:
+    versions = _successful_action_versions(
+        result,
+        tool_name="publish_report_artifact",
+        status_pattern=_REPORT_PUBLICATION_STATUS_SUCCESS_RE,
+        version_group=2,
+    )
+    return versions[-1] if versions else None
+
+
+def _successful_action_versions(
+    result: object,
+    *,
+    tool_name: str,
+    status_pattern: re.Pattern[str],
+    version_group: int,
+) -> tuple[int, ...]:
+    if not isinstance(result, Mapping):
+        return ()
+    messages = result.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return ()
+    call_ids: set[str] = set()
+    versions: list[int] = []
+    for message in messages:
+        if _is_human_message(message):
+            call_ids.clear()
+            versions.clear()
+            continue
+        call_ids.update(_tool_call_ids(message, frozenset({tool_name})))
+        result_name, tool_call_id, content = _tool_result_parts(message)
+        if result_name != tool_name and tool_call_id not in call_ids:
+            continue
+        versions.extend(int(match.group(version_group)) for match in status_pattern.finditer(content))
+    return tuple(versions)
 
 
 def _successful_outline_confirmation_in_turn(result: object) -> bool:

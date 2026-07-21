@@ -501,6 +501,7 @@ def test_revision_ten_creates_publication_ledger() -> None:
 def test_revision_eleven_creates_delivery_ledger() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
+    assert LATEST_SCHEMA_VERSION == 11
     assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
     assert work_deliveries.name in set(inspect(engine).get_table_names())
     columns = {column["name"] for column in inspect(engine).get_columns(work_deliveries.name)}

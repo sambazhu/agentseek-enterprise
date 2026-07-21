@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier, Lock
 from typing import Any, cast
 
 import pytest
 from agentseek_wecom.outbound import ArtifactDownloadGone
 from agentseek_work import (
+    ArtifactRecord,
     ClaimType,
     ExcerptStatus,
     SnapshotStatus,
     SourceRecord,
     SourceType,
     SQLAlchemyWorkRepository,
+    WorkConflictError,
     WorkContractStatus,
+    WorkNotFoundError,
     apply_migrations,
 )
 from enterprise_wecom_digital_employee.pack_loader import (
@@ -66,6 +71,30 @@ CONTENT = "证券行业数字化转型应以客户服务、经营管理和风险
 DRAFT_REQUEST = "请生成可审阅初稿"
 
 
+class _RacingArtifactRepository:
+    def __init__(self) -> None:
+        self.barrier = Barrier(2)
+        self.lock = Lock()
+        self.stored: ArtifactRecord | None = None
+        self.conflicts = 0
+
+    def get_artifact_record(self, *, tenant_id: str, artifact_id: str) -> ArtifactRecord:
+        with self.lock:
+            stored = self.stored
+        if stored is None or stored.tenant_id != tenant_id or stored.artifact_id != artifact_id:
+            raise WorkNotFoundError("artifact is not registered")
+        return stored
+
+    def put_artifact_record(self, artifact: ArtifactRecord) -> ArtifactRecord:
+        self.barrier.wait(timeout=5)
+        with self.lock:
+            if self.stored is None:
+                self.stored = artifact
+                return artifact
+            self.conflicts += 1
+        raise WorkConflictError("artifact record already exists with different values")
+
+
 @pytest.mark.parametrize(
     ("message", "expected"),
     [
@@ -99,6 +128,46 @@ def test_explicit_draft_request_parser(message: str, expected: bool) -> None:
 )
 def test_explicit_draft_confirmation_parser(message: str, expected: bool) -> None:
     assert explicitly_confirms_report_draft(message, expected_version=2) is expected
+
+
+def test_concurrent_artifact_registration_returns_one_immutable_identity(tmp_path: Path) -> None:
+    composition, _state = _confirmed_brief_composition(tmp_path)
+    repository = _RacingArtifactRepository()
+    composition.repository = cast(SQLAlchemyWorkRepository, repository)
+    first = ArtifactRecord(
+        artifact_id=f"artifact_{'a' * 64}",
+        work_id="work_draft_001",
+        tenant_id="tenant-test",
+        artifact_type="report",
+        artifact_format="docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content_sha256=f"sha256:{'1' * 64}",
+        size_bytes=4096,
+        storage_key="tenant-test/work_draft_001/docx/11/111.docx",
+        filename="industry-report-draft-v1.docx",
+        source_contract_type="report-draft",
+        source_contract_version=1,
+        source_digest=f"sha256:{'2' * 64}",
+        approval_contract_version=1,
+        approval_digest=f"sha256:{'3' * 64}",
+        template_ref=ASSET_REF,
+        template_digest=f"sha256:{'4' * 64}",
+        created_by=f"hmac-{'2' * 64}",
+        created_at=NOW,
+        metadata={"pack_snapshot_id": "snapshot-a"},
+    )
+    replay = replace(
+        first,
+        created_at=NOW + timedelta(seconds=1),
+        metadata={"pack_snapshot_id": "snapshot-b"},
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(composition._put_artifact_idempotently, (first, replay)))
+
+    assert repository.stored is not None
+    assert results == (repository.stored, repository.stored)
+    assert repository.conflicts == 1
 
 
 @pytest.mark.parametrize(
@@ -410,7 +479,7 @@ def test_report_draft_confirmation_is_exact_and_idempotent(tmp_path: Path) -> No
     assert draft_summary["status"] == "confirmed"
 
 
-def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_path: Path) -> None:
+def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path: Path) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
 
     async def invoke(_server: str, _tool_name: str, _arguments: dict[str, Any], _confirmed: bool) -> str:
@@ -680,6 +749,28 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     assert prepared.grant_token not in prepared.record.grant_hash
     delivery = composition.commit_report_delivery(prepared)
     assert delivery.artifact_id == artifact.artifact_id
+    lifecycle_events = composition.repository.list_events(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+    )
+    lifecycle_event_types = {event.event_type for event in lifecycle_events}
+    assert {
+        "artifact_registered",
+        "publication_registered",
+        "delivery_registered",
+    } <= lifecycle_event_types
+    ledger_events = tuple(
+        event
+        for event in lifecycle_events
+        if event.event_type
+        in {"artifact_registered", "publication_registered", "delivery_registered"}
+    )
+    lifecycle_event_text = repr(ledger_events)
+    assert all(event.payload_digest.startswith("sha256:") for event in ledger_events)
+    assert prepared.grant_token not in lifecycle_event_text
+    assert artifact.storage_key not in lifecycle_event_text
+    assert "测试员工" not in lifecycle_event_text
+    assert "not-published" not in lifecycle_event_text
     delivered_item = composition.current_work(state)
     assert delivered_item is not None
     assert delivered_item.status.value == "delivered"

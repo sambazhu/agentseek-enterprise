@@ -3,9 +3,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import enterprise_wecom_digital_employee.work_composition as work_composition_module
 import pytest
 from agentseek_enterprise.runtime import EnterpriseIdentityContext
 from agentseek_langchain.ag_ui import application_state_from_state, runtime_context_from_state
+from agentseek_wecom.outbound import ArtifactDownloadNotFound, resolve_artifact_download
 from agentseek_work import ActiveWorkConflictError, SQLAlchemyWorkRepository, WorkStatus, apply_migrations
 from enterprise_wecom_digital_employee.agent import (
     EnterpriseAgentRuntimeContext,
@@ -18,6 +20,7 @@ from enterprise_wecom_digital_employee.pack_loader import (
     build_pack_snapshot,
 )
 from enterprise_wecom_digital_employee.report_brief import ReportBrief, ResearchScope
+from enterprise_wecom_digital_employee.settings import ProjectSettings
 from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
     WorkCompositionError,
@@ -158,6 +161,40 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert first.item.brief == {}
     assert state["current_work"]["work_id"] == first.item.work_id
     assert state["_langgraph_runtime_context"]["work"]["permissions_digest"].startswith("sha256:")
+
+
+def test_cold_boot_registers_download_resolver_before_any_model_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = ProjectSettings(
+        _env_file=None,  # ty: ignore[unknown-argument]
+        work_enabled=True,
+        work_sqlalchemy_url=f"sqlite+pysqlite:///{tmp_path / 'work.sqlite3'}",
+        work_auto_migrate=True,
+        work_snapshot_path=str(tmp_path / "snapshots"),
+        work_template_asset_path=str(PACK_ROOT / "assets" / "neutral-industry-report-v1.docx"),
+        work_artifact_path=str(tmp_path / "artifacts"),
+        work_artifact_delivery_mode="signed_link",
+        work_artifact_public_base_url="https://reports.example.test/artifacts",
+        work_runtime_release="enterprise-wecom-v0.1.0-rc",
+    )
+    monkeypatch.setattr(work_composition_module, "get_settings", lambda: settings)
+    work_composition_module.get_work_composition.cache_clear()
+    try:
+        first = work_composition_module.get_work_composition()
+        with pytest.raises(ArtifactDownloadNotFound):
+            resolve_artifact_download("delivery_missing", "token")
+
+        work_composition_module.get_work_composition.cache_clear()
+        restarted = work_composition_module.get_work_composition()
+        with pytest.raises(ArtifactDownloadNotFound):
+            resolve_artifact_download("delivery_missing", "token")
+
+        assert restarted is not first
+        assert restarted.pack_snapshot_id == first.pack_snapshot_id
+    finally:
+        work_composition_module.get_work_composition.cache_clear()
 
 
 def test_current_work_is_scoped_and_loaded_on_follow_up_turn(tmp_path: Path) -> None:
