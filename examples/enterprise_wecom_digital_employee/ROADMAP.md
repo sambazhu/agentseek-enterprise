@@ -732,8 +732,11 @@ M3 先以运行时前置切片启动：
     - 发布不等于交付；本切片不生成卡片、文件、签名链接或下载端点，delivery 仍为关闭。
     - Pack/Profile/report-writing 升级为 `1.8.0` / `1.7.0` / `1.4.0`，example 与 cookiecutter 同步。
 
-11. **M4-02 签名链接交付（首轮阻断已修，待 Mac mini 终验）**：建立 delivery ledger、一次性短期签名下载端点和
+11. **M4-02 签名链接交付（Mac mini 活体 PASS，已关闭）**：建立 delivery ledger、一次性短期签名下载端点和
     template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。
+12. **M4-03 浏览器侧下载 SSO（待企业身份源决策）**：在一次性 grant 之外校验浏览器使用者身份，
+    并与 Delivery.recipient_key 绑定。实施前必须确定使用企业 OIDC/SAML 还是企微网页授权，以及 IdP 端点、
+    client/agent 授权和 HTTPS 回调域名。不使用第二个 bearer cookie 冒充身份认证。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed
 backstop 在 live 路径生效。观测继续只保存 digest、长度、诊断信号和工具序列，不持久化

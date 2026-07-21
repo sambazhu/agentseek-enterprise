@@ -636,6 +636,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"content_sha256={artifact.content_sha256}，size_bytes={artifact.size_bytes}，"
             "current=true，publication=not_published，delivery=not_delivered。"
             "DOCX Artifact 已生成并登记，但尚未发布或交付。"
+            f"如需发布，请精确回复‘发布 ReportArtifact v{artifact.source_contract_version}’。"
+            "请原样转达本工具的完整结果，不得改写版本号。"
         )
 
     @tool("get_current_report_artifacts")
@@ -691,6 +693,8 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"content_sha256={publication.content_sha256}，current=true，"
             "delivery=not_delivered。ReportArtifact 已正式发布，但尚未交付；"
             "本轮不会发送模板卡片、文件或下载链接。"
+            f"如需交付，请精确回复‘交付 ReportArtifact v{publication.source_contract_version} 给我’。"
+            "请原样转达本工具的完整结果，不得改写版本号。"
         )
 
     @tool("get_current_report_publications")
@@ -756,7 +760,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             "card_type": "text_notice",
             "main_title": {
                 "title": "证券行业报告已交付",
-                "desc": "下载授权为一次性且有时限，请及时下载。",
+                "desc": _delivery_card_description(expected_version),
             },
             "sub_title_text": f"ReportArtifact v{expected_version} · {prepared.filename}",
             "card_action": {"type": 1, "url": prepared.download_url},
@@ -1017,6 +1021,13 @@ def _latest_user_message_text(runtime: ToolRuntime) -> str:
         if role in {"human", "user"}:
             return _message_content_text(content)
     return ""
+
+
+def _delivery_card_description(expected_version: int) -> str:
+    return (
+        "本卡下载授权为一次性且有时限；如需再次下载，"
+        f"请重新回复‘交付 ReportArtifact v{expected_version} 给我’获取新卡片。"
+    )
 
 
 def _message_content_text(content: object) -> str:
