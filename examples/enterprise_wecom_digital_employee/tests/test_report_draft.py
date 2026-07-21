@@ -651,11 +651,32 @@ def test_report_approval_is_exact_bound_idempotent_and_stale_after_revision(tmp_
     delivered_item = composition.current_work(state)
     assert delivered_item is not None
     assert delivered_item.status.value == "delivered"
+    active_replay = composition.prepare_report_delivery(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="交付 ReportArtifact v1 给我",
+    )
+    assert active_replay.already_delivered is True
+    assert active_replay.record.delivery_id == delivery.delivery_id
+    assert active_replay.grant_token == ""
     download = composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
     assert download.data == artifact_path.read_bytes()
     assert download.filename == artifact.filename
     with pytest.raises(ArtifactDownloadGone):
         composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
+    consumed_reissue = composition.prepare_report_delivery(
+        state,
+        None,
+        expected_version=1,
+        latest_user_message="交付 ReportArtifact v1 给我",
+    )
+    assert consumed_reissue.already_delivered is False
+    assert consumed_reissue.record.delivery_version == 2
+    assert consumed_reissue.record.delivery_id != delivery.delivery_id
+    assert consumed_reissue.grant_token
+    assert consumed_reissue.grant_token != prepared.grant_token
+    assert consumed_reissue.grant_token not in consumed_reissue.record.grant_hash
     delivery_summary = composition.current_work_summary(state)
     assert delivery_summary is not None
     deliveries = cast("list[dict[str, object]]", delivery_summary["report_deliveries"])

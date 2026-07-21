@@ -210,8 +210,32 @@ _REPORT_PUBLICATION_LEDGER_TOOLS = frozenset({
     "get_current_work_status",
 })
 _REPORT_DELIVERY_CLAIM_RE = re.compile(
-    r"(?:报告|ReportArtifact|DOCX).{0,36}(?:已|已经)(?:交付|发送|下载)|"
-    r"(?:delivery|status)\s*[=:：]\s*delivered|(?:已|已经)(?:交付|发送|下载)",
+    r"(?:报告|ReportArtifact|Artifact|DOCX).{0,48}(?:已|已经)(?:完成|成功)?(?:交付|发送|下载)(?:完成|成功)?|"
+    r"(?:delivery|status)\s*[=:：]\s*delivered|"
+    r"(?:已|已经)(?:完成|成功)?(?:交付|发送|下载)(?:完成|成功)?|"
+    r"(?:仍是|仍为|属于)?(?:当前|现行)(?:正式)?交付版本|交付版本.{0,8}(?:当前|现行)",
+    re.IGNORECASE,
+)
+_REPORT_DELIVERY_CURRENT_RE = re.compile(
+    r"current\s*[=:：]\s*true|(?:仍是|仍为|属于)?(?:当前|现行)(?:正式)?交付版本|"
+    r"交付版本.{0,8}(?:当前|现行)",
+    re.IGNORECASE,
+)
+_REPORT_DELIVERY_STALE_RE = re.compile(
+    r"current\s*[=:：]\s*false|(?:历史|旧版|已失效|非当前|stale).{0,16}(?:交付|Artifact|版本)",
+    re.IGNORECASE,
+)
+_REPORT_DELIVERY_RECIPIENT_RE = re.compile(
+    r"(?:交付|发送)(?:给|至)\s*([^，。；！？,;!?\s]{1,64})",
+    re.IGNORECASE,
+)
+_REPORT_DOWNLOAD_COMPLETION_RE = re.compile(
+    r"(?:已|已经)(?:完成|成功)?下载(?:完成|成功)?|下载(?:已|已经)?(?:完成|成功)",
+    re.IGNORECASE,
+)
+_REPORT_UNPUBLISHED_DELIVERY_RE = re.compile(
+    r"(?:未|尚未)(?:正式)?发布.{0,48}(?:已|已经)(?:完成|成功)?(?:交付|发送|下载)|"
+    r"(?:已|已经)(?:完成|成功)?(?:交付|发送|下载).{0,48}(?:未|尚未)(?:正式)?发布",
     re.IGNORECASE,
 )
 _REPORT_DELIVERY_REF_RE = re.compile(
@@ -695,15 +719,56 @@ def _claims_unverified_report_artifact(result: object, output: str) -> bool:
 def _claims_unverified_report_delivery(result: object, output: str) -> bool:
     if not _REPORT_DELIVERY_CLAIM_RE.search(output):
         return False
-    claims = {
-        int(first or second)
-        for first, second in _REPORT_DELIVERY_REF_RE.findall(output)
-        if first or second
-    }
+    if _REPORT_DOWNLOAD_COMPLETION_RE.search(output):
+        return True
+    if _REPORT_UNPUBLISHED_DELIVERY_RE.search(output):
+        return True
+    if _claims_delivery_to_other_recipient(output):
+        return True
+    if any(
+        _REPORT_DELIVERY_STALE_RE.search(line)
+        and _REPORT_DELIVERY_CURRENT_RE.search(line)
+        for line in output.splitlines()
+    ):
+        return True
+    claims = _report_delivery_claims(output)
     states = _successful_report_delivery_states(result)
     if not claims:
         return not any(True in values for values in states.values())
-    return any(True not in states.get(version, set()) for version in claims)
+    return any(current not in states.get(version, set()) for version, current in claims)
+
+
+def _claims_delivery_to_other_recipient(output: str) -> bool:
+    allowed_recipients = {
+        "我",
+        "我本人",
+        "本人",
+        "员工",
+        "员工本人",
+        "当前员工",
+        "委派人",
+        "任务委派人",
+        "请求人",
+        "当前申请人",
+    }
+    return any(
+        match.group(1).strip() not in allowed_recipients
+        for match in _REPORT_DELIVERY_RECIPIENT_RE.finditer(output)
+    )
+
+
+def _report_delivery_claims(output: str) -> tuple[tuple[int, bool], ...]:
+    claims: list[tuple[int, bool]] = []
+    for match in _REPORT_DELIVERY_REF_RE.finditer(output):
+        line = _claim_line(output, match)
+        if not _REPORT_DELIVERY_CLAIM_RE.search(line):
+            continue
+        version_text = match.group(1) or match.group(2)
+        current = bool(_REPORT_DELIVERY_CURRENT_RE.search(line)) or not bool(
+            _REPORT_DELIVERY_STALE_RE.search(line)
+        )
+        claims.append((int(version_text), current))
+    return tuple(claims)
 
 
 def _successful_report_delivery_states(result: object) -> dict[int, set[bool]]:  # noqa: C901

@@ -726,9 +726,12 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
 
         Call only when the latest employee message is exactly
         `交付 ReportArtifact vN 给我`. Delivery uses one response_url template
-        card and a short-lived, one-time signed HTTPS download grant. Arbitrary
-        recipient names, OA accounts, combined publish-and-deliver requests and
-        direct file messages are not accepted.
+        card and a short-lived, one-time signed HTTPS download grant. Always
+        call this tool for an exact request even when an earlier delivery is
+        present: the server keeps an active grant idempotent and issues a new
+        one-time grant after consumption or expiry. Arbitrary recipient names,
+        OA accounts, combined publish-and-deliver requests and direct file
+        messages are not accepted.
         """
 
         try:
@@ -784,7 +787,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         deliveries = summary.get("report_deliveries")
         if not isinstance(deliveries, list) or not deliveries:
             return "当前任务尚无 ReportDelivery。"
-        return "\n".join(
+        ledger = "\n".join(
             "ReportDelivery "
             f"delivery_v{delivery.get('delivery_version')}，status={delivery.get('status')}，"
             f"artifact_id={delivery.get('artifact_id')}，"
@@ -793,6 +796,11 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
             f"grant_state={delivery.get('grant_state')}。"
             for delivery in deliveries
             if isinstance(delivery, Mapping)
+        )
+        return (
+            f"{ledger}\n交付重发规则：员工再次精确请求‘交付 ReportArtifact vN 给我’时，"
+            "必须再次调用 deliver_report_artifact 由服务端判定；active 授权幂等且不重发卡片，"
+            "consumed 或 expired 授权会换发新的一次性授权和卡片，不得复用旧 token。"
         )
 
     return [

@@ -732,7 +732,7 @@ M3 先以运行时前置切片启动：
     - 发布不等于交付；本切片不生成卡片、文件、签名链接或下载端点，delivery 仍为关闭。
     - Pack/Profile/report-writing 升级为 `1.8.0` / `1.7.0` / `1.4.0`，example 与 cookiecutter 同步。
 
-11. **M4-02 签名链接交付（已实现，待 Mac mini 复核）**：建立 delivery ledger、一次性短期签名下载端点和
+11. **M4-02 签名链接交付（首轮阻断已修，待 Mac mini 终验）**：建立 delivery ledger、一次性短期签名下载端点和
     template-card exactly-once 投递；审批、渲染、发布和交付继续保持分离。
 
 此前已完成原始本轮用户文本的显式 LangGraph state 传递，使裸“确认”的 fail-closed

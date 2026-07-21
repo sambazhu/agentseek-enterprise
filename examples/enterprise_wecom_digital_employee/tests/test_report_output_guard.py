@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from enterprise_wecom_digital_employee.report_output_guard import (
     M2_OUTPUT_BLOCKED_MESSAGE,
     REPORT_APPROVAL_LEDGER_CLAIM_BLOCKED_MESSAGE,
@@ -1079,3 +1080,51 @@ def test_stale_delivery_cannot_be_claimed_as_current() -> None:
         output,
         event_sink=lambda *_args, **_kwargs: None,
     ) == REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "报告已发送给张三。",
+        "报告已发送给员工张三。",
+        "报告已经下载完成。",
+        "历史 stale Artifact 仍是当前交付版本。",
+        "未发布 Artifact 已经完成交付。",
+    ],
+)
+def test_delivery_guard_rejects_unsupported_recipient_download_and_state_claims(
+    output: str,
+) -> None:
+    result = _result("查看当前交付状态", output)
+    result["current_work"]["report_deliveries"] = [{
+        "delivery_version": 1,
+        "status": "delivered",
+        "report_draft_version": 1,
+        "current": True,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE
+
+
+def test_ledger_backed_historical_delivery_is_allowed_without_current_claim() -> None:
+    output = (
+        "ReportDelivery delivery_v1，status=delivered，"
+        "bound_report_draft_v1，current=false，grant_state=consumed。"
+    )
+    result = _result("查看当前交付状态", output)
+    result["current_work"]["report_deliveries"] = [{
+        "delivery_version": 1,
+        "status": "delivered",
+        "report_draft_version": 1,
+        "current": False,
+    }]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output

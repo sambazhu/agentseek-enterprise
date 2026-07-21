@@ -1955,6 +1955,12 @@ def _current_work_context(summary: Mapping[str, object]) -> str:  # noqa: C901
                 f"bound_report_draft_v{delivery.get('report_draft_version')} "
                 f"current={delivery.get('current')} grant_state={delivery.get('grant_state')}"
             )
+        if deliveries:
+            lines.append(
+                "delivery_replay_policy: exact self-delivery requests always call "
+                "deliver_report_artifact; active grants are idempotent, consumed or expired "
+                "grants are reissued as new one-time grants"
+            )
     lines.extend((
         "该摘要来自任务账本。不要把对话记忆当作任务完成证明。",
         "[/CurrentWork]",
