@@ -123,7 +123,12 @@ def render_route_clarification(
 ) -> str | None:
     if result.status is not PlaybookRouteStatus.CLARIFICATION_REQUIRED:
         return None
-    lines = ["这条请求可能对应多个正式服务，请明确选择一个："]
+    heading = (
+        "这条正式请求尚未唯一匹配已上线服务，请明确选择一个："
+        if result.reason_code is PlaybookRouteReason.NO_MATCH
+        else "这条请求可能对应多个正式服务，请明确选择一个："
+    )
+    lines = [heading]
     for index, reference in enumerate(result.candidate_playbook_refs, start=1):
         lines.append(f"{index}. {service_titles.get(reference, reference)}")
     lines.append("请回复“使用 + 服务名称 + 你的具体需求”。在你选择前，我不会启动任务。")

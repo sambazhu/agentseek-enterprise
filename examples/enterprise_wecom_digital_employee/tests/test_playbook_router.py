@@ -144,3 +144,9 @@ def test_unmatched_formal_request_clarifies_instead_of_silently_selecting() -> N
     assert result.reason_code is PlaybookRouteReason.NO_MATCH
     assert result.selected_playbook_ref is None
     assert result.candidate_playbook_refs == (report.ref, summary.ref)
+    clarification = render_route_clarification(
+        result,
+        service_titles={report.ref: "证券行业正式报告", summary.ref: "部门经营简报"},
+    )
+    assert clarification is not None
+    assert clarification.startswith("这条正式请求尚未唯一匹配已上线服务")
