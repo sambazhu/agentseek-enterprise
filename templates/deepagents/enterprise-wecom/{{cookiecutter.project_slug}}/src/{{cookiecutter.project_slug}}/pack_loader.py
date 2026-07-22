@@ -39,10 +39,18 @@ class PlaybookSpec:
     playbook_id: str
     version: str
     entrypoint: str
-    research_template_ref: str
-    research_template_path: str
+    skill_refs: tuple[str, ...]
+    policy_refs: tuple[str, ...]
+    tool_grants: tuple[str, ...]
+    data_scopes: tuple[str, ...]
+    research_template_ref: str | None
+    research_template_path: str | None
     allowed_research_scopes: tuple[str, ...]
     topic_anchor_terms: tuple[str, ...]
+
+    @property
+    def ref(self) -> str:
+        return f"{self.playbook_id}@{self.version}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,12 +168,17 @@ class RestrictedPackLoader:
         pack_version = _required_text(manifest, "pack_version")
         profile_path = _required_text(manifest, "profile")
         skills = self._load_skills(manifest.get("skills", []))
-        playbooks = self._load_playbooks(manifest.get("playbooks", []), skills=skills)
         assets = self._load_assets(manifest.get("assets", []))
         policies = self._load_policy_paths(manifest.get("policies", []))
         policy_ids = self._load_policy_ids(policies)
         eval_manifest = self._load_eval_manifest(manifest.get("evals"))
         profile = self._load_profile(profile_path, pack_id=pack_id, pack_version=pack_version)
+        playbooks = self._load_playbooks(
+            manifest.get("playbooks", []),
+            skills=skills,
+            profile=profile,
+            policy_ids=policy_ids,
+        )
         _validate_profile_refs(
             profile,
             skills=skills,
@@ -223,38 +236,50 @@ class RestrictedPackLoader:
         value: Any,
         *,
         skills: Sequence[SkillSpec],
+        profile: DigitalEmployeeProfile,
+        policy_ids: Sequence[str],
     ) -> tuple[PlaybookSpec, ...]:
         entries = _mapping_sequence(value, "playbooks")
         playbooks: list[PlaybookSpec] = []
         for entry in entries:
             entrypoint = _required_text(entry, "entrypoint")
             _validate_entrypoint(entrypoint, self._allowed_entrypoint_package)
-            template_ref = _required_text(entry, "research_template_ref")
-            template_path = self._resolve_skill_file_ref(template_ref, skills=skills)
-            template = _yaml_mapping(self._local_file(template_path).read_bytes(), template_path)
-            if _required_int(template, "schema_version") != 2:
-                raise PackLoadError("research template schema_version must be 2")
-            allowed_scopes = _text_sequence(
-                template.get("allowed_research_scopes"),
-                "allowed_research_scopes",
+            skill_refs = _playbook_refs(
+                entry,
+                "skill_refs",
+                fallback=profile.skill_refs,
+                profile_schema_version=profile.profile_schema_version,
             )
-            topic_anchor_terms = _text_sequence(
-                template.get("topic_anchor_terms"),
-                "topic_anchor_terms",
+            policy_refs = _playbook_refs(
+                entry,
+                "policy_refs",
+                fallback=tuple(policy_ids),
+                profile_schema_version=profile.profile_schema_version,
             )
-            _require_unique(allowed_scopes, "allowed research scope")
-            _require_unique(topic_anchor_terms, "topic anchor term")
-            unsupported_scopes = sorted(set(allowed_scopes) - _ALLOWED_RESEARCH_SCOPES)
-            if unsupported_scopes:
-                raise PackLoadError(
-                    "research template contains unsupported allowed_research_scopes: "
-                    + ", ".join(unsupported_scopes)
-                )
+            tool_grants = _playbook_refs(
+                entry,
+                "tool_grants",
+                fallback=profile.tool_grants,
+                profile_schema_version=profile.profile_schema_version,
+            )
+            data_scopes = _playbook_refs(
+                entry,
+                "data_scopes",
+                fallback=profile.data_scopes,
+                profile_schema_version=profile.profile_schema_version,
+            )
+            template_ref, template_path, allowed_scopes, topic_anchor_terms = (
+                self._load_optional_research_template(entry, skills=skills, skill_refs=skill_refs)
+            )
             playbooks.append(
                 PlaybookSpec(
                     playbook_id=_required_text(entry, "id"),
                     version=_required_text(entry, "version"),
                     entrypoint=entrypoint,
+                    skill_refs=skill_refs,
+                    policy_refs=policy_refs,
+                    tool_grants=tool_grants,
+                    data_scopes=data_scopes,
                     research_template_ref=template_ref,
                     research_template_path=template_path,
                     allowed_research_scopes=allowed_scopes,
@@ -263,6 +288,41 @@ class RestrictedPackLoader:
             )
         _require_unique((playbook.playbook_id for playbook in playbooks), "playbook id")
         return tuple(playbooks)
+
+    def _load_optional_research_template(
+        self,
+        entry: Mapping[str, Any],
+        *,
+        skills: Sequence[SkillSpec],
+        skill_refs: Sequence[str],
+    ) -> tuple[str | None, str | None, tuple[str, ...], tuple[str, ...]]:
+        if entry.get("research_template_ref") is None:
+            return None, None, (), ()
+        template_ref = _required_text(entry, "research_template_ref")
+        template_path = self._resolve_skill_file_ref(template_ref, skills=skills)
+        template_skill_ref = template_ref.removeprefix("skill://").partition("/")[0]
+        if template_skill_ref not in skill_refs:
+            raise PackLoadError("research_template_ref must belong to Playbook skill_refs")
+        template = _yaml_mapping(self._local_file(template_path).read_bytes(), template_path)
+        if _required_int(template, "schema_version") != 2:
+            raise PackLoadError("research template schema_version must be 2")
+        allowed_scopes = _text_sequence(
+            template.get("allowed_research_scopes"),
+            "allowed_research_scopes",
+        )
+        topic_anchor_terms = _text_sequence(
+            template.get("topic_anchor_terms"),
+            "topic_anchor_terms",
+        )
+        _require_unique(allowed_scopes, "allowed research scope")
+        _require_unique(topic_anchor_terms, "topic anchor term")
+        unsupported_scopes = sorted(set(allowed_scopes) - _ALLOWED_RESEARCH_SCOPES)
+        if unsupported_scopes:
+            raise PackLoadError(
+                "research template contains unsupported allowed_research_scopes: "
+                + ", ".join(unsupported_scopes)
+            )
+        return template_ref, template_path, allowed_scopes, topic_anchor_terms
 
     def _resolve_skill_file_ref(
         self,
@@ -569,7 +629,7 @@ def _validate_profile_refs(
     )
     _require_declared_refs(
         tuple(service.playbook_ref for service in profile.service_catalog),
-        {f"{item.playbook_id}@{item.version}" for item in playbooks},
+        set(profile.supported_playbooks),
         "service_catalog playbook_ref",
     )
     _require_declared_refs(
@@ -577,6 +637,26 @@ def _validate_profile_refs(
         set(policy_ids),
         "behavior_policy_refs",
     )
+    if profile.profile_schema_version == 2:
+        service_refs = {service.playbook_ref for service in profile.service_catalog}
+        missing_services = sorted(set(profile.supported_playbooks) - service_refs)
+        if missing_services:
+            raise PackLoadError(
+                "supported_playbooks missing service_catalog entries: " + ", ".join(missing_services)
+            )
+    profile_policy_refs = (
+        set(profile.behavior_policy_refs)
+        if profile.profile_schema_version == 2
+        else set(policy_ids)
+    )
+    declared_skill_refs = {f"{item.skill_id}@{item.version}" for item in skills}
+    for playbook in playbooks:
+        _require_subset(playbook.skill_refs, set(profile.skill_refs), f"{playbook.ref} skill_refs")
+        _require_subset(playbook.skill_refs, declared_skill_refs, f"{playbook.ref} skill_refs")
+        _require_subset(playbook.policy_refs, profile_policy_refs, f"{playbook.ref} policy_refs")
+        _require_subset(playbook.policy_refs, set(policy_ids), f"{playbook.ref} policy_refs")
+        _require_subset(playbook.tool_grants, set(profile.tool_grants), f"{playbook.ref} tool_grants")
+        _require_subset(playbook.data_scopes, set(profile.data_scopes), f"{playbook.ref} data_scopes")
 
 
 def _require_declared_refs(refs: Sequence[str], declared: set[str], field_name: str) -> None:
@@ -584,6 +664,13 @@ def _require_declared_refs(refs: Sequence[str], declared: set[str], field_name: 
     missing = sorted(set(refs) - declared)
     if missing:
         raise PackLoadError(f"{field_name} contains undeclared references: {', '.join(missing)}")
+
+
+def _require_subset(values: Sequence[str], upper_bound: set[str], field_name: str) -> None:
+    _require_unique(values, field_name)
+    excess = sorted(set(values) - upper_bound)
+    if excess:
+        raise PackLoadError(f"{field_name} exceeds Profile permissions: {', '.join(excess)}")
 
 
 def _validate_entrypoint(entrypoint: str, allowed_package: str) -> None:
@@ -735,6 +822,30 @@ def _service_catalog(value: Any) -> tuple[ServiceCatalogEntry, ...]:
     )
     _require_unique((service.service_id for service in services), "service id")
     return services
+
+
+def _playbook_refs(
+    entry: Mapping[str, Any],
+    field_name: str,
+    *,
+    fallback: tuple[str, ...],
+    profile_schema_version: int,
+) -> tuple[str, ...]:
+    value = entry.get(field_name)
+    if value is None:
+        if profile_schema_version == 1:
+            return fallback
+        raise PackLoadError(f"playbook {field_name} must be declared for Profile v2")
+    return _declared_text_sequence(value, f"playbook {field_name}")
+
+
+def _declared_text_sequence(value: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise PackLoadError(f"{label} must be a list")
+    values = tuple(str(item).strip() for item in value)
+    if any(not item for item in values):
+        raise PackLoadError(f"{label} must contain non-blank text")
+    return values
 
 
 def _text_sequence(value: Any, label: str) -> tuple[str, ...]:

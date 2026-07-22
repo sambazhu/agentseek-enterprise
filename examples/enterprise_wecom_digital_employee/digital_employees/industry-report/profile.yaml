@@ -28,14 +28,14 @@ service_catalog:
       - 请帮我编写一份证券行业数字化转型报告
       - 研究利率变化对证券行业的影响并形成正式报告
 behavior_principles:
-  - 部门知识优先，外部检索须经员工显式选择
-  - 事实与结论须有可追溯证据，不以模型记忆补写
-  - 关键合同版本须经员工明确确认
-  - 审批、渲染、发布与交付相互独立，不自动越级
+  - 优先使用部门已授权资料，使用外部信息前会先征得你的同意
+  - 重要事实和结论会保留来源，资料不足时会明确说明
+  - 需求、提纲和初稿等关键版本会请你确认后再继续
+  - 审批、生成文件、发布和交付分别确认，不会替你自动越级操作
 behavior_policy_refs:
   - industry-report-v1
 pack_id: industry-report
-pack_version: 1.10.0
+pack_version: 1.11.0
 supported_playbooks:
   - securities-industry-report@1
 skill_refs:
@@ -75,4 +75,4 @@ escalation_policy:
   budget_exhausted: waiting_approval
   policy_denied: failed
 service_status: enabled
-profile_version: 1.9.0
+profile_version: 1.10.0

@@ -57,8 +57,14 @@ from {{ cookiecutter.project_slug }}.pack_loader import (
     DigitalEmployeeProfile,
     FilesystemPackSnapshotStore,
     LoadedPackManifest,
+    PlaybookSpec,
     RestrictedPackLoader,
+    ServiceCatalogEntry,
     build_pack_snapshot,
+)
+from {{ cookiecutter.project_slug }}.playbook_registry import (
+    PlaybookRegistry,
+    load_playbook_factory,
 )
 from {{ cookiecutter.project_slug }}.report_approval import (
     REPORT_APPROVAL_CONTRACT_TYPE,
@@ -143,6 +149,8 @@ class WorkCompositionError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class WorkItemFactory:
     loaded_pack: LoadedPackManifest
+    playbook: PlaybookSpec
+    skill_digests: tuple[str, ...]
     pack_snapshot_id: str
     budget_id: str
     runtime_release: str
@@ -159,7 +167,6 @@ class WorkItemFactory:
         input_file_ids: tuple[str, ...],
     ) -> WorkItem:
         profile = self.loaded_pack.profile
-        playbook_id, playbook_version = _single_playbook_ref(profile)
         now = self.clock()
         return WorkItem(
             work_id=self.id_factory(),
@@ -176,14 +183,14 @@ class WorkItemFactory:
             approver_id=requester_key,
             data_owner_id=requester_key,
             beneficiary_id=requester_key,
-            playbook_id=playbook_id,
-            playbook_version=playbook_version,
+            playbook_id=self.playbook.playbook_id,
+            playbook_version=self.playbook.version,
             budget_id=self.budget_id,
             idempotency_key=idempotency_key,
             created_at=now,
             updated_at=now,
             skill_set_version=profile.profile_version,
-            skill_digests=self.loaded_pack.skill_digests,
+            skill_digests=self.skill_digests,
             input_file_ids=input_file_ids,
         )
 
@@ -194,6 +201,7 @@ class IndustryReportWorkComposition:
         *,
         repository: SQLAlchemyWorkRepository,
         loaded_pack: LoadedPackManifest,
+        playbook: PlaybookSpec | None = None,
         pack_snapshot_id: str,
         runtime_release: str,
         pack_artifact_root: Path | None = None,
@@ -209,12 +217,8 @@ class IndustryReportWorkComposition:
         self.repository = repository
         self.loaded_pack = loaded_pack
         self.profile = loaded_pack.profile
-        self.playbook_id, playbook_version = _single_playbook_ref(self.profile)
-        self.playbook = next(
-            playbook
-            for playbook in loaded_pack.playbooks
-            if playbook.playbook_id == self.playbook_id and playbook.version == playbook_version
-        )
+        self.playbook = playbook or _report_playbook_spec(loaded_pack)
+        self.playbook_id = self.playbook.playbook_id
         self.pack_artifact_root = pack_artifact_root or loaded_pack.pack_root
         self.artifact_store = ContentAddressedArtifactStore(
             artifact_store_root or loaded_pack.pack_root / "runtime" / "work-artifacts"
@@ -225,10 +229,13 @@ class IndustryReportWorkComposition:
         )
         self.artifact_public_base_url = artifact_public_base_url.rstrip("/")
         self.artifact_grant_ttl_seconds = artifact_grant_ttl_seconds
+        if self.playbook.research_template_path is None:
+            raise WorkCompositionError("securities report Playbook requires a research template")
         self.research_template_path = self.pack_artifact_root / self.playbook.research_template_path
         self.pack_snapshot_id = pack_snapshot_id
-        self.permissions_digest = _permissions_digest(self.profile)
-        self.skill_set_digest = _skill_set_digest(loaded_pack)
+        self.permissions_digest = _permissions_digest(self.profile, self.playbook)
+        selected_skill_digests = _playbook_skill_digests(loaded_pack, self.playbook)
+        self.skill_set_digest = _skill_set_digest(selected_skill_digests)
         self._contracts = ToolContractRegistry((
             ToolContract(
                 name=_CREATE_REPORT_TOOL,
@@ -239,6 +246,8 @@ class IndustryReportWorkComposition:
         ))
         self._factory = WorkItemFactory(
             loaded_pack=loaded_pack,
+            playbook=self.playbook,
+            skill_digests=selected_skill_digests,
             pack_snapshot_id=pack_snapshot_id,
             budget_id=budget_id,
             runtime_release=runtime_release,
@@ -1630,10 +1639,23 @@ class IndustryReportWorkComposition:
         return True
 
 
-def build_work_binding() -> IndustryReportWorkComposition:
+def build_work_binding() -> PlaybookRegistry:
     """Bub entrypoint named by AGENTSEEK_WORK_BINDING."""
 
-    return get_work_composition()
+    return get_playbook_registry()
+
+
+@lru_cache(maxsize=1)
+def get_playbook_registry() -> PlaybookRegistry:
+    composition = get_work_composition()
+    spec = composition.playbook
+    service = _service_for_playbook(composition.profile, spec.ref)
+    factory = load_playbook_factory(
+        spec.entrypoint,
+        allowed_package="{{ cookiecutter.project_slug }}",
+    )
+    binding = factory(composition=composition, spec=spec, service=service)
+    return PlaybookRegistry(profile=composition.profile, bindings=(binding,))
 
 
 @lru_cache(maxsize=1)
@@ -1668,9 +1690,11 @@ def get_work_composition() -> IndustryReportWorkComposition:
         if settings.work_artifact_delivery_mode.strip().lower() == "signed_link"
         else ""
     )
+    playbook = _report_playbook_spec(loaded)
     composition = IndustryReportWorkComposition(
         repository=repository,
         loaded_pack=loaded,
+        playbook=playbook,
         pack_snapshot_id=snapshot.pack_snapshot_id,
         runtime_release=settings.require_work_runtime_release(),
         pack_artifact_root=snapshot_store.resolve(snapshot.content_artifact_id),
@@ -1855,10 +1879,13 @@ def _profile_summary(profile: DigitalEmployeeProfile) -> dict[str, object]:
     }
 
 
-def _permissions_digest(profile: DigitalEmployeeProfile) -> str:
+def _permissions_digest(profile: DigitalEmployeeProfile, playbook: PlaybookSpec) -> str:
     payload = {
-        "tool_grants": profile.tool_grants,
-        "data_scopes": profile.data_scopes,
+        "playbook_ref": playbook.ref,
+        "skill_refs": playbook.skill_refs,
+        "policy_refs": playbook.policy_refs,
+        "tool_grants": playbook.tool_grants,
+        "data_scopes": playbook.data_scopes,
         "knowledge_refs": [
             {
                 "id": reference.knowledge_id,
@@ -1881,18 +1908,51 @@ def _permissions_digest(profile: DigitalEmployeeProfile) -> str:
     return f"sha256:{sha256(encoded).hexdigest()}"
 
 
-def _skill_set_digest(loaded: LoadedPackManifest) -> str:
-    encoded = json.dumps(loaded.skill_digests, sort_keys=True, separators=(",", ":")).encode()
+def _skill_set_digest(skill_digests: tuple[str, ...]) -> str:
+    encoded = json.dumps(skill_digests, sort_keys=True, separators=(",", ":")).encode()
     return f"sha256:{sha256(encoded).hexdigest()}"
 
 
-def _single_playbook_ref(profile: DigitalEmployeeProfile) -> tuple[str, str]:
-    if len(profile.supported_playbooks) != 1:
-        raise WorkCompositionError("v0.1.0 requires exactly one enabled Playbook per Profile.")
-    playbook_id, separator, version = profile.supported_playbooks[0].partition("@")
-    if separator != "@" or not playbook_id or not version:
-        raise WorkCompositionError("Profile Playbook reference is invalid.")
-    return playbook_id, version
+def _report_playbook_spec(loaded: LoadedPackManifest) -> PlaybookSpec:
+    if loaded.profile.service_catalog:
+        references = tuple(
+            service.playbook_ref
+            for service in loaded.profile.service_catalog
+            if service.service_id == "securities-report"
+        )
+    else:
+        references = loaded.profile.supported_playbooks
+    if len(references) != 1:
+        raise WorkCompositionError("securities report service must bind exactly one Playbook")
+    reference = references[0]
+    for playbook in loaded.playbooks:
+        if playbook.ref == reference:
+            return playbook
+    raise WorkCompositionError("securities report Playbook is not present in the loaded Pack")
+
+
+def _service_for_playbook(
+    profile: DigitalEmployeeProfile,
+    playbook_ref: str,
+) -> ServiceCatalogEntry:
+    services = tuple(service for service in profile.service_catalog if service.playbook_ref == playbook_ref)
+    if len(services) != 1:
+        raise WorkCompositionError("production Playbook must have exactly one service catalog entry")
+    return services[0]
+
+
+def _playbook_skill_digests(
+    loaded: LoadedPackManifest,
+    playbook: PlaybookSpec,
+) -> tuple[str, ...]:
+    digest_by_ref = {
+        f"{skill.skill_id}@{skill.version}": f"sha256:{skill.sha256}"
+        for skill in loaded.skills
+    }
+    try:
+        return tuple(digest_by_ref[reference] for reference in playbook.skill_refs)
+    except KeyError as exc:
+        raise WorkCompositionError("Playbook references an unavailable Skill digest") from exc
 
 
 def _current_file_ids(state: Mapping[str, object]) -> tuple[str, ...]:

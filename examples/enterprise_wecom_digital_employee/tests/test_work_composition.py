@@ -19,7 +19,9 @@ from enterprise_wecom_digital_employee.pack_loader import (
     RestrictedPackLoader,
     build_pack_snapshot,
 )
+from enterprise_wecom_digital_employee.playbook_registry import PlaybookRegistry
 from enterprise_wecom_digital_employee.report_brief import ReportBrief, ResearchScope
+from enterprise_wecom_digital_employee.reports.playbook import build_playbook
 from enterprise_wecom_digital_employee.settings import ProjectSettings
 from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
@@ -145,9 +147,9 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.9.0"
-    assert first.item.digital_employee_profile_version == "1.9.0"
-    assert first.item.pack_version == "1.10.0"
+    assert first.item.skill_set_version == "1.10.0"
+    assert first.item.digital_employee_profile_version == "1.10.0"
+    assert first.item.pack_version == "1.11.0"
     assert composition.research_template_path.is_relative_to(tmp_path / "snapshots")
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests
@@ -165,6 +167,35 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert first.item.brief == {}
     assert state["current_work"]["work_id"] == first.item.work_id
     assert state["_langgraph_runtime_context"]["work"]["permissions_digest"].startswith("sha256:")
+
+
+def test_report_playbook_binding_owns_tools_guard_and_current_work(tmp_path: Path) -> None:
+    composition = build_composition(tmp_path)
+    service = next(
+        item
+        for item in composition.profile.service_catalog
+        if item.playbook_ref == composition.playbook.ref
+    )
+    binding = build_playbook(
+        composition=composition,
+        spec=composition.playbook,
+        service=service,
+    )
+    registry = PlaybookRegistry(profile=composition.profile, bindings=(binding,))
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    created = composition.create_report_work(state)
+    tool_names = {getattr(tool, "name", "") for tool in registry.tools()}
+
+    assert registry.active_binding() is binding
+    assert "create_industry_report_work" in tool_names
+    assert "build_report_outline" in tool_names
+    assert "render_report_docx_artifact" in tool_names
+    assert "deliver_report_artifact" in tool_names
+    current = registry.current_work(state)
+    assert current is not None
+    assert current.work_id == created.item.work_id
+    assert registry.introduction().startswith("证券行业正式报告")
 
 
 def test_cold_boot_registers_download_resolver_before_any_model_turn(

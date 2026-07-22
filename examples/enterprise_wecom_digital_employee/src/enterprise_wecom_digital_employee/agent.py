@@ -30,18 +30,14 @@ from enterprise_wecom_digital_employee.job_charter import (
     render_job_charter_response,
 )
 from enterprise_wecom_digital_employee.pack_loader import DigitalEmployeeProfile
-from enterprise_wecom_digital_employee.report_output_guard import enforce_m2_output_guard
+from enterprise_wecom_digital_employee.playbook_registry import PlaybookRegistry
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
 from enterprise_wecom_digital_employee.tools import (
     call_mcp_tool,
     describe_employee_context_contract,
     list_mcp_tools,
 )
-from enterprise_wecom_digital_employee.work_composition import (
-    IndustryReportWorkComposition,
-    get_work_composition,
-)
-from enterprise_wecom_digital_employee.work_tools import work_tools
+from enterprise_wecom_digital_employee.work_composition import get_playbook_registry
 
 SYSTEM_PROMPT = """You are an enterprise WeCom digital employee.
 
@@ -115,7 +111,7 @@ def _register_enterprise_harness_profile() -> None:
     _ENTERPRISE_HARNESS_REGISTERED = True
 
 
-def build_agent(*, composition: IndustryReportWorkComposition | None = None) -> Any:
+def build_agent(*, registry: PlaybookRegistry | None = None) -> Any:
     """Build the local DeepAgents runnable."""
 
     _register_enterprise_harness_profile()
@@ -133,11 +129,11 @@ def build_agent(*, composition: IndustryReportWorkComposition | None = None) -> 
             )
         },
     )
-    if composition is None and settings.work_enabled:
-        composition = get_work_composition()
-    enabled_work_tools = work_tools(composition) if composition is not None else []
+    if registry is None and settings.work_enabled:
+        registry = get_playbook_registry()
+    enabled_work_tools = list(registry.tools()) if registry is not None else []
     direct_capability_tools = _direct_capability_tools(
-        tool_grants=composition.profile.tool_grants if composition is not None else None,
+        tool_grants=registry.effective_tool_grants if registry is not None else None,
     )
     agent = create_deep_agent(
         model=settings.build_model(),
@@ -180,8 +176,8 @@ def build_spec():
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
     settings = get_settings()
-    composition = get_work_composition() if settings.work_enabled else None
-    base_spec = messages_spec(build_agent(composition=composition), include_agents_md=False)
+    registry = get_playbook_registry() if settings.work_enabled else None
+    base_spec = messages_spec(build_agent(registry=registry), include_agents_md=False)
 
     def build_input(context: InvocationContext) -> object:
         runnable_input = base_spec.build_input(context)
@@ -203,12 +199,16 @@ def build_spec():
     return RunnableSpec(
         runnable=base_spec.runnable,
         build_input=build_input,
-        parse_output=lambda result: enforce_m2_output_guard(result, base_spec.parse_output(result)),
+        parse_output=lambda result: (
+            registry.guard_output(result, base_spec.parse_output(result))
+            if registry is not None
+            else base_spec.parse_output(result)
+        ),
         build_config=lambda context: _work_observability_config(base_spec.build_config(context), context.state),
         stream_output=base_spec.stream_output,
         direct_response=(
-            lambda context: _job_charter_direct_response(context, composition.profile)
-            if composition is not None
+            lambda context: _job_charter_direct_response(context, registry.profile)
+            if registry is not None
             else None
         ),
     )

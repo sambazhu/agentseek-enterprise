@@ -1,6 +1,6 @@
 schema_version: 1
 pack_id: industry-report
-pack_version: 1.10.0
+pack_version: 1.11.0
 profile: profile.yaml
 skills:
   - id: report-intake
@@ -15,6 +15,20 @@ playbooks:
   - id: securities-industry-report
     version: "1"
     entrypoint: {{ cookiecutter.project_slug }}.reports.playbook:build_playbook
+    skill_refs:
+      - report-intake@1.1.0
+      - report-writing@1.5.3
+    policy_refs:
+      - industry-report-v1
+    tool_grants:
+      - analyze_file
+      - department-knowledge-read
+      - gildata-read
+    data_scopes:
+      - requester-authorized-files
+      - strategic-development-department-knowledge
+      - gildata-licensed-data
+      - authorized-public-sources
     research_template_ref: skill://report-intake@1.1.0/references/securities-industry-internal-research.yaml
 assets:
   - id: strategic-report-docx

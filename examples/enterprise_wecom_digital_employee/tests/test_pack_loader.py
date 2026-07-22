@@ -49,7 +49,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.10.0"
+    assert loaded.pack_version == "1.11.0"
     assert loaded.profile.profile_schema_version == 2
     assert loaded.profile.employee_code == "DE-SD-001"
     assert loaded.profile.display_name == "战略发展部数字员工"
@@ -59,7 +59,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.9.0"
+    assert loaded.profile.profile_version == "1.10.0"
     assert loaded.profile.service_catalog[0].service_id == "securities-report"
     assert loaded.profile.service_catalog[0].playbook_ref == "securities-industry-report@1"
     assert loaded.profile.behavior_policy_refs == ("industry-report-v1",)
@@ -75,10 +75,17 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
         "sha256:a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e",
         "sha256:3c3385c3502f6faa9fcbe7e5820afe64a9384a167913b9adf3f66a628fc6ca08",
     )
-    assert loaded.playbooks[0].entrypoint.endswith("reports.playbook:build_playbook")
-    assert loaded.playbooks[0].research_template_ref.startswith("skill://report-intake@1.1.0/")
-    assert loaded.playbooks[0].research_template_path.endswith("securities-industry-internal-research.yaml")
-    assert "external_factor_on_securities" in loaded.playbooks[0].allowed_research_scopes
+    playbook = loaded.playbooks[0]
+    assert playbook.entrypoint.endswith("reports.playbook:build_playbook")
+    assert playbook.skill_refs == loaded.profile.skill_refs
+    assert playbook.policy_refs == loaded.profile.behavior_policy_refs
+    assert playbook.tool_grants == loaded.profile.tool_grants
+    assert playbook.data_scopes == loaded.profile.data_scopes
+    assert playbook.research_template_ref is not None
+    assert playbook.research_template_path is not None
+    assert playbook.research_template_ref.startswith("skill://report-intake@1.1.0/")
+    assert playbook.research_template_path.endswith("securities-industry-internal-research.yaml")
+    assert "external_factor_on_securities" in playbook.allowed_research_scopes
 
 
 def test_snapshot_is_content_addressed_retrievable_and_excludes_binary_asset(
@@ -265,7 +272,17 @@ def test_profile_v1_remains_loadable_with_compatible_defaults(tmp_path: Path) ->
 
     rewrite_yaml(pack_root / "profile.yaml", mutate)
 
-    profile = loader(pack_root).load().profile
+    def remove_playbook_permissions(document: dict) -> None:
+        for field in ("skill_refs", "policy_refs", "tool_grants", "data_scopes"):
+            document["playbooks"][0].pop(field, None)
+
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        remove_playbook_permissions,
+    )
+
+    loaded = loader(pack_root).load()
+    profile = loaded.profile
 
     assert profile.profile_schema_version == 1
     assert profile.employee_code == profile.digital_employee_id
@@ -275,6 +292,104 @@ def test_profile_v1_remains_loadable_with_compatible_defaults(tmp_path: Path) ->
     assert profile.service_catalog == ()
     assert profile.behavior_principles == ()
     assert profile.behavior_policy_refs == ()
+    assert loaded.playbooks[0].skill_refs == profile.skill_refs
+    assert loaded.playbooks[0].policy_refs == loaded.policy_ids
+    assert loaded.playbooks[0].tool_grants == profile.tool_grants
+    assert loaded.playbooks[0].data_scopes == profile.data_scopes
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("skill_refs", "undeclared-skill@1.0.0"),
+        ("policy_refs", "undeclared-policy"),
+        ("tool_grants", "undeclared-tool"),
+        ("data_scopes", "undeclared-scope"),
+    ],
+)
+def test_loader_rejects_playbook_permission_escalation(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0][field].append(value),
+    )
+
+    with pytest.raises(PackLoadError, match=rf"{field} exceeds Profile permissions"):
+        loader(pack_root).load()
+
+
+@pytest.mark.parametrize("field", ["skill_refs", "policy_refs", "tool_grants", "data_scopes"])
+def test_profile_v2_requires_playbook_permission_declarations(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].pop(field),
+    )
+
+    with pytest.raises(PackLoadError, match=rf"playbook {field} must be declared"):
+        loader(pack_root).load()
+
+
+def test_research_template_must_belong_to_playbook_skill_subset(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].update(
+            {"skill_refs": ["report-writing@1.5.3"]}
+        ),
+    )
+
+    with pytest.raises(PackLoadError, match="must belong to Playbook skill_refs"):
+        loader(pack_root).load()
+
+
+def test_playbook_permission_subsets_may_be_explicitly_empty(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].update(
+            {"policy_refs": [], "tool_grants": [], "data_scopes": []}
+        ),
+    )
+
+    playbook = loader(pack_root).load().playbooks[0]
+
+    assert playbook.policy_refs == ()
+    assert playbook.tool_grants == ()
+    assert playbook.data_scopes == ()
+
+
+def test_generic_playbook_spec_does_not_require_report_research_metadata(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].pop("research_template_ref"),
+    )
+
+    playbook = loader(pack_root).load().playbooks[0]
+
+    assert playbook.research_template_ref is None
+    assert playbook.research_template_path is None
+    assert playbook.allowed_research_scopes == ()
+    assert playbook.topic_anchor_terms == ()
+
+
+def test_profile_v2_requires_service_for_each_supported_playbook(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "profile.yaml",
+        lambda document: document.update({"service_catalog": []}),
+    )
+
+    with pytest.raises(PackLoadError, match="missing service_catalog entries"):
+        loader(pack_root).load()
 
 
 @pytest.mark.parametrize("schema_version", [0, 3, True, "2"])

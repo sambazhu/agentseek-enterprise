@@ -116,7 +116,7 @@ def test_agent_direct_response_requires_loaded_employee_profile_and_emits_safe_e
                 "status": "succeeded",
                 "session_id": "wecom:test",
                 "digital_employee_id": "industry-report",
-                "profile_version": "1.9.0",
+                    "profile_version": "1.10.0",
                 "intent": "identity",
             },
         )
