@@ -137,6 +137,25 @@ def explicitly_requests_report_artifact(
     )
 
 
+def match_report_artifact_render_version(message: str) -> int | None:
+    """Return the exact Draft version for one explicit DOCX render request."""
+
+    text = " ".join(str(message or "").split())
+    versions = {
+        int(match.group(1))
+        for pattern in _VERSION_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    if len(versions) != 1:
+        return None
+    version = next(iter(versions))
+    return version if explicitly_requests_report_artifact(
+        text,
+        expected_version=version,
+        artifact_format=REPORT_ARTIFACT_FORMAT_DOCX,
+    ) else None
+
+
 def render_report_docx(*, markdown: str, template_bytes: bytes) -> bytes:
     """Render approved Markdown into a deterministic DOCX based on the trusted asset."""
 

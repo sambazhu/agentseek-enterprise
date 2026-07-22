@@ -10,6 +10,7 @@ from bub.types import Envelope, State
 from enterprise_wecom_digital_employee.capability_registry import CapabilityRegistry
 from enterprise_wecom_digital_employee.draft_generation import generate_draft_claims
 from enterprise_wecom_digital_employee.pack_loader import PlaybookSpec, ServiceCatalogEntry
+from enterprise_wecom_digital_employee.report_artifact import match_report_artifact_render_version
 from enterprise_wecom_digital_employee.report_delivery import match_report_delivery_version
 from enterprise_wecom_digital_employee.report_draft import (
     DraftClaimProposal,
@@ -92,6 +93,8 @@ class IndustryReportPlaybookBinding:
         if sections is not None:
             summary = self.composition.current_work_summary(state, runtime_context)
             return render_report_status(summary, sections=sections)
+        if match_report_artifact_render_version(message) is not None:
+            return None
         if explicitly_requests_report_draft(message):
             invoke_mcp = (
                 self.capability_registry.invoke_mcp

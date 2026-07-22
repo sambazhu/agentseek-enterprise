@@ -71,3 +71,46 @@ def test_claim_generation_forces_one_structured_model_call() -> None:
     callbacks = cast(list[object], config["callbacks"])
     assert metadata["work_id"] == "work_test"
     assert len(callbacks) == 1
+
+
+def test_claim_generation_replaces_cross_section_citation_for_evidence_free_gap() -> None:
+    class CrossSectionRunnable(_StructuredRunnable):
+        async def ainvoke(self, value: object, config: object = None) -> object:
+            self.calls.append((value, config))
+            return {
+                "claims": [{
+                    "section_id": "executive-summary",
+                    "statement": "模型错误地用其他章节证据补齐了缺口。",
+                    "claim_type": "fact",
+                    "evidence_ids": ["evidence_other_section"],
+                }],
+            }
+
+    runnable = CrossSectionRunnable()
+    context = DraftContextResult(
+        work_id="work_test",
+        report_outline_version=2,
+        report_brief_version=3,
+        report_title="证券行业报告",
+        evidence=(),
+        unavailable_source_ids=(),
+        sections=({
+            "section_id": "executive-summary",
+            "title": "执行摘要",
+            "question_ids": ["q1"],
+            "unresolved_question_ids": ["q1"],
+            "evidence_ids": [],
+        },),
+    )
+
+    claims = asyncio.run(generate_draft_claims(
+        context,
+        model=_StructuredModel(runnable),
+    ))
+
+    assert len(runnable.calls) == 1
+    assert len(claims) == 1
+    assert claims[0].section_id == "executive-summary"
+    assert claims[0].claim_type is ClaimType.RISK
+    assert claims[0].evidence_ids == []
+    assert claims[0].statement == "执行摘要仍存在未解决问题，相关判断需补充适用证据后确认。"

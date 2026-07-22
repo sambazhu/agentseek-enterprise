@@ -216,6 +216,23 @@ class PlaybookRegistry:
         binding = self.binding_for_state(state)
         if binding is None:
             return None
+        return await self.direct_response_for(
+            binding.playbook_ref,
+            message,
+            state,
+            runtime_context,
+            callbacks,
+        )
+
+    async def direct_response_for(
+        self,
+        playbook_ref: str,
+        message: str,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+        callbacks: Sequence[object] = (),
+    ) -> str | None:
+        binding = self.get(playbook_ref)
         response = binding.direct_response(message, state, runtime_context, callbacks)
         if inspect.isawaitable(response):
             return await cast(Awaitable[str | None], response)

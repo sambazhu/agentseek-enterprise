@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import zipfile
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from enterprise_wecom_digital_employee.report_artifact import (
@@ -9,8 +11,10 @@ from enterprise_wecom_digital_employee.report_artifact import (
     ReportArtifactError,
     artifact_id,
     explicitly_requests_report_artifact,
+    match_report_artifact_render_version,
     render_report_docx,
 )
+from enterprise_wecom_digital_employee.reports.playbook import IndustryReportPlaybookBinding
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = (
@@ -41,6 +45,25 @@ def test_explicit_docx_request_is_exact_and_fail_closed(message: str, expected: 
         expected_version=1,
         artifact_format="docx",
     ) is expected
+
+
+def test_docx_render_command_returns_exact_version_for_direct_response_bypass() -> None:
+    assert match_report_artifact_render_version("生成 ReportDraft v7 DOCX") == 7
+    assert match_report_artifact_render_version("生成可审阅初稿") is None
+    assert match_report_artifact_render_version("生成 ReportDraft v7 PDF") is None
+    assert match_report_artifact_render_version("生成 ReportDraft v7 和 v8 DOCX") is None
+
+
+def test_docx_render_command_is_never_intercepted_as_direct_draft_generation() -> None:
+    binding = IndustryReportPlaybookBinding(
+        spec=cast(Any, None),
+        composition=cast(Any, None),
+        service=cast(Any, None),
+    )
+
+    response = asyncio.run(binding.direct_response("生成 ReportDraft v7 DOCX", {}))
+
+    assert response is None
 
 
 def test_docx_render_is_deterministic_and_contains_approved_markdown(tmp_path: Path) -> None:

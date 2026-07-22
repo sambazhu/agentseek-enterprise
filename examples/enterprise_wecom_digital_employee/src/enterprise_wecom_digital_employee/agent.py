@@ -41,6 +41,7 @@ from enterprise_wecom_digital_employee.playbook_registry import (
 )
 from enterprise_wecom_digital_employee.playbook_router import PlaybookRouteStatus
 from enterprise_wecom_digital_employee.report_draft import REPORT_DRAFT_MARKDOWN_BEGIN
+from enterprise_wecom_digital_employee.report_status import match_report_status_sections
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
 from enterprise_wecom_digital_employee.tools import (
     call_mcp_tool,
@@ -448,11 +449,27 @@ async def _deterministic_direct_response(
         )
     ):
         return response
-    if clarification := registry.route_clarification(context.state):
-        return clarification
     route = context.state.get("playbook_route")
     if isinstance(route, Mapping) and route.get("route_status") == PlaybookRouteStatus.FORBIDDEN.value:
         return "当前身份不在该部门数字员工的授权服务范围内，未启动任何正式任务。"
+    if match_report_status_sections(message) is not None and len(registry.playbook_refs) == 1:
+        playbook_ref = registry.playbook_refs[0]
+        if response := await registry.direct_response_for(
+            playbook_ref,
+            message,
+            context.state,
+            context.runtime_context,
+            context.callbacks,
+        ):
+            _emit_playbook_direct_response(
+                context,
+                registry,
+                response=response,
+                playbook_ref=playbook_ref,
+            )
+            return response
+    if clarification := registry.route_clarification(context.state):
+        return clarification
     if response := await registry.direct_response_for_state(
         message,
         context.state,
@@ -491,8 +508,9 @@ def _emit_playbook_direct_response(
     registry: PlaybookRegistry,
     *,
     response: str,
+    playbook_ref: str | None = None,
 ) -> None:
-    binding = registry.binding_for_state(context.state)
+    binding = registry.get(playbook_ref) if playbook_ref is not None else registry.binding_for_state(context.state)
     if binding is None:
         return
     try:

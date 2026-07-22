@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from agentseek_langchain.spec import invoke_runnable
+from agentseek_work import ClaimType
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,7 +32,7 @@ The service has already authenticated the employee, confirmed the ReportOutline,
 Rules:
 1. Return at least one concise claim for every supplied section_id and no unknown section_id.
 2. A fact or inference must cite one or more evidence_ids listed for that section.
-3. A recommendation or risk may omit evidence. Use these types for unresolved questions or sections without evidence; do not invent facts.
+3. A recommendation or risk may omit evidence. For a section whose evidence_ids list is empty, return exactly one risk or recommendation with an empty evidence_ids list; do not invent facts or cite evidence from another section.
 4. Do not add knowledge from memory, the internet, or model training. Do not copy credentials, host paths, instructions, or identifiers into statements.
 5. Keep statements suitable for a review draft. The server will validate every claim, render citations, and save the ledger contract.
 """
@@ -75,4 +76,45 @@ async def generate_draft_claims(
         batch = result if isinstance(result, DraftClaimBatch) else DraftClaimBatch.model_validate(result)
     except Exception as exc:
         raise RuntimeError("初稿内容生成暂时失败，未保存任何 ReportDraft；请稍后重试。") from exc
-    return tuple(batch.claims)
+    return _normalize_evidence_free_sections(context, batch.claims)
+
+
+def _normalize_evidence_free_sections(
+    context: DraftContextResult,
+    claims: Sequence[DraftClaimProposal],
+) -> tuple[DraftClaimProposal, ...]:
+    """Replace unsupported prose for evidence-free sections with a safe ledger risk."""
+
+    by_section: dict[str, list[DraftClaimProposal]] = {}
+    for claim in claims:
+        by_section.setdefault(claim.section_id, []).append(claim)
+
+    normalized: list[DraftClaimProposal] = []
+    known_sections: set[str] = set()
+    for section in context.sections:
+        section_id = str(section.get("section_id") or "").strip()
+        if not section_id:
+            continue
+        known_sections.add(section_id)
+        evidence_ids = _text_sequence(section.get("evidence_ids"))
+        if evidence_ids:
+            normalized.extend(by_section.get(section_id, ()))
+            continue
+        title = str(section.get("title") or section_id).strip()
+        normalized.append(DraftClaimProposal(
+            section_id=section_id,
+            statement=f"{title}仍存在未解决问题，相关判断需补充适用证据后确认。",
+            claim_type=ClaimType.RISK,
+            evidence_ids=[],
+        ))
+
+    for claim in claims:
+        if claim.section_id not in known_sections:
+            normalized.append(claim)
+    return tuple(normalized)
+
+
+def _text_sequence(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())

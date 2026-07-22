@@ -10,6 +10,7 @@ from bub.types import Envelope, State
 from {{ cookiecutter.project_slug }}.capability_registry import CapabilityRegistry
 from {{ cookiecutter.project_slug }}.draft_generation import generate_draft_claims
 from {{ cookiecutter.project_slug }}.pack_loader import PlaybookSpec, ServiceCatalogEntry
+from {{ cookiecutter.project_slug }}.report_artifact import match_report_artifact_render_version
 from {{ cookiecutter.project_slug }}.report_delivery import match_report_delivery_version
 from {{ cookiecutter.project_slug }}.report_draft import (
     DraftClaimProposal,
@@ -92,6 +93,8 @@ class IndustryReportPlaybookBinding:
         if sections is not None:
             summary = self.composition.current_work_summary(state, runtime_context)
             return render_report_status(summary, sections=sections)
+        if match_report_artifact_render_version(message) is not None:
+            return None
         if explicitly_requests_report_draft(message):
             invoke_mcp = (
                 self.capability_registry.invoke_mcp

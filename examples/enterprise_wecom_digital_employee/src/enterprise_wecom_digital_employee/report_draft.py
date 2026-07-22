@@ -64,6 +64,7 @@ _DRAFT_REQUEST_TARGET_RE = re.compile(
     r"(?:可审阅)?(?:报告)?(?:初稿|草稿)|(?:report\s*draft|markdown\s*draft)",
     re.IGNORECASE,
 )
+_DRAFT_RENDER_FORMAT_RE = re.compile(r"\b(?:docx|word|pdf)\b", re.IGNORECASE)
 _NEGATED_DRAFT_REQUEST_RE = re.compile(
     r"(?:不|未|尚未|暂不|不要|不能|无需|别)\s*.{0,8}"
     r"(?:生成|编写|起草|撰写|准备|制作).{0,12}(?:初稿|草稿)"
@@ -126,6 +127,7 @@ def explicitly_requests_report_draft(message: str) -> bool:
         text
         and _DRAFT_REQUEST_ACTION_RE.search(text)
         and _DRAFT_REQUEST_TARGET_RE.search(text)
+        and not _DRAFT_RENDER_FORMAT_RE.search(text)
         and not _NEGATED_DRAFT_REQUEST_RE.search(text)
         and not _DRAFT_REQUEST_QUESTION_RE.search(text)
         and not _DRAFT_STATUS_STATEMENT_RE.search(text)

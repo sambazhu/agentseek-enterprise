@@ -111,6 +111,9 @@ class _RacingArtifactRepository:
         ("可以生成初稿吗？", False),
         ("ReportDraft v1 已生成", False),
         ("初稿状态如何", False),
+        ("生成 ReportDraft v7 DOCX", False),
+        ("请导出 ReportDraft v7 Word", False),
+        ("生成 ReportDraft v7 PDF", False),
     ],
 )
 def test_explicit_draft_request_parser(message: str, expected: bool) -> None:

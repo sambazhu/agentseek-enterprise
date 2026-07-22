@@ -197,18 +197,25 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
             digital_employee_id="industry-report",
             profile_version="1.12.0",
         )
+        playbook_refs = ("securities-industry-report@1",)
 
         @staticmethod
         def route_clarification(_state):
             return None
 
         @staticmethod
-        async def direct_response_for_state(message, _state, _runtime_context, _callbacks):
+        async def direct_response_for(reference, message, _state, _runtime_context, _callbacks):
+            assert reference == "securities-industry-report@1"
             assert message == "查看当前 ReportArtifact"
             return "当前 ReportArtifact：artifact_id=artifact_test。"
 
         @staticmethod
         def binding_for_state(_state):
+            return binding
+
+        @staticmethod
+        def get(reference):
+            assert reference == "securities-industry-report@1"
             return binding
 
     monkeypatch.setattr(
@@ -252,6 +259,62 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
             },
         )
     ]
+
+
+def test_status_direct_response_precedes_cold_start_no_match_clarification(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    binding = SimpleNamespace(playbook_ref="securities-industry-report@1")
+
+    class FakeRegistry:
+        profile = SimpleNamespace(
+            digital_employee_id="industry-report",
+            profile_version="1.12.0",
+        )
+        playbook_refs = ("securities-industry-report@1",)
+
+        @staticmethod
+        def route_clarification(_state):
+            return "尚未唯一匹配已上线服务。"
+
+        @staticmethod
+        async def direct_response_for(reference, message, _state, _runtime_context, _callbacks):
+            assert reference == binding.playbook_ref
+            assert message == "查看当前报告任务状态"
+            return "**当前报告任务**\n\n- 进度：报告已交付"
+
+        @staticmethod
+        def get(reference):
+            assert reference == binding.playbook_ref
+            return binding
+
+    monkeypatch.setattr(
+        "agentseek_enterprise.observability.emit_enterprise_event",
+        lambda *_args, **_kwargs: None,
+    )
+    context = InvocationContext(
+        prompt="查看当前报告任务状态",
+        session_id="wecom:cold-start",
+        state={
+            "latest_user_message": "查看当前报告任务状态",
+            "playbook_route": {
+                "route_status": "clarification_required",
+                "reason_code": "no_match",
+                "playbook_ref": "",
+                "candidate_playbook_refs": [binding.playbook_ref],
+            },
+        },
+        workspace=tmp_path,
+        agents_md=None,
+    )
+
+    response = asyncio.run(agent_module._deterministic_direct_response(
+        context,
+        cast(Any, FakeRegistry()),
+    ))
+
+    assert response == "**当前报告任务**\n\n- 进度：报告已交付"
 
 
 def test_spec_carries_route_from_runtime_state_into_routed_runnable_input(
