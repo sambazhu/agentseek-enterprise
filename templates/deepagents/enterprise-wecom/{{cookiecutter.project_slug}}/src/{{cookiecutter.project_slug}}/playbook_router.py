@@ -57,7 +57,21 @@ _CONTINUATION_COMMANDS = frozenset({
     "任务进度",
 })
 _EXPLICIT_PREFIXES = ("使用", "选择", "进入", "启动")
-_FORMAL_REQUEST_TERMS = ("正式", "报告", "任务", "审批", "发布", "交付")
+_FORMAL_REQUEST_TERMS = ("正式", "报告", "任务", "提纲", "初稿", "审批", "发布", "交付")
+_ACTIVE_ACTION_TERMS = (
+    "报告大纲",
+    "构建大纲",
+    "可审阅初稿",
+    "报告初稿",
+    "内部知识检索",
+    "内部研究",
+    "研究缺口",
+)
+_ACTIVE_ACTION_VERBS = (
+    "生成", "构建", "创建", "继续", "开始", "推进", "确认", "提交", "批准", "发布", "交付",
+)
+_AFFIRMATIVE_PREFIX_RE = re.compile(r"^(?:是|好的?|可以|同意|继续|请继续)(?:[,，。!！\s]|$)")
+_FOLLOW_UP_PROMPT_TERMS = ("是否", "要不要", "如需", "请回复", "是否立即", "可以继续")
 _TRAILING_PUNCTUATION_RE = re.compile(r"[。.!！?？]+$")
 
 
@@ -67,6 +81,7 @@ def route_playbook(
     playbooks: Sequence[PlaybookSpec],
     active_playbook_refs: Sequence[str] = (),
     requester_allowed: bool = True,
+    previous_assistant_message: str = "",
 ) -> PlaybookRouteResult:
     """Route one employee message without a model or probabilistic classifier."""
 
@@ -102,7 +117,11 @@ def route_playbook(
         return _candidate_result(explicit, reason=PlaybookRouteReason.EXPLICIT_SERVICE)
 
     active = tuple(reference for reference in active_playbook_refs if reference in {item.ref for item in ordered})
-    if command in _CONTINUATION_COMMANDS and active:
+    if active and (
+        command in _CONTINUATION_COMMANDS
+        or _has_active_action(command)
+        or _is_affirmative_follow_up(command, previous_assistant_message)
+    ):
         return _candidate_result(active, reason=PlaybookRouteReason.ACTIVE_WORK)
 
     matched = tuple(
@@ -183,3 +202,16 @@ def _visible_normalized_text(value: str) -> str:
 def _explicitly_selects(command: str, alias: str) -> bool:
     normalized_alias = _normalized_term(alias)
     return any(f"{prefix}{normalized_alias}" in command for prefix in _EXPLICIT_PREFIXES)
+
+
+def _is_affirmative_follow_up(command: str, previous_assistant_message: str) -> bool:
+    if not _AFFIRMATIVE_PREFIX_RE.match(command):
+        return False
+    previous = _visible_normalized_text(previous_assistant_message)
+    return bool(previous) and any(term in previous for term in _FOLLOW_UP_PROMPT_TERMS)
+
+
+def _has_active_action(command: str) -> bool:
+    return any(term in command for term in _ACTIVE_ACTION_TERMS) and any(
+        verb in command for verb in _ACTIVE_ACTION_VERBS
+    )

@@ -1430,6 +1430,13 @@ class IndustryReportWorkComposition:
                 "contract_version": brief.contract_version,
                 "status": brief.status.value,
             }
+            try:
+                report_brief = ReportBrief.from_contract(brief)
+            except (TypeError, ValueError):
+                pass
+            else:
+                summary["report_title"] = report_brief.title
+                summary["coverage_period"] = report_brief.coverage_period
         gap_contract = self.repository.get_current_work_contract(
             tenant_id=item.tenant_id,
             work_id=item.work_id,

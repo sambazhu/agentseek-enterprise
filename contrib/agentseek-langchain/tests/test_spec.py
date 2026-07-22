@@ -77,6 +77,32 @@ def test_runnable_spec_direct_response_bypasses_runnable_for_invoke_and_stream(t
     assert runnable.calls == []
 
 
+def test_runnable_spec_awaits_async_direct_response(tmp_path: Path) -> None:
+    runnable = _MessagesRunnable()
+    base = messages_spec(runnable)
+
+    async def direct_response(_context: InvocationContext) -> str:
+        await asyncio.sleep(0)
+        return "async-direct"
+
+    spec = RunnableSpec(
+        runnable=base.runnable,
+        build_input=base.build_input,
+        parse_output=base.parse_output,
+        direct_response=direct_response,
+    )
+    context = InvocationContext(
+        prompt="generate",
+        session_id="session-1",
+        state={},
+        workspace=tmp_path,
+        agents_md=None,
+    )
+
+    assert asyncio.run(spec.invoke(context)) == "async-direct"
+    assert runnable.calls == []
+
+
 def test_messages_spec_uses_ag_ui_messages_and_application_state(tmp_path: Path) -> None:
     runnable = _MessagesRunnable()
     spec = messages_spec(runnable, include_agents_md=True)

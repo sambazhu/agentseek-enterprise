@@ -264,6 +264,51 @@ def test_report_approval_claim_allows_matching_approve_tool_result() -> None:
     ) == output
 
 
+def test_report_approval_submission_accepts_provisional_contract_state() -> None:
+    output = "ReportDraft v6 已提交审批，当前待审批。"
+    result = _result("提交 ReportDraft v6 审批", output)
+    result["messages"] = [
+        HumanMessage(content="提交 ReportDraft v6 审批"),
+        AIMessage(content="", tool_calls=[{
+            "name": "request_report_approval",
+            "args": {"expected_version": 6},
+            "id": "call_request_approval",
+            "type": "tool_call",
+        }]),
+        ToolMessage(
+            content=(
+                "ReportApproval contract_v6，status=provisional，bound_report_draft_v6。"
+            ),
+            name="request_report_approval",
+            tool_call_id="call_request_approval",
+        ),
+        AIMessage(content=output),
+    ]
+
+    assert enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    ) == output
+
+
+def test_internal_delivery_control_prose_is_blocked_without_marker() -> None:
+    output = (
+        "这是受信的 WeCom 模板卡片交付指令。"
+        "请原样返回上一行标记并立即停止；不得复述、展示或猜测下载链接。"
+    )
+    result = _result("交付 ReportArtifact v6 给我", output)
+
+    guarded = enforce_m2_output_guard(
+        result,
+        output,
+        event_sink=lambda *_args, **_kwargs: None,
+    )
+
+    assert "内部交付指令已被安全拦截" in guarded
+    assert "受信的 WeCom" not in guarded
+
+
 def test_stale_or_fake_report_approval_claim_is_blocked_and_digest_only() -> None:
     events: list[tuple[str, dict[str, object]]] = []
     output = "ReportDraft v999 已批准。"

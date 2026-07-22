@@ -203,7 +203,7 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
             return None
 
         @staticmethod
-        def direct_response_for_state(message, _state, _runtime_context):
+        async def direct_response_for_state(message, _state, _runtime_context, _callbacks):
             assert message == "查看当前 ReportArtifact"
             return "当前 ReportArtifact：artifact_id=artifact_test。"
 
@@ -231,9 +231,11 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
         agents_md=None,
     )
 
-    response = agent_module._deterministic_direct_response(
-        context,
-        cast(Any, FakeRegistry()),
+    response = asyncio.run(
+        agent_module._deterministic_direct_response(
+            context,
+            cast(Any, FakeRegistry()),
+        )
     )
 
     assert response == "当前 ReportArtifact：artifact_id=artifact_test。"

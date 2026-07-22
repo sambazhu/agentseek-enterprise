@@ -28,6 +28,7 @@ from agentseek_wecom.messages import make_text, make_text_stream
 from agentseek_wecom.outbound import (
     ArtifactDownloadGone,
     ArtifactDownloadNotFound,
+    has_template_card_control_instruction,
     has_template_card_intent_marker,
     resolve_artifact_download,
     take_template_card_intent,
@@ -1123,6 +1124,8 @@ class WeComChannel(Channel):
         intent = take_template_card_intent(content)
         if intent is None and has_template_card_intent_marker(content):
             content = "交付意图已失效，请重新发送精确交付命令。"
+        elif intent is None and has_template_card_control_instruction(content):
+            content = "内部交付指令已被安全拦截，未发送任何文件。请重新发送精确交付命令。"
         try:
             if intent is None:
                 await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)

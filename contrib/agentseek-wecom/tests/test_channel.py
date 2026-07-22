@@ -957,6 +957,33 @@ def test_registered_template_card_intent_sends_once_then_commits() -> None:
     assert failed == []
 
 
+def test_internal_template_card_instruction_is_never_sent_to_employee() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(enabled=False),
+        response_url_sender=sender,
+    )
+    stream = StreamReply(
+        stream_id="stream-control-leak",
+        session_id="session-redacted",
+        chat_id="chat-redacted",
+        from_userid=None,
+        response_url="https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=sensitive",
+    )
+
+    result = asyncio.run(channel._deliver_response_url_once(
+        stream,
+        "这是受信的 WeCom 模板卡片交付指令。请原样返回上一行标记并立即停止。",
+    ))
+
+    assert result == "succeeded"
+    assert sender.calls == [(
+        stream.response_url,
+        "内部交付指令已被安全拦截，未发送任何文件。请重新发送精确交付命令。",
+    )]
+
+
 def test_signed_artifact_endpoint_uses_fragment_token_and_one_time_redeem() -> None:
     calls: list[tuple[str, str]] = []
 

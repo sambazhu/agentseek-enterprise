@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -61,6 +62,16 @@ _NESTED_OA_ACCOUNT_PATHS = (
     ("user", "userid"),
     ("user", "user_id"),
 )
+_INTERNAL_CONTROL_MARKER_RE = re.compile(
+    r"\[\[agentseek-[a-z0-9-]+:[A-Za-z0-9_-]{16,256}\]\]",
+    re.IGNORECASE,
+)
+_INTERNAL_CONTROL_PHRASES = (
+    "这是受信的 WeCom 模板卡片交付指令",
+    "请原样返回上一行标记并立即停止",
+    "不得复述、展示或猜测下载链接",
+)
+_SAFE_CONTROL_MEMORY_SUMMARY = "受信的通道动作已由服务端处理。"
 
 
 class StaffIdentityProvider(Protocol):
@@ -147,7 +158,7 @@ class EnterprisePlugin:
             return
 
         user_content = content_of(message).strip()
-        assistant_content = str(model_output or "").strip()
+        assistant_content = _memory_safe_assistant_content(model_output)
         if not user_content and not assistant_content:
             return
         started_at = event_timer()
@@ -367,6 +378,15 @@ class EnterprisePlugin:
             logger.warning("Short-term memory store initialization failed: {}", exc)
             self._memory_store = None
         return self._memory_store
+
+
+def _memory_safe_assistant_content(model_output: object) -> str:
+    content = str(model_output or "").strip()
+    if _INTERNAL_CONTROL_MARKER_RE.search(content) or any(
+        phrase in content for phrase in _INTERNAL_CONTROL_PHRASES
+    ):
+        return _SAFE_CONTROL_MEMORY_SUMMARY
+    return content
 
 
 def main(framework: object | None = None) -> EnterprisePlugin:

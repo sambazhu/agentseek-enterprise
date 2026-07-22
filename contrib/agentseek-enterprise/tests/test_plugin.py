@@ -226,6 +226,37 @@ def test_short_term_memory_persists_recent_messages(monkeypatch: Any, tmp_path: 
     }
 
 
+def test_short_term_memory_redacts_internal_channel_control_output(monkeypatch: Any, tmp_path: Any) -> None:
+    memory_path = tmp_path / "short-term-memory.sqlite3"
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_IDENTITY_ENABLED", "false")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("AGENTSEEK_ENTERPRISE_MEMORY_SQLITE_PATH", str(memory_path))
+
+    plugin = EnterprisePlugin()
+    plugin.save_state(
+        "wecom:delivery",
+        {},
+        {"content": "交付 ReportArtifact v6 给我"},
+        "[[agentseek-wecom-template-card:abcdefghijklmnopqrstuvwxyzABCDEF123456]]",
+    )
+
+    state = _load_state(plugin, {"content": "刚才发生了什么？"}, "wecom:delivery")
+    assistant = state[SHORT_TERM_MEMORY_STATE_KEY]["recent_messages"][1]["content"]
+    assert assistant == "受信的通道动作已由服务端处理。"
+    assert "template-card" not in assistant
+
+    plugin.save_state(
+        "wecom:legacy-delivery",
+        {},
+        {"content": "交付 ReportArtifact v6 给我"},
+        "这是受信的 WeCom 模板卡片交付指令。请原样返回上一行标记并立即停止。",
+    )
+    legacy = _load_state(plugin, {"content": "刚才发生了什么？"}, "wecom:legacy-delivery")
+    legacy_assistant = legacy[SHORT_TERM_MEMORY_STATE_KEY]["recent_messages"][1]["content"]
+    assert legacy_assistant == "受信的通道动作已由服务端处理。"
+    assert "WeCom 模板卡片" not in legacy_assistant
+
+
 def test_load_state_identity_timeout_does_not_block_event_loop(monkeypatch: Any) -> None:
     release = threading.Event()
     provider_started = threading.Event()

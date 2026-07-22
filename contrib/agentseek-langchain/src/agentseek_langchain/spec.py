@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +24,8 @@ InputBuilder = Callable[[InvocationContext], object]
 OutputParser = Callable[[object], str]
 ConfigBuilder = Callable[[InvocationContext], Mapping[str, object] | None]
 StreamBuilder = Callable[[object, object, Mapping[str, object] | None, InvocationContext], AsyncIterator[str]]
-DirectResponder = Callable[[InvocationContext], str | None]
+DirectResponse = str | None
+DirectResponder = Callable[[InvocationContext], DirectResponse | Awaitable[DirectResponse]]
 
 
 @runtime_checkable
@@ -49,6 +50,8 @@ class RunnableSpec:
     async def invoke(self, context: InvocationContext) -> str:
         if self.direct_response is not None:
             response = self.direct_response(context)
+            if inspect.isawaitable(response):
+                response = await cast(Awaitable[DirectResponse], response)
             if response is not None:
                 return response
         runnable_input, config = self._prepare(context)
@@ -58,6 +61,8 @@ class RunnableSpec:
     async def stream(self, context: InvocationContext) -> AsyncIterator[str]:
         if self.direct_response is not None:
             response = self.direct_response(context)
+            if inspect.isawaitable(response):
+                response = await cast(Awaitable[DirectResponse], response)
             if response is not None:
                 yield response
                 return

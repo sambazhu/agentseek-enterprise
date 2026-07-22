@@ -36,9 +36,9 @@ def test_status_intent_does_not_capture_actions_or_unauthenticated_envelopes(mes
     assert match_report_status_sections(message) is None
 
 
-def test_full_report_status_selects_all_ledger_sections() -> None:
-    assert match_report_status_sections("请查看一下当前报告任务状态") == tuple(
-        ReportStatusSection
+def test_full_report_status_selects_business_summary() -> None:
+    assert match_report_status_sections("请查看一下当前报告任务状态") == (
+        ReportStatusSection.SUMMARY,
     )
 
 
@@ -142,6 +142,47 @@ def test_status_renderer_returns_selected_ledger_facts_without_draft_body() -> N
     assert "/private/secret.docx" not in rendered
     assert "secret-token" not in rendered
     assert "ReportDraft" not in rendered
+
+
+def test_business_summary_uses_readable_sections_and_one_next_action() -> None:
+    summary = {
+        "work_id": "work_internal_only",
+        "status": "delivered",
+        "current_phase": "delivery",
+        "playbook_id": "securities-industry-report",
+        "playbook_version": "1",
+        "report_title": "证券行业数字化转型报告",
+        "coverage_period": "2026年全年",
+        "report_brief": {
+            "contract_version": 7,
+            "status": "confirmed",
+        },
+        "report_outline": {"contract_version": 5, "status": "confirmed"},
+        "report_draft": {"contract_version": 6, "status": "confirmed"},
+        "report_approval": {
+            "status": "approved",
+            "report_draft_version": 6,
+            "current": True,
+        },
+        "report_artifacts": [{"report_draft_version": 6, "current": True}],
+        "report_publications": [{"report_draft_version": 6, "current": True}],
+        "report_deliveries": [{
+            "delivery_version": 10,
+            "report_draft_version": 6,
+            "current": True,
+            "grant_state": "consumed",
+        }],
+    }
+
+    rendered = render_report_status(summary, sections=(ReportStatusSection.SUMMARY,))
+
+    assert "**当前报告任务**\n- 主题：证券行业数字化转型报告" in rendered
+    assert "\n\n**已完成**\n" in rendered
+    assert "\n\n**下一步**\n" in rendered
+    assert "交付 ReportArtifact v6 给我" in rendered
+    assert "work_internal_only" not in rendered
+    assert "ReportApproval" not in rendered
+    assert "claim" not in rendered
 
 
 def test_status_renderer_labels_all_stale_records_as_history() -> None:

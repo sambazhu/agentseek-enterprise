@@ -4,9 +4,17 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from agentseek_wecom.outbound import take_template_card_intent
 from agentseek_work import WorkConflictError
-from enterprise_wecom_digital_employee.report_delivery import explicitly_requests_report_delivery
-from enterprise_wecom_digital_employee.work_tools import _delivery_card_description, work_tools
+from enterprise_wecom_digital_employee.report_delivery import (
+    explicitly_requests_report_delivery,
+    match_report_delivery_version,
+)
+from enterprise_wecom_digital_employee.work_tools import (
+    _delivery_card_description,
+    deliver_report_artifact_action,
+    work_tools,
+)
 from langchain_core.tools import StructuredTool
 
 
@@ -32,6 +40,11 @@ from langchain_core.tools import StructuredTool
 )
 def test_delivery_command_is_exact_and_wecom_envelope_aware(message: str, expected: bool) -> None:
     assert explicitly_requests_report_delivery(message, expected_version=2) is expected
+
+
+def test_delivery_command_returns_exact_version_for_deterministic_dispatch() -> None:
+    assert match_report_delivery_version("交付 ReportArtifact v12 给我") == 12
+    assert match_report_delivery_version("请交付 ReportArtifact v12 给我") is None
 
 
 class _ArtifactGuidanceComposition:
@@ -102,3 +115,32 @@ def test_delivery_card_explains_one_time_grant_and_reissue() -> None:
     assert "本卡下载授权为一次性" in description
     assert "交付 ReportArtifact v4 给我" in description
     assert "获取新卡片" in description
+
+
+def test_delivery_action_returns_only_opaque_marker_and_commits_after_card_send() -> None:
+    committed: list[str] = []
+    prepared = SimpleNamespace(
+        already_delivered=False,
+        filename="report-v4.docx",
+        download_url="https://reports.example.test/download#token",
+        record=SimpleNamespace(),
+    )
+    composition = SimpleNamespace(
+        prepare_report_delivery=lambda *_args, **_kwargs: prepared,
+        commit_report_delivery=lambda value: committed.append(value.filename),
+    )
+
+    marker = deliver_report_artifact_action(
+        composition=cast(Any, composition),
+        state={},
+        runtime_context=None,
+        expected_version=4,
+        latest_user_message="交付 ReportArtifact v4 给我",
+    )
+
+    assert marker.startswith("[[agentseek-wecom-template-card:")
+    assert "受信" not in marker
+    intent = take_template_card_intent(marker)
+    assert intent is not None
+    intent.on_succeeded()
+    assert committed == ["report-v4.docx"]

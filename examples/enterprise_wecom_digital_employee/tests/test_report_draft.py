@@ -60,7 +60,10 @@ from enterprise_wecom_digital_employee.work_composition import (
     IndustryReportWorkComposition,
     WorkCompositionError,
 )
-from enterprise_wecom_digital_employee.work_tools import _build_current_report_outline
+from enterprise_wecom_digital_employee.work_tools import (
+    _build_current_report_outline,
+    generate_report_draft_action,
+)
 from sqlalchemy import create_engine
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -268,6 +271,51 @@ def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> N
     )
     assert len(claims) == len(outline.sections)
     assert all(claim.verification_status.value == "unverified" for claim in claims)
+
+
+def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(tmp_path: Path) -> None:
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    generated: list[int] = []
+
+    async def invoke(
+        _server: str,
+        _tool_name: str,
+        _arguments: dict[str, Any] | None,
+        _confirmed: bool,
+    ) -> str:
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]}, ensure_ascii=False)
+
+    async def claim_generator(context, _callbacks):
+        generated.append(context.report_outline_version)
+        return _proposals(outline, context.evidence[0].evidence_id)
+
+    first = _run(generate_report_draft_action(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        invoke_mcp=invoke,
+        claim_generator=claim_generator,
+    ))
+    replay = _run(generate_report_draft_action(
+        composition=composition,
+        state=state,
+        runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        invoke_mcp=invoke,
+        claim_generator=claim_generator,
+    ))
+
+    assert first == replay
+    assert "ReportDraft v1" in first
+    assert "[REPORT_DRAFT_MARKDOWN]" in first
+    assert generated == [1]
+    contracts = composition.repository.list_work_contracts(
+        tenant_id="tenant-test",
+        work_id="work_draft_001",
+        contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+    )
+    assert len(contracts) == 1
     summary = composition.current_work_summary(state)
     assert summary is not None
     assert summary["report_draft"] == {

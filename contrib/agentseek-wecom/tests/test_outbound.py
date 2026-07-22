@@ -6,6 +6,7 @@ import pytest
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.outbound import (
     UnsupportedWeComOutbound,
+    has_template_card_control_instruction,
     outbound_capabilities,
     require_outbound_message_type,
     validate_artifact_download_base_url,
@@ -33,6 +34,13 @@ def test_long_connection_capabilities_are_documented_but_not_implemented() -> No
     assert "file" in capabilities.reply_message_types
     with pytest.raises(UnsupportedWeComOutbound, match="not implemented"):
         require_outbound_message_type("long_connection", "file")
+
+
+def test_internal_template_card_instruction_is_detected_without_marker() -> None:
+    assert has_template_card_control_instruction(
+        "这是受信的 WeCom 模板卡片交付指令。请原样返回上一行标记并立即停止。"
+    )
+    assert not has_template_card_control_instruction("报告文件已准备好，请按卡片提示下载。")
 
 
 def test_settings_reject_unimplemented_long_connection_transport() -> None:

@@ -117,6 +117,47 @@ def test_one_active_work_accepts_continuation_but_multiple_require_clarification
     assert set(ambiguous.candidate_playbook_refs) == {report.ref, summary.ref}
 
 
+def test_active_work_accepts_draft_action_and_contextual_affirmative_follow_up() -> None:
+    report, summary = _playbooks()
+
+    draft = route_playbook(
+        "生成可审阅初稿",
+        playbooks=(report, summary),
+        active_playbook_refs=(report.ref,),
+    )
+    affirmative = route_playbook(
+        "是，请构建报告大纲",
+        playbooks=(report, summary),
+        active_playbook_refs=(report.ref,),
+        previous_assistant_message="内部研究已完成，是否立即构建报告大纲？",
+    )
+    bare_without_context = route_playbook(
+        "好的",
+        playbooks=(report, summary),
+        active_playbook_refs=(report.ref,),
+    )
+    bare_with_context = route_playbook(
+        "好的",
+        playbooks=(report, summary),
+        active_playbook_refs=(report.ref,),
+        previous_assistant_message="如需继续，请回复是否开始构建提纲。",
+    )
+    conceptual = route_playbook(
+        "报告大纲是什么？",
+        playbooks=(report, summary),
+        active_playbook_refs=(report.ref,),
+    )
+
+    assert draft.selected_playbook_ref == report.ref
+    assert draft.reason_code is PlaybookRouteReason.ACTIVE_WORK
+    assert affirmative.selected_playbook_ref == report.ref
+    assert affirmative.reason_code is PlaybookRouteReason.ACTIVE_WORK
+    assert bare_without_context.status is PlaybookRouteStatus.OUT_OF_SCOPE
+    assert bare_with_context.selected_playbook_ref == report.ref
+    assert conceptual.status is PlaybookRouteStatus.CLARIFICATION_REQUIRED
+    assert conceptual.selected_playbook_ref is None
+
+
 def test_ambiguous_deterministic_match_never_uses_priority_as_authorization() -> None:
     report, summary = _playbooks()
     overlapping = replace(

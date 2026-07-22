@@ -44,6 +44,11 @@ class TemplateCardIntent:
 
 
 _INTENT_MARKER_RE = re.compile(r"\[\[agentseek-wecom-template-card:([A-Za-z0-9_-]{32,128})\]\]")
+_TEMPLATE_CARD_CONTROL_PHRASES = (
+    "这是受信的 WeCom 模板卡片交付指令",
+    "请原样返回上一行标记并立即停止",
+    "不得复述、展示或猜测下载链接",
+)
 _INTENT_LOCK = threading.RLock()
 _INTENTS: dict[str, TemplateCardIntent] = {}
 _DOWNLOAD_RESOLVER: Callable[[str, str], ArtifactDownload] | None = None
@@ -156,6 +161,12 @@ def take_template_card_intent(content: str) -> TemplateCardIntent | None:
 
 def has_template_card_intent_marker(content: str) -> bool:
     return _INTENT_MARKER_RE.search(content) is not None
+
+
+def has_template_card_control_instruction(content: str) -> bool:
+    """Detect internal card-control prose that must never reach an employee."""
+
+    return any(phrase in content for phrase in _TEMPLATE_CARD_CONTROL_PHRASES)
 
 
 def register_artifact_download_resolver(

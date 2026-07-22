@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping, Sequence
+import inspect
+from collections.abc import Awaitable, Mapping, Sequence
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from agentseek_enterprise.observability import emit_enterprise_event
 from bub.envelope import content_of
@@ -62,7 +63,8 @@ class PlaybookBinding(Protocol):
         message: str,
         state: Mapping[str, object],
         runtime_context: object | None = None,
-    ) -> str | None: ...
+        callbacks: Sequence[object] = (),
+    ) -> str | None | Awaitable[str | None]: ...
 
 
 class PlaybookRegistry:
@@ -133,6 +135,7 @@ class PlaybookRegistry:
             playbooks=tuple(binding.spec for binding in self._bindings.values()),
             active_playbook_refs=active_refs,
             requester_allowed=requester_allowed,
+            previous_assistant_message=_latest_assistant_message(state),
         )
         route_state = result.to_state()
         route_state.update({
@@ -203,16 +206,20 @@ class PlaybookRegistry:
     def guard_for(self, playbook_ref: str, result: object, output: str) -> str:
         return self.get(playbook_ref).guard_output(result, output)
 
-    def direct_response_for_state(
+    async def direct_response_for_state(
         self,
         message: str,
         state: Mapping[str, object],
         runtime_context: object | None = None,
+        callbacks: Sequence[object] = (),
     ) -> str | None:
         binding = self.binding_for_state(state)
         if binding is None:
             return None
-        return binding.direct_response(message, state, runtime_context)
+        response = binding.direct_response(message, state, runtime_context, callbacks)
+        if inspect.isawaitable(response):
+            return await cast(Awaitable[str | None], response)
+        return response
 
 
 def load_playbook_factory(entrypoint: str, *, allowed_package: str) -> Any:
@@ -272,3 +279,19 @@ def _route_from_state(state: Mapping[str, object]) -> PlaybookRouteResult | None
         )
     except (TypeError, ValueError):
         return None
+
+
+def _latest_assistant_message(state: Mapping[str, object]) -> str:
+    memory = state.get("short_term_memory")
+    if not isinstance(memory, Mapping):
+        return ""
+    messages = memory.get("recent_messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, Mapping):
+            continue
+        if str(message.get("role") or "").strip().lower() != "assistant":
+            continue
+        return str(message.get("content") or "").strip()
+    return ""

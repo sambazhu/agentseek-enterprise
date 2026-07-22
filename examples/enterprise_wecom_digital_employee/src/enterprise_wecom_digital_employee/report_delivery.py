@@ -19,8 +19,15 @@ _DELIVERY_REQUEST_RE = re.compile(
 def explicitly_requests_report_delivery(message: str, *, expected_version: int) -> bool:
     """Accept only an exact self-delivery action for one Artifact version."""
 
+    version = match_report_delivery_version(message)
+    return version is not None and expected_version > 0 and version == expected_version
+
+
+def match_report_delivery_version(message: str) -> int | None:
+    """Return the exact requested self-delivery Artifact version, if any."""
+
     match = _DELIVERY_REQUEST_RE.fullmatch(authenticated_user_command_text(message))
-    return bool(match and expected_version > 0 and int(match.group(1)) == expected_version)
+    return int(match.group(1)) if match is not None else None
 
 
 def new_grant_token() -> str:

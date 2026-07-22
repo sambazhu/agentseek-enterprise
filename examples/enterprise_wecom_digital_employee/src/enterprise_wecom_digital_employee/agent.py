@@ -40,6 +40,7 @@ from enterprise_wecom_digital_employee.playbook_registry import (
     PlaybookRegistry,
 )
 from enterprise_wecom_digital_employee.playbook_router import PlaybookRouteStatus
+from enterprise_wecom_digital_employee.report_draft import REPORT_DRAFT_MARKDOWN_BEGIN
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
 from enterprise_wecom_digital_employee.tools import (
     call_mcp_tool,
@@ -434,7 +435,7 @@ def _job_charter_direct_response(
     return response
 
 
-def _deterministic_direct_response(
+async def _deterministic_direct_response(
     context: InvocationContext,
     registry: PlaybookRegistry,
 ) -> str | None:
@@ -452,12 +453,13 @@ def _deterministic_direct_response(
     route = context.state.get("playbook_route")
     if isinstance(route, Mapping) and route.get("route_status") == PlaybookRouteStatus.FORBIDDEN.value:
         return "当前身份不在该部门数字员工的授权服务范围内，未启动任何正式任务。"
-    if response := registry.direct_response_for_state(
+    if response := await registry.direct_response_for_state(
         message,
         context.state,
         context.runtime_context,
+        context.callbacks,
     ):
-        _emit_playbook_direct_response(context, registry)
+        _emit_playbook_direct_response(context, registry, response=response)
         return response
     return None
 
@@ -487,6 +489,8 @@ def _runtime_capabilities(registry: PlaybookRegistry) -> RuntimeCapabilityAvaila
 def _emit_playbook_direct_response(
     context: InvocationContext,
     registry: PlaybookRegistry,
+    *,
+    response: str,
 ) -> None:
     binding = registry.binding_for_state(context.state)
     if binding is None:
@@ -502,7 +506,11 @@ def _emit_playbook_direct_response(
         digital_employee_id=registry.profile.digital_employee_id,
         profile_version=registry.profile.profile_version,
         playbook_ref=binding.playbook_ref,
-        response_kind="ledger_status",
+        response_kind=(
+            "formal_action"
+            if REPORT_DRAFT_MARKDOWN_BEGIN in response or "[[agentseek-wecom-template-card:" in response
+            else "ledger_status"
+        ),
     )
 
 

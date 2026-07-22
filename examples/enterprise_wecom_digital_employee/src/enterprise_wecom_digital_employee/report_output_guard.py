@@ -5,6 +5,10 @@ from collections.abc import Callable, Mapping, Sequence
 from hashlib import sha256
 
 from agentseek_enterprise.observability import emit_enterprise_event
+from agentseek_wecom.outbound import (
+    has_template_card_control_instruction,
+    has_template_card_intent_marker,
+)
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from enterprise_wecom_digital_employee.report_draft import (
@@ -151,7 +155,7 @@ _REPORT_APPROVAL_PENDING_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _REPORT_APPROVAL_STATUS_SUCCESS_RE = re.compile(
-    r"ReportApproval\s+contract_v\d+[，,]\s*status=(pending|approved)[，,]"
+    r"ReportApproval\s+contract_v\d+[，,]\s*status=(provisional|pending|approved)[，,]"
     r"\s*bound_report_draft_v(\d+)",
     re.IGNORECASE,
 )
@@ -300,6 +304,10 @@ REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE = (
 _OUTLINE_CONFIRMATION_NUDGE = "提纲已确认；如需初稿，请另行回复“生成可审阅初稿”。"
 _ARTIFACT_PUBLICATION_NUDGE = "如需发布，请精确回复“发布 ReportArtifact v{version}”。"
 _ARTIFACT_DELIVERY_NUDGE = "如需交付，请精确回复“交付 ReportArtifact v{version} 给我”。"
+_INTERNAL_DELIVERY_CONTROL_BLOCKED_MESSAGE = (
+    "内部交付指令已被安全拦截，未发送任何文件。"
+    "请重新回复精确的“交付 ReportArtifact vN 给我”。"
+)
 
 
 def enforce_m2_output_guard(  # noqa: C901
@@ -318,7 +326,10 @@ def enforce_m2_output_guard(  # noqa: C901
     tool_sequence = _tool_call_sequence(result)
     verified_draft_output = _successful_report_draft_output(result)
     reason = (
-        "generic_confirmation"
+        "internal_delivery_control_leak"
+        if has_template_card_control_instruction(output)
+        and not has_template_card_intent_marker(output)
+        else "generic_confirmation"
         if _GENERIC_CONFIRM_RE.fullmatch(latest_user_message.strip())
         else "ledger_backed_report_draft"
         if verified_draft_output
@@ -363,6 +374,8 @@ def enforce_m2_output_guard(  # noqa: C901
         return REPORT_PUBLICATION_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_delivery":
         return REPORT_DELIVERY_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "internal_delivery_control_leak":
+        return _INTERNAL_DELIVERY_CONTROL_BLOCKED_MESSAGE
     if reason == "ledger_backed_report_draft":
         return verified_draft_output
     if reason:
@@ -677,7 +690,7 @@ def _report_approval_claims(output: str) -> tuple[tuple[int, str], ...]:
     return tuple(claims)
 
 
-def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
+def _successful_report_approval_states(result: object) -> dict[int, set[str]]:  # noqa: C901
     if not isinstance(result, Mapping):
         return {}
     states: dict[int, set[str]] = {}
@@ -694,14 +707,17 @@ def _successful_report_approval_states(result: object) -> dict[int, set[str]]:
             if tool_name not in _REPORT_APPROVAL_LEDGER_TOOLS and tool_call_id not in call_ids:
                 continue
             for status, draft_version in _REPORT_APPROVAL_STATUS_SUCCESS_RE.findall(content):
-                states.setdefault(int(draft_version), set()).add(status.lower())
+                normalized = "pending" if status.lower() == "provisional" else status.lower()
+                states.setdefault(int(draft_version), set()).add(normalized)
     if isinstance(work := result.get("current_work"), Mapping):
         approval = work.get("report_approval")
         if isinstance(approval, Mapping) and approval.get("current") is True:
             version = approval.get("report_draft_version")
             status = str(approval.get("status") or "").lower()
-            if isinstance(version, int) and not isinstance(version, bool) and status in {"pending", "approved"}:
-                states.setdefault(version, set()).add(status)
+            if isinstance(version, int) and not isinstance(version, bool):
+                normalized = "pending" if status == "provisional" else status
+                if normalized in {"pending", "approved"}:
+                    states.setdefault(version, set()).add(normalized)
     return states
 
 
