@@ -9,6 +9,10 @@ from bub.types import Envelope, State
 
 from {{ cookiecutter.project_slug }}.pack_loader import PlaybookSpec, ServiceCatalogEntry
 from {{ cookiecutter.project_slug }}.report_output_guard import enforce_m2_output_guard
+from {{ cookiecutter.project_slug }}.report_status import (
+    match_report_status_sections,
+    render_report_status,
+)
 from {{ cookiecutter.project_slug }}.work_composition import IndustryReportWorkComposition
 from {{ cookiecutter.project_slug }}.work_tools import work_tools
 
@@ -54,6 +58,18 @@ class IndustryReportPlaybookBinding:
 
     def instructions(self) -> str:
         return ""  # The report instructions are supplied by the report agent prompt.
+
+    def direct_response(
+        self,
+        message: str,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> str | None:
+        sections = match_report_status_sections(message)
+        if sections is None:
+            return None
+        summary = self.composition.current_work_summary(state, runtime_context)
+        return render_report_status(summary, sections=sections)
 
 
 def build_playbook(

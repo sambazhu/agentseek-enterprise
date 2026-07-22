@@ -25,6 +25,11 @@ from deepagents.graph import DeepAgentState
 from langchain_core.messages import SystemMessage
 from langgraph.types import TimeoutPolicy
 
+from enterprise_wecom_digital_employee.capability_catalog import (
+    RuntimeCapabilityAvailability,
+    configured_mcp_server_names,
+    resolve_runtime_capabilities,
+)
 from enterprise_wecom_digital_employee.job_charter import (
     match_job_charter_intent,
     render_job_charter_response,
@@ -393,6 +398,8 @@ def _append_profile_knowledge(lines: list[str], profile: Mapping[str, object]) -
 def _job_charter_direct_response(
     context: InvocationContext,
     profile: DigitalEmployeeProfile,
+    *,
+    capabilities: RuntimeCapabilityAvailability | None = None,
 ) -> str | None:
     if context.state.get("digital_employee_status") != "found":
         return None
@@ -400,7 +407,7 @@ def _job_charter_direct_response(
     intent = match_job_charter_intent(message)
     if intent is None:
         return None
-    response = render_job_charter_response(profile, intent)
+    response = render_job_charter_response(profile, intent, capabilities=capabilities)
     try:
         from agentseek_enterprise.observability import emit_enterprise_event
     except ImportError:
@@ -420,14 +427,70 @@ def _deterministic_direct_response(
     context: InvocationContext,
     registry: PlaybookRegistry,
 ) -> str | None:
-    if response := _job_charter_direct_response(context, registry.profile):
+    message = _clean(context.state.get("latest_user_message")) or _prompt_content(context.prompt)
+    if match_job_charter_intent(message) is not None and (
+        response := _job_charter_direct_response(
+            context,
+            registry.profile,
+            capabilities=_runtime_capabilities(registry),
+        )
+    ):
         return response
     if clarification := registry.route_clarification(context.state):
         return clarification
     route = context.state.get("playbook_route")
     if isinstance(route, Mapping) and route.get("route_status") == PlaybookRouteStatus.FORBIDDEN.value:
         return "当前身份不在该部门数字员工的授权服务范围内，未启动任何正式任务。"
+    if response := registry.direct_response_for_state(
+        message,
+        context.state,
+        context.runtime_context,
+    ):
+        _emit_playbook_direct_response(context, registry)
+        return response
     return None
+
+
+def _runtime_capabilities(registry: PlaybookRegistry) -> RuntimeCapabilityAvailability:
+    tool_grants = frozenset(
+        grant
+        for reference in registry.playbook_refs
+        for grant in registry.get(reference).spec.tool_grants
+    )
+    data_scopes = frozenset(
+        scope
+        for reference in registry.playbook_refs
+        for scope in registry.get(reference).spec.data_scopes
+    )
+    configured_servers = configured_mcp_server_names(get_settings().resolved_mcp_config_path())
+    return resolve_runtime_capabilities(
+        registry.profile,
+        effective_tool_grants=tool_grants,
+        effective_data_scopes=data_scopes,
+        configured_servers=configured_servers,
+    )
+
+
+def _emit_playbook_direct_response(
+    context: InvocationContext,
+    registry: PlaybookRegistry,
+) -> None:
+    binding = registry.binding_for_state(context.state)
+    if binding is None:
+        return
+    try:
+        from agentseek_enterprise.observability import emit_enterprise_event
+    except ImportError:
+        return
+    emit_enterprise_event(
+        "digital_employee_playbook_direct_response",
+        status="succeeded",
+        session_id=context.session_id,
+        digital_employee_id=registry.profile.digital_employee_id,
+        profile_version=registry.profile.profile_version,
+        playbook_ref=binding.playbook_ref,
+        response_kind="ledger_status",
+    )
 
 
 def _selected_playbook_ref(runnable_input: object) -> str | None:

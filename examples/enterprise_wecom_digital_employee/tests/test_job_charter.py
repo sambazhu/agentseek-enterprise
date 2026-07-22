@@ -5,6 +5,7 @@ from pathlib import Path
 import enterprise_wecom_digital_employee.agent as agent_module
 import pytest
 from agentseek_langchain.spec import InvocationContext
+from enterprise_wecom_digital_employee.capability_catalog import RuntimeCapabilityAvailability
 from enterprise_wecom_digital_employee.job_charter import (
     JobCharterIntent,
     match_job_charter_intent,
@@ -77,13 +78,37 @@ def test_job_charter_responses_are_profile_backed_and_explain_the_formal_workflo
     assert "需求澄清与 ReportBrief 确认" in capabilities
     assert "DOCX 渲染、发布与交付" in capabilities
     assert "分析你授权的文件" in capabilities
-    assert "检索部门知识" in capabilities
-    assert "明确同意后使用外部数据或公开信息" in capabilities
+    assert "检索已配置的部门知识" in capabilities
+    assert "明确同意后使用已配置的外部数据或公开搜索" in capabilities
     assert "analyze_file" not in capabilities
     assert "department-knowledge" not in capabilities
     assert "关键版本需要你明确确认" in capabilities
+    assert "正式服务\n" in capabilities
+    assert "\n\n协助能力\n" in capabilities
+    assert "\n\n执行边界\n" in capabilities
     assert "不会静默启动任务" in usage
     assert profile.service_catalog[0].example_requests[0] in usage
+
+
+def test_job_charter_capabilities_do_not_claim_services_missing_from_runtime() -> None:
+    profile = load_profile()
+    availability = RuntimeCapabilityAvailability(
+        file_analysis=True,
+        department_knowledge=False,
+        licensed_external_data=False,
+        public_search=True,
+    )
+
+    response = render_job_charter_response(
+        profile,
+        JobCharterIntent.CAPABILITIES,
+        capabilities=availability,
+    )
+
+    assert "分析你授权的文件" in response
+    assert "已配置的公开搜索" in response
+    assert "部门知识" not in response
+    assert "外部数据" not in response
 
 
 def test_agent_direct_response_requires_loaded_employee_profile_and_emits_safe_event(

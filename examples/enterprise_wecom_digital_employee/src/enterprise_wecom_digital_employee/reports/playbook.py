@@ -9,6 +9,10 @@ from bub.types import Envelope, State
 
 from enterprise_wecom_digital_employee.pack_loader import PlaybookSpec, ServiceCatalogEntry
 from enterprise_wecom_digital_employee.report_output_guard import enforce_m2_output_guard
+from enterprise_wecom_digital_employee.report_status import (
+    match_report_status_sections,
+    render_report_status,
+)
 from enterprise_wecom_digital_employee.work_composition import IndustryReportWorkComposition
 from enterprise_wecom_digital_employee.work_tools import work_tools
 
@@ -54,6 +58,18 @@ class IndustryReportPlaybookBinding:
 
     def instructions(self) -> str:
         return ""  # The report instructions are supplied by the report agent prompt.
+
+    def direct_response(
+        self,
+        message: str,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> str | None:
+        sections = match_report_status_sections(message)
+        if sections is None:
+            return None
+        summary = self.composition.current_work_summary(state, runtime_context)
+        return render_report_status(summary, sections=sections)
 
 
 def build_playbook(

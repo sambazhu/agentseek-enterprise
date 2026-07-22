@@ -56,6 +56,13 @@ class PlaybookBinding(Protocol):
 
     def instructions(self) -> str: ...
 
+    def direct_response(
+        self,
+        message: str,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> str | None: ...
+
 
 class PlaybookRegistry:
     """Versioned Profile-scoped registry for independently governed Playbooks."""
@@ -187,6 +194,17 @@ class PlaybookRegistry:
 
     def guard_for(self, playbook_ref: str, result: object, output: str) -> str:
         return self.get(playbook_ref).guard_output(result, output)
+
+    def direct_response_for_state(
+        self,
+        message: str,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+    ) -> str | None:
+        binding = self.binding_for_state(state)
+        if binding is None:
+            return None
+        return binding.direct_response(message, state, runtime_context)
 
 
 def load_playbook_factory(entrypoint: str, *, allowed_package: str) -> Any:

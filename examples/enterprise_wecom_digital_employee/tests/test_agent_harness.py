@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import enterprise_wecom_digital_employee.agent as agent_module
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
@@ -141,6 +141,73 @@ def test_selected_playbook_ref_uses_public_route_contract() -> None:
     assert agent_module._selected_playbook_ref({
         "playbook_route": {"selected_playbook_ref": "legacy-wrong-field@1"}
     }) is None
+
+
+def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    binding = SimpleNamespace(playbook_ref="securities-industry-report@1")
+
+    class FakeRegistry:
+        profile = SimpleNamespace(
+            digital_employee_id="industry-report",
+            profile_version="1.11.0",
+        )
+
+        @staticmethod
+        def route_clarification(_state):
+            return None
+
+        @staticmethod
+        def direct_response_for_state(message, _state, _runtime_context):
+            assert message == "查看当前 ReportArtifact"
+            return "当前 ReportArtifact：artifact_id=artifact_test。"
+
+        @staticmethod
+        def binding_for_state(_state):
+            return binding
+
+    monkeypatch.setattr(
+        "agentseek_enterprise.observability.emit_enterprise_event",
+        lambda name, **payload: events.append((name, payload)),
+    )
+    context = InvocationContext(
+        prompt="查看当前 ReportArtifact",
+        session_id="wecom:test",
+        state={
+            "latest_user_message": "查看当前 ReportArtifact",
+            "playbook_route": {
+                "route_status": "selected",
+                "reason_code": "exact_action",
+                "playbook_ref": "securities-industry-report@1",
+                "candidate_playbook_refs": ["securities-industry-report@1"],
+            },
+        },
+        workspace=tmp_path,
+        agents_md=None,
+    )
+
+    response = agent_module._deterministic_direct_response(
+        context,
+        cast(Any, FakeRegistry()),
+    )
+
+    assert response == "当前 ReportArtifact：artifact_id=artifact_test。"
+    assert events == [
+        (
+            "digital_employee_playbook_direct_response",
+            {
+                "status": "succeeded",
+                "session_id": "wecom:test",
+                "digital_employee_id": "industry-report",
+                "profile_version": "1.11.0",
+                "playbook_ref": "securities-industry-report@1",
+                "response_kind": "ledger_status",
+            },
+        )
+    ]
 
 
 def test_spec_carries_route_from_runtime_state_into_routed_runnable_input(

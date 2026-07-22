@@ -58,6 +58,7 @@ from enterprise_wecom_digital_employee.report_research import (
 from enterprise_wecom_digital_employee.report_research import (
     run_internal_research as _run_internal_research,
 )
+from enterprise_wecom_digital_employee.report_status import render_report_status
 from enterprise_wecom_digital_employee.research_gap_decision import (
     RESEARCH_GAP_DECISION_CONTRACT_TYPE,
     ResearchGapAction,
@@ -104,127 +105,11 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         )
 
     @tool("get_current_work_status")
-    def get_current_work_status(runtime: ToolRuntime) -> str:  # noqa: C901
+    def get_current_work_status(runtime: ToolRuntime) -> str:
         """Read current WorkItem, ReportBrief, and gap-decision versions from the ledger."""
 
         summary = composition.current_work_summary(runtime.state, runtime.context)
-        if summary is None:
-            return "当前员工没有可见的进行中任务。"
-        lines = [
-            f"当前任务：work_id={summary['work_id']}，status={summary['status']}，"
-            f"phase={summary['current_phase']}，"
-            f"playbook={summary['playbook_id']}@{summary['playbook_version']}。"
-        ]
-        brief = summary.get("report_brief")
-        if isinstance(brief, Mapping):
-            lines.append(
-                f"当前 ReportBrief：v{brief.get('contract_version')}，status={brief.get('status')}。"
-            )
-            if brief.get("status") == WorkContractStatus.PROVISIONAL.value:
-                lines.append(
-                    "如认可，请明确回复"
-                    f"“确认 ReportBrief v{brief.get('contract_version')}”；不要只回复“确认 vN”。"
-                )
-        decision = summary.get("research_gap_decision")
-        if isinstance(decision, Mapping):
-            lines.append(
-                "最新缺口决策："
-                f"contract_v{decision.get('contract_version')}，"
-                f"bound_report_brief_v{decision.get('report_brief_version')}，"
-                f"status={decision.get('status')}，action={decision.get('action')}。"
-            )
-            lines.append("缺口决策绑定版本是历史决策字段，不代表当前 ReportBrief 版本。")
-        outline = summary.get("report_outline")
-        if isinstance(outline, Mapping):
-            lines.append(
-                "当前 ReportOutline："
-                f"v{outline.get('contract_version')}，status={outline.get('status')}，"
-                f"bound_report_brief_v{outline.get('report_brief_version')}，"
-                f"unresolved={outline.get('unresolved_question_count')}。"
-            )
-            if outline.get("status") == WorkContractStatus.PROVISIONAL.value:
-                lines.append(
-                    "如认可，请明确回复"
-                    f"“确认 ReportOutline v{outline.get('contract_version')}”；不要只回复“确认 vN”。"
-                )
-        draft = summary.get("report_draft")
-        if isinstance(draft, Mapping):
-            lines.append(
-                "当前 ReportDraft："
-                f"v{draft.get('contract_version')}，status={draft.get('status')}，"
-                f"bound_report_outline_v{draft.get('report_outline_version')}，"
-                f"quality={draft.get('quality_status')}，claims={draft.get('claim_count')}。"
-            )
-            if draft.get("status") == WorkContractStatus.PROVISIONAL.value:
-                lines.append(
-                    "如认可该初稿，请明确回复"
-                    f"“确认 ReportDraft v{draft.get('contract_version')}”；该确认不等于最终批准。"
-                )
-            elif draft.get("status") == WorkContractStatus.CONFIRMED.value:
-                lines.append(
-                    "如需进入内容审批，请另行回复"
-                    f"“提交 ReportDraft v{draft.get('contract_version')} 审批”。"
-                )
-        approval = summary.get("report_approval")
-        if isinstance(approval, Mapping):
-            lines.append(
-                "当前 ReportApproval："
-                f"contract_v{approval.get('contract_version')}，status={approval.get('status')}，"
-                f"bound_report_draft_v{approval.get('report_draft_version')}，"
-                f"current={str(bool(approval.get('current'))).lower()}。"
-            )
-            if approval.get("status") == "pending" and approval.get("current") is True:
-                lines.append(
-                    "审批人如批准该内容，请明确回复"
-                    f"“批准 ReportDraft v{approval.get('report_draft_version')}”。"
-                )
-            elif approval.get("status") == "approved" and approval.get("current") is True:
-                lines.append(
-                    "如需生成文件，请另行回复"
-                    f"“生成 ReportDraft v{approval.get('report_draft_version')} DOCX”。"
-                )
-        artifacts = summary.get("report_artifacts")
-        if isinstance(artifacts, list):
-            for artifact in artifacts:
-                if not isinstance(artifact, Mapping):
-                    continue
-                lines.append(
-                    "当前 ReportArtifact："
-                    f"artifact_id={artifact.get('artifact_id')}，format={artifact.get('format')}，"
-                    f"bound_report_draft_v{artifact.get('report_draft_version')}，"
-                    f"current={str(bool(artifact.get('current'))).lower()}，"
-                    f"publication={artifact.get('publication_status')}，"
-                    f"delivery={artifact.get('delivery_status')}。"
-                )
-        publications = summary.get("report_publications")
-        if isinstance(publications, list):
-            for publication in publications:
-                if not isinstance(publication, Mapping):
-                    continue
-                lines.append(
-                    "当前 ReportPublication："
-                    f"publication_v{publication.get('publication_version')}，"
-                    f"status={publication.get('status')}，"
-                    f"artifact_id={publication.get('artifact_id')}，"
-                    f"bound_report_draft_v{publication.get('report_draft_version')}，"
-                    f"current={str(bool(publication.get('current'))).lower()}，"
-                    f"delivery={publication.get('delivery_status')}。"
-                )
-        deliveries = summary.get("report_deliveries")
-        if isinstance(deliveries, list):
-            for delivery in deliveries:
-                if not isinstance(delivery, Mapping):
-                    continue
-                lines.append(
-                    "当前 ReportDelivery："
-                    f"delivery_v{delivery.get('delivery_version')}，"
-                    f"status={delivery.get('status')}，"
-                    f"artifact_id={delivery.get('artifact_id')}，"
-                    f"bound_report_draft_v{delivery.get('report_draft_version')}，"
-                    f"current={str(bool(delivery.get('current'))).lower()}，"
-                    f"grant_state={delivery.get('grant_state')}。"
-                )
-        return "\n".join(lines)
+        return render_report_status(summary)
 
     @tool("save_report_brief")
     def save_report_brief(

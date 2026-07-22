@@ -61,6 +61,10 @@ class FakeBinding:
     def instructions(self) -> str:
         return f"{self.label} instructions"
 
+    def direct_response(self, message, state, runtime_context=None) -> str | None:
+        del state, runtime_context
+        return f"{self.label} direct" if message == f"{self.label} status" else None
+
 
 def load_profile_and_playbook() -> tuple[DigitalEmployeeProfile, PlaybookSpec]:
     def resolve_asset(artifact_ref: str) -> Path:
@@ -104,6 +108,7 @@ def test_single_binding_delegates_runtime_contract(monkeypatch) -> None:
     assert registry.tools_for(spec.ref) == ("report-tool",)
     assert registry.guard_output(object(), "answer") == "report:answer"
     assert registry.current_work(state) == {"playbook_ref": spec.ref}
+    assert registry.direct_response_for_state("report status", state) == "report direct"
     assert registry.introduction() == "report introduction"
     assert events[0][0] == "digital_employee_playbook_routed"
     assert "message" not in events[0][1]
@@ -167,6 +172,8 @@ def test_multi_binding_routes_and_enriches_only_the_selected_playbook(monkeypatc
     assert registry.tools_for(spec.ref) == ("report-tool",)
     assert registry.tools_for(second.ref) == ("summary-tool",)
     assert registry.guard_for(second.ref, object(), "answer") == "summary:answer"
+    assert registry.direct_response_for_state("summary status", state) == "summary direct"
+    assert registry.direct_response_for_state("report status", state) is None
 
 
 def test_multi_binding_ambiguity_loads_no_playbook_context(monkeypatch) -> None:

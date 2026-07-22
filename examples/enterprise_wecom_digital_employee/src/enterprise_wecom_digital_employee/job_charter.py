@@ -3,6 +3,10 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
+from enterprise_wecom_digital_employee.capability_catalog import (
+    RuntimeCapabilityAvailability,
+    profile_declared_capabilities,
+)
 from enterprise_wecom_digital_employee.channel_command import authenticated_user_command_text
 from enterprise_wecom_digital_employee.pack_loader import DigitalEmployeeProfile
 
@@ -52,11 +56,14 @@ def match_job_charter_intent(message: str) -> JobCharterIntent | None:
 def render_job_charter_response(
     profile: DigitalEmployeeProfile,
     intent: JobCharterIntent,
+    *,
+    capabilities: RuntimeCapabilityAvailability | None = None,
 ) -> str:
+    available = capabilities or profile_declared_capabilities(profile)
     if intent is JobCharterIntent.IDENTITY:
-        return _identity_response(profile)
+        return _identity_response(profile, available)
     if intent is JobCharterIntent.CAPABILITIES:
-        return _capabilities_response(profile)
+        return _capabilities_response(profile, available)
     if intent is JobCharterIntent.USAGE:
         return _usage_response(profile)
     raise ValueError("unsupported Job Charter intent")
@@ -68,49 +75,61 @@ def _normalized_command(message: str) -> str:
     return re.sub(r"\s+", "", command)
 
 
-def _identity_response(profile: DigitalEmployeeProfile) -> str:
-    lines = [
+def _identity_response(
+    profile: DigitalEmployeeProfile,
+    capabilities: RuntimeCapabilityAvailability,
+) -> str:
+    identity_lines = [
         f"我是{profile.display_name}，编号 {profile.employee_code}，隶属{profile.owning_org}。",
         f"我的岗位使命是：{profile.mission}。",
     ]
     if profile.service_catalog:
         services = "、".join(service.title for service in profile.service_catalog)
-        lines.append(f"当前正式服务包括：{services}。")
-    if overview := _capability_overview(profile):
-        lines.append(overview)
+        identity_lines.append(f"当前正式服务包括：{services}。")
+    sections = ["\n".join(identity_lines)]
+    if overview := _capability_overview(capabilities):
+        sections.append(f"协助能力\n{overview}")
     if profile.behavior_principles:
-        lines.append(f"我的工作准则是：{'；'.join(profile.behavior_principles)}。")
-    lines.append("你可以回复“你能做什么”查看服务，或回复“怎么使用你”查看操作方式。")
-    return "\n".join(lines)
+        sections.append(f"工作准则\n{'；'.join(profile.behavior_principles)}。")
+    sections.append("你可以回复“你能做什么”查看服务，或回复“怎么使用你”查看操作方式。")
+    return "\n\n".join(sections)
 
 
-def _capabilities_response(profile: DigitalEmployeeProfile) -> str:
+def _capabilities_response(
+    profile: DigitalEmployeeProfile,
+    capabilities: RuntimeCapabilityAvailability,
+) -> str:
     if not profile.service_catalog:
         responsibilities = "；".join(profile.responsibilities)
         return f"我的岗位职责包括：{responsibilities}。"
 
-    lines = ["我目前提供以下正式服务："]
+    service_lines = ["正式服务"]
     for index, service in enumerate(profile.service_catalog, start=1):
-        lines.append(f"{index}. {service.title}：{service.summary}。")
-        lines.append(f"   工作过程：{' → '.join(service.workflow_steps)}。")
-        lines.append(f"   示例：{service.example_requests[0]}")
-    if overview := _capability_overview(profile):
-        lines.append(overview)
-    lines.append("正式流程中的关键版本需要你明确确认，未完成授权或审批时不会自动推进。")
-    return "\n".join(lines)
+        service_lines.append(f"{index}. {service.title}：{service.summary}。")
+        service_lines.append(f"   工作过程：{' → '.join(service.workflow_steps)}。")
+        service_lines.append(f"   示例：{service.example_requests[0]}")
+    sections = ["\n".join(service_lines)]
+    if overview := _capability_overview(capabilities):
+        sections.append(f"协助能力\n{overview}")
+    sections.append("执行边界\n正式流程中的关键版本需要你明确确认，未完成授权或审批时不会自动推进。")
+    return "\n\n".join(sections)
 
 
-def _capability_overview(profile: DigitalEmployeeProfile) -> str:
-    capabilities: list[str] = []
-    if "analyze_file" in profile.tool_grants:
-        capabilities.append("分析你授权的文件")
-    if profile.knowledge_refs:
-        capabilities.append("检索部门知识")
-    if any(scope in profile.data_scopes for scope in ("gildata-licensed-data", "authorized-public-sources")):
-        capabilities.append("在你明确同意后使用外部数据或公开信息")
-    if not capabilities:
+def _capability_overview(capabilities: RuntimeCapabilityAvailability) -> str:
+    rendered: list[str] = []
+    if capabilities.file_analysis:
+        rendered.append("分析你授权的文件")
+    if capabilities.department_knowledge:
+        rendered.append("检索已配置的部门知识")
+    if capabilities.licensed_external_data and capabilities.public_search:
+        rendered.append("在你明确同意后使用已配置的外部数据或公开搜索")
+    elif capabilities.licensed_external_data:
+        rendered.append("在你明确同意后使用已配置的外部数据")
+    elif capabilities.public_search:
+        rendered.append("在你明确同意后使用已配置的公开搜索")
+    if not rendered:
         return ""
-    return f"在授权范围内，我还可以协助：{'、'.join(capabilities)}。"
+    return f"在授权范围内，我还可以协助：{'、'.join(rendered)}。"
 
 
 def _usage_response(profile: DigitalEmployeeProfile) -> str:
