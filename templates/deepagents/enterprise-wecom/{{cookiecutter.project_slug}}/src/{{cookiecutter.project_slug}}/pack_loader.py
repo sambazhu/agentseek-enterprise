@@ -35,6 +35,14 @@ class SkillSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class PlaybookRoutingSpec:
+    explicit_aliases: tuple[str, ...]
+    intent_terms: tuple[str, ...]
+    owned_command_terms: tuple[str, ...]
+    priority: int
+
+
+@dataclass(frozen=True, slots=True)
 class PlaybookSpec:
     playbook_id: str
     version: str
@@ -43,6 +51,7 @@ class PlaybookSpec:
     policy_refs: tuple[str, ...]
     tool_grants: tuple[str, ...]
     data_scopes: tuple[str, ...]
+    routing: PlaybookRoutingSpec
     research_template_ref: str | None
     research_template_path: str | None
     allowed_research_scopes: tuple[str, ...]
@@ -268,6 +277,10 @@ class RestrictedPackLoader:
                 fallback=profile.data_scopes,
                 profile_schema_version=profile.profile_schema_version,
             )
+            routing = _playbook_routing(
+                entry.get("routing"),
+                profile_schema_version=profile.profile_schema_version,
+            )
             template_ref, template_path, allowed_scopes, topic_anchor_terms = (
                 self._load_optional_research_template(entry, skills=skills, skill_refs=skill_refs)
             )
@@ -280,6 +293,7 @@ class RestrictedPackLoader:
                     policy_refs=policy_refs,
                     tool_grants=tool_grants,
                     data_scopes=data_scopes,
+                    routing=routing,
                     research_template_ref=template_ref,
                     research_template_path=template_path,
                     allowed_research_scopes=allowed_scopes,
@@ -837,6 +851,39 @@ def _playbook_refs(
             return fallback
         raise PackLoadError(f"playbook {field_name} must be declared for Profile v2")
     return _declared_text_sequence(value, f"playbook {field_name}")
+
+
+def _playbook_routing(value: Any, *, profile_schema_version: int) -> PlaybookRoutingSpec:
+    if value is None:
+        if profile_schema_version == 1:
+            return PlaybookRoutingSpec((), (), (), 0)
+        raise PackLoadError("playbook routing must be declared for Profile v2")
+    routing = _require_mapping(value, "playbook routing")
+    explicit_aliases = _declared_text_sequence(
+        routing.get("explicit_aliases"),
+        "playbook routing explicit_aliases",
+    )
+    intent_terms = _declared_text_sequence(
+        routing.get("intent_terms"),
+        "playbook routing intent_terms",
+    )
+    owned_command_terms = _declared_text_sequence(
+        routing.get("owned_command_terms"),
+        "playbook routing owned_command_terms",
+    )
+    priority = _required_int(routing, "priority")
+    for values, label in (
+        (explicit_aliases, "playbook routing explicit_aliases"),
+        (intent_terms, "playbook routing intent_terms"),
+        (owned_command_terms, "playbook routing owned_command_terms"),
+    ):
+        _require_unique(values, label)
+    return PlaybookRoutingSpec(
+        explicit_aliases=explicit_aliases,
+        intent_terms=intent_terms,
+        owned_command_terms=owned_command_terms,
+        priority=priority,
+    )
 
 
 def _declared_text_sequence(value: Any, label: str) -> tuple[str, ...]:

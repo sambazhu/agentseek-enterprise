@@ -76,6 +76,8 @@ def _identity_response(profile: DigitalEmployeeProfile) -> str:
     if profile.service_catalog:
         services = "、".join(service.title for service in profile.service_catalog)
         lines.append(f"当前正式服务包括：{services}。")
+    if overview := _capability_overview(profile):
+        lines.append(overview)
     if profile.behavior_principles:
         lines.append(f"我的工作准则是：{'；'.join(profile.behavior_principles)}。")
     lines.append("你可以回复“你能做什么”查看服务，或回复“怎么使用你”查看操作方式。")
@@ -92,8 +94,23 @@ def _capabilities_response(profile: DigitalEmployeeProfile) -> str:
         lines.append(f"{index}. {service.title}：{service.summary}。")
         lines.append(f"   工作过程：{' → '.join(service.workflow_steps)}。")
         lines.append(f"   示例：{service.example_requests[0]}")
+    if overview := _capability_overview(profile):
+        lines.append(overview)
     lines.append("正式流程中的关键版本需要你明确确认，未完成授权或审批时不会自动推进。")
     return "\n".join(lines)
+
+
+def _capability_overview(profile: DigitalEmployeeProfile) -> str:
+    capabilities: list[str] = []
+    if "analyze_file" in profile.tool_grants:
+        capabilities.append("分析你授权的文件")
+    if profile.knowledge_refs:
+        capabilities.append("检索部门知识")
+    if any(scope in profile.data_scopes for scope in ("gildata-licensed-data", "authorized-public-sources")):
+        capabilities.append("在你明确同意后使用外部数据或公开信息")
+    if not capabilities:
+        return ""
+    return f"在授权范围内，我还可以协助：{'、'.join(capabilities)}。"
 
 
 def _usage_response(profile: DigitalEmployeeProfile) -> str:

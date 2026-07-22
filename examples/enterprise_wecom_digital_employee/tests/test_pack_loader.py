@@ -49,7 +49,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.11.0"
+    assert loaded.pack_version == "1.12.0"
     assert loaded.profile.profile_schema_version == 2
     assert loaded.profile.employee_code == "DE-SD-001"
     assert loaded.profile.display_name == "战略发展部数字员工"
@@ -59,7 +59,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.10.0"
+    assert loaded.profile.profile_version == "1.11.0"
     assert loaded.profile.service_catalog[0].service_id == "securities-report"
     assert loaded.profile.service_catalog[0].playbook_ref == "securities-industry-report@1"
     assert loaded.profile.behavior_policy_refs == ("industry-report-v1",)
@@ -81,6 +81,14 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert playbook.policy_refs == loaded.profile.behavior_policy_refs
     assert playbook.tool_grants == loaded.profile.tool_grants
     assert playbook.data_scopes == loaded.profile.data_scopes
+    assert playbook.routing.explicit_aliases == (
+        "证券行业正式报告",
+        "证券报告",
+        "行业报告",
+    )
+    assert "证券行业报告" in playbook.routing.intent_terms
+    assert "reportartifact" in playbook.routing.owned_command_terms
+    assert playbook.routing.priority == 100
     assert playbook.research_template_ref is not None
     assert playbook.research_template_path is not None
     assert playbook.research_template_ref.startswith("skill://report-intake@1.1.0/")
@@ -273,7 +281,7 @@ def test_profile_v1_remains_loadable_with_compatible_defaults(tmp_path: Path) ->
     rewrite_yaml(pack_root / "profile.yaml", mutate)
 
     def remove_playbook_permissions(document: dict) -> None:
-        for field in ("skill_refs", "policy_refs", "tool_grants", "data_scopes"):
+        for field in ("skill_refs", "policy_refs", "tool_grants", "data_scopes", "routing"):
             document["playbooks"][0].pop(field, None)
 
     rewrite_yaml(
@@ -296,6 +304,10 @@ def test_profile_v1_remains_loadable_with_compatible_defaults(tmp_path: Path) ->
     assert loaded.playbooks[0].policy_refs == loaded.policy_ids
     assert loaded.playbooks[0].tool_grants == profile.tool_grants
     assert loaded.playbooks[0].data_scopes == profile.data_scopes
+    assert loaded.playbooks[0].routing.explicit_aliases == ()
+    assert loaded.playbooks[0].routing.intent_terms == ()
+    assert loaded.playbooks[0].routing.owned_command_terms == ()
+    assert loaded.playbooks[0].routing.priority == 0
 
 
 @pytest.mark.parametrize(
@@ -334,6 +346,17 @@ def test_profile_v2_requires_playbook_permission_declarations(
     )
 
     with pytest.raises(PackLoadError, match=rf"playbook {field} must be declared"):
+        loader(pack_root).load()
+
+
+def test_profile_v2_requires_playbook_routing_declaration(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "pack.yaml",
+        lambda document: document["playbooks"][0].pop("routing"),
+    )
+
+    with pytest.raises(PackLoadError, match="playbook routing must be declared"):
         loader(pack_root).load()
 
 

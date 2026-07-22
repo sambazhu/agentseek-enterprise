@@ -1,6 +1,6 @@
 schema_version: 1
 pack_id: industry-report
-pack_version: 1.11.0
+pack_version: 1.12.0
 profile: profile.yaml
 skills:
   - id: report-intake
@@ -29,6 +29,26 @@ playbooks:
       - strategic-development-department-knowledge
       - gildata-licensed-data
       - authorized-public-sources
+    routing:
+      explicit_aliases:
+        - 证券行业正式报告
+        - 证券报告
+        - 行业报告
+      intent_terms:
+        - 证券行业报告
+        - 证券行业研究
+        - 对证券行业的影响
+        - 编写一份报告
+      owned_command_terms:
+        - reportbrief
+        - reportoutline
+        - reportdraft
+        - reportapproval
+        - reportartifact
+        - reportpublication
+        - reportdelivery
+        - 报告任务状态
+      priority: 100
     research_template_ref: skill://report-intake@1.1.0/references/securities-industry-internal-research.yaml
 assets:
   - id: strategic-report-docx

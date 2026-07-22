@@ -261,10 +261,16 @@ class IndustryReportWorkComposition:
         del session_id
         return {"_work_message_key": _message_scope_key(message)}
 
-    def enrich_state(self, message: Envelope, session_id: str, state: State) -> None:
-        del session_id
+    def authorize_state(self, state: State) -> None:
         status = self._authorization_status(state)
         state[_DIGITAL_EMPLOYEE_STATUS_KEY] = status
+        if status == "found":
+            state["digital_employee_profile"] = _profile_summary(self.profile)
+
+    def enrich_state(self, message: Envelope, session_id: str, state: State) -> None:
+        del session_id
+        self.authorize_state(state)
+        status = str(state.get(_DIGITAL_EMPLOYEE_STATUS_KEY, ""))
         if status != "found":
             return
 
@@ -274,7 +280,6 @@ class IndustryReportWorkComposition:
             return
         requester_key = str(enterprise["user_key"])
         tenant_id = str(enterprise["tenant_id"])
-        state["digital_employee_profile"] = _profile_summary(self.profile)
         state["_work_binding_digest"] = f"sha256:{sha256(self.pack_snapshot_id.encode()).hexdigest()}"
         state["_work_permissions_digest"] = self.permissions_digest
         state["_work_skill_set_digest"] = self.skill_set_digest

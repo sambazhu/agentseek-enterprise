@@ -895,10 +895,9 @@ v0.1.1 把已经活体验证的“行业报告编写数字员工”演进为“�
 - 使用测试型第二 Playbook 验证隔离，不在缺少业务合同的情况下上线第二个正式流程；
 - 证券行业报告继续作为第一个生产 Playbook，v0.1.0 全部账本、状态机和交付协议保持不变。
 
-当前进度：M0 合同冻结已通过双端同步与最小活体复核。M1 Job Charter、Profile v2、
-Profile v1 兼容和确定性服务发现已通过 Mac mini 企微活体验收并正式关闭。M2
-Playbook Registry、报告 Binding 适配和 Playbook 权限子集校验已完成本地实现，等待
-Mac mini 对 PackSnapshot、现有报告链路和 v0.1.0 边界做复验。
+当前进度：M0 合同冻结、M1 Job Charter 和 M2 Playbook Registry 均已通过 Mac mini
+企微活体验收并正式关闭。M3 确定性内部路由进入实现：生产仍只启用证券报告 Playbook，
+使用测试型第二 Playbook 验证活动任务、显式服务、唯一规则、歧义澄清以及工具和上下文隔离。
 
 v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
 组织 RBAC、审批中心、SLA、任务运营和人工接管，放在 Multi-Playbook 基础稳定后的治理切片。

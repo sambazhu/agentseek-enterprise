@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import enterprise_wecom_digital_employee.agent as agent_module
+from agentseek_langchain.spec import InvocationContext, RunnableSpec
 
 
 def _tool_name(tool: Any) -> str:
@@ -80,3 +83,96 @@ def test_industry_report_prompt_refuses_unrelated_weather_and_forbids_mcp_name_i
     assert "unrelated personal utility requests such as weather" in agent_module.SYSTEM_PROMPT
     assert "This wording rule applies only to your guidance" in agent_module.SYSTEM_PROMPT
     assert "The server-side confirmation parser is the sole authority" in agent_module.SYSTEM_PROMPT
+
+
+def test_routed_agent_invokes_only_the_selected_playbook(monkeypatch) -> None:
+    calls: list[object] = []
+
+    async def fake_invoke(runnable, runnable_input, config, *, runtime_context=None):
+        del runnable_input, config, runtime_context
+        calls.append(runnable)
+        return f"result:{runnable}"
+
+    monkeypatch.setattr(agent_module, "invoke_runnable", fake_invoke)
+    routed = agent_module.RoutedAgentRunnable(
+        direct="direct-agent",
+        by_playbook={
+            "securities-industry-report@1": "report-agent",
+            "department-summary-test@1": "summary-agent",
+        },
+    )
+
+    async def run():
+        selected = await routed.ainvoke({
+            "playbook_route": {"playbook_ref": "department-summary-test@1"}
+        })
+        direct = await routed.ainvoke({"playbook_route": {"playbook_ref": "unknown@1"}})
+        return selected, direct
+
+    selected, direct = asyncio.run(run())
+
+    assert selected.playbook_ref == "department-summary-test@1"
+    assert selected.value == "result:summary-agent"
+    assert direct.playbook_ref is None
+    assert direct.value == "result:direct-agent"
+    assert calls == ["summary-agent", "direct-agent"]
+
+
+def test_employee_context_hides_internal_employee_hash_from_employee_reply_context() -> None:
+    message = agent_module._employee_context_message({
+        "employee_context": {
+            "name": "测试员工",
+            "oa_account": "tester",
+            "user_id": "17308da7990bc39bd424f4047fe9ec54",
+            "dept_name": "战略发展部",
+        }
+    })
+
+    assert message is not None
+    assert "测试员工" in str(message.content)
+    assert "员工ID" not in str(message.content)
+    assert "17308da7990bc39bd424f4047fe9ec54" not in str(message.content)
+
+
+def test_selected_playbook_ref_uses_public_route_contract() -> None:
+    assert agent_module._selected_playbook_ref({
+        "playbook_route": {"playbook_ref": "securities-industry-report@1"}
+    }) == "securities-industry-report@1"
+    assert agent_module._selected_playbook_ref({
+        "playbook_route": {"selected_playbook_ref": "legacy-wrong-field@1"}
+    }) is None
+
+
+def test_spec_carries_route_from_runtime_state_into_routed_runnable_input(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    base = RunnableSpec(
+        runnable=object(),
+        build_input=lambda _context: {"messages": []},
+        parse_output=str,
+    )
+    registry = object()
+    monkeypatch.setattr(agent_module, "get_settings", lambda: SimpleNamespace(work_enabled=True))
+    monkeypatch.setattr(agent_module, "get_playbook_registry", lambda: registry)
+    monkeypatch.setattr(agent_module, "_build_runtime_runnable", lambda selected: selected)
+    monkeypatch.setattr(agent_module, "messages_spec", lambda *_args, **_kwargs: base)
+    spec = agent_module.build_spec()
+    route = {
+        "route_status": "selected",
+        "reason_code": "exact_action",
+        "playbook_ref": "securities-industry-report@1",
+        "candidate_playbook_refs": ["securities-industry-report@1"],
+    }
+    context = InvocationContext(
+        prompt="查看当前 ReportArtifact",
+        session_id="wecom:test",
+        state={"playbook_route": route},
+        workspace=tmp_path,
+        agents_md=None,
+    )
+
+    runnable_input = spec.build_input(context)
+
+    assert isinstance(runnable_input, dict)
+    assert runnable_input["playbook_route"] == route

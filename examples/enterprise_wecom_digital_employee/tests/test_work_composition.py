@@ -147,9 +147,9 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.10.0"
-    assert first.item.digital_employee_profile_version == "1.10.0"
-    assert first.item.pack_version == "1.11.0"
+    assert first.item.skill_set_version == "1.11.0"
+    assert first.item.digital_employee_profile_version == "1.11.0"
+    assert first.item.pack_version == "1.12.0"
     assert composition.research_template_path.is_relative_to(tmp_path / "snapshots")
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests
@@ -351,6 +351,7 @@ def test_graph_boundary_preserves_tool_state_and_passes_private_runtime_as_conte
     assert {
         "digital_employee_status",
         "latest_user_message",
+        "playbook_route",
         "work_request_key",
     } <= EnterpriseAgentState.__annotations__.keys()
     assert runtime_mapping is not None

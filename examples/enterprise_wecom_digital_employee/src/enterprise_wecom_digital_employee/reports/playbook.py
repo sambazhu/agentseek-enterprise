@@ -23,8 +23,15 @@ class IndustryReportPlaybookBinding:
     def playbook_ref(self) -> str:
         return self.spec.ref
 
+    @property
+    def pack_snapshot_id(self) -> str:
+        return self.composition.pack_snapshot_id
+
     def load_message_state(self, message: Envelope, session_id: str) -> State:
         return self.composition.load_message_state(message, session_id)
+
+    def authorize_state(self, state: State) -> None:
+        self.composition.authorize_state(state)
 
     def enrich_state(self, message: Envelope, session_id: str, state: State) -> None:
         self.composition.enrich_state(message, session_id, state)
@@ -44,6 +51,9 @@ class IndustryReportPlaybookBinding:
 
     def introduction(self) -> str:
         return f"{self.service.title}：{self.service.summary}"
+
+    def instructions(self) -> str:
+        return ""  # The report instructions are supplied by the report agent prompt.
 
 
 def build_playbook(
