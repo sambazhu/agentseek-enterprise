@@ -7,7 +7,7 @@ import pytest
 from agentseek_langchain.loader import load_spec_from_path, resolve_spec
 from agentseek_langchain.profiles import messages_spec, text_spec
 from agentseek_langchain.shapes import ObjectDict, copy_str_mapping
-from agentseek_langchain.spec import InvocationContext
+from agentseek_langchain.spec import InvocationContext, RunnableSpec
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 
@@ -47,6 +47,34 @@ def test_messages_spec_builds_message_state_and_extracts_output(tmp_path: Path) 
             HumanMessage(content="hello"),
         ]
     }
+
+
+def test_runnable_spec_direct_response_bypasses_runnable_for_invoke_and_stream(tmp_path: Path) -> None:
+    runnable = _MessagesRunnable()
+    base = messages_spec(runnable)
+    spec = RunnableSpec(
+        runnable=base.runnable,
+        build_input=base.build_input,
+        parse_output=base.parse_output,
+        build_config=base.build_config,
+        stream_output=base.stream_output,
+        direct_response=lambda context: "direct" if context.prompt == "who" else None,
+    )
+    context = InvocationContext(
+        prompt="who",
+        session_id="session-1",
+        state={},
+        workspace=tmp_path,
+        agents_md=None,
+    )
+
+    assert asyncio.run(spec.invoke(context)) == "direct"
+
+    async def collect() -> list[str]:
+        return [chunk async for chunk in spec.stream(context)]
+
+    assert asyncio.run(collect()) == ["direct"]
+    assert runnable.calls == []
 
 
 def test_messages_spec_uses_ag_ui_messages_and_application_state(tmp_path: Path) -> None:

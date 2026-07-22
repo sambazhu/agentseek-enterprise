@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, NotRequired
+from typing import Any, NotRequired, cast
 
 from agentseek_enterprise.langgraph_store import build_langgraph_store
 from agentseek_enterprise.long_term_memory import employee_memory_tools
@@ -25,6 +25,11 @@ from deepagents.graph import DeepAgentState
 from langchain_core.messages import SystemMessage
 from langgraph.types import TimeoutPolicy
 
+from {{ cookiecutter.project_slug }}.job_charter import (
+    match_job_charter_intent,
+    render_job_charter_response,
+)
+from {{ cookiecutter.project_slug }}.pack_loader import DigitalEmployeeProfile
 from {{ cookiecutter.project_slug }}.report_output_guard import enforce_m2_output_guard
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT, get_settings
 from {{ cookiecutter.project_slug }}.tools import (
@@ -32,7 +37,10 @@ from {{ cookiecutter.project_slug }}.tools import (
     describe_employee_context_contract,
     list_mcp_tools,
 )
-from {{ cookiecutter.project_slug }}.work_composition import get_work_composition
+from {{ cookiecutter.project_slug }}.work_composition import (
+    IndustryReportWorkComposition,
+    get_work_composition,
+)
 from {{ cookiecutter.project_slug }}.work_tools import work_tools
 
 SYSTEM_PROMPT = """You are an enterprise WeCom digital employee.
@@ -107,7 +115,7 @@ def _register_enterprise_harness_profile() -> None:
     _ENTERPRISE_HARNESS_REGISTERED = True
 
 
-def build_agent() -> Any:
+def build_agent(*, composition: IndustryReportWorkComposition | None = None) -> Any:
     """Build the local DeepAgents runnable."""
 
     _register_enterprise_harness_profile()
@@ -125,7 +133,8 @@ def build_agent() -> Any:
             )
         },
     )
-    composition = get_work_composition() if settings.work_enabled else None
+    if composition is None and settings.work_enabled:
+        composition = get_work_composition()
     enabled_work_tools = work_tools(composition) if composition is not None else []
     direct_capability_tools = _direct_capability_tools(
         tool_grants=composition.profile.tool_grants if composition is not None else None,
@@ -170,7 +179,9 @@ def _direct_capability_tools(*, tool_grants: tuple[str, ...] | None) -> list[Any
 def build_spec():
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
-    base_spec = messages_spec(build_agent(), include_agents_md=False)
+    settings = get_settings()
+    composition = get_work_composition() if settings.work_enabled else None
+    base_spec = messages_spec(build_agent(composition=composition), include_agents_md=False)
 
     def build_input(context: InvocationContext) -> object:
         runnable_input = base_spec.build_input(context)
@@ -195,6 +206,11 @@ def build_spec():
         parse_output=lambda result: enforce_m2_output_guard(result, base_spec.parse_output(result)),
         build_config=lambda context: _work_observability_config(base_spec.build_config(context), context.state),
         stream_output=base_spec.stream_output,
+        direct_response=(
+            lambda context: _job_charter_direct_response(context, composition.profile)
+            if composition is not None
+            else None
+        ),
     )
 
 
@@ -220,40 +236,106 @@ def _runtime_context_messages(state: Mapping[str, object]) -> list[SystemMessage
 
 
 def _digital_employee_profile_message(state: Mapping[str, object]) -> SystemMessage | None:
-    profile = state.get("digital_employee_profile")
-    if not isinstance(profile, Mapping):
+    profile_value = state.get("digital_employee_profile")
+    if not isinstance(profile_value, Mapping):
         return None
+    profile = cast(Mapping[str, object], profile_value)
     lines = [
         "[DigitalEmployeeProfile]",
         "以下是运行时已授权的数字员工岗位摘要。它描述执行者，不代表当前人类员工。",
     ]
     for key, label in (
         ("digital_employee_id", "数字员工ID"),
+        ("employee_code", "数字员工编号"),
         ("name", "岗位名称"),
+        ("display_name", "展示名称"),
         ("owning_org", "归属组织"),
         ("job_role", "岗位角色"),
+        ("mission", "岗位使命"),
         ("pack_id", "角色包"),
         ("pack_version", "角色包版本"),
         ("profile_version", "岗位版本"),
     ):
         if value := _clean(profile.get(key)):
             lines.append(f"{label}: {value}")
-    responsibilities = profile.get("responsibilities")
-    if isinstance(responsibilities, list):
-        rendered = "；".join(_clean(item) for item in responsibilities if _clean(item))
-        if rendered:
-            lines.append(f"职责: {rendered}")
-    knowledge_refs = profile.get("knowledge_refs")
-    if isinstance(knowledge_refs, list):
-        rendered_refs = [
-            f"{_clean(item.get('id'))}（{_clean(item.get('owning_org'))}，默认{_clean(item.get('default_mode'))}检索）"
-            for item in knowledge_refs
-            if isinstance(item, Mapping) and _clean(item.get("id"))
-        ]
-        if rendered_refs:
-            lines.append(f"授权知识库: {'；'.join(rendered_refs)}")
+    _append_profile_list(lines, profile, "responsibilities", "职责")
+    _append_profile_services(lines, profile)
+    _append_profile_list(lines, profile, "behavior_principles", "行为准则")
+    _append_profile_knowledge(lines, profile)
     lines.append("[/DigitalEmployeeProfile]")
     return SystemMessage(content="\n".join(lines))
+
+
+def _append_profile_list(
+    lines: list[str],
+    profile: Mapping[str, object],
+    key: str,
+    label: str,
+) -> None:
+    values = profile.get(key)
+    if not isinstance(values, list):
+        return
+    rendered = "；".join(_clean(item) for item in values if _clean(item))
+    if rendered:
+        lines.append(f"{label}: {rendered}")
+
+
+def _append_profile_services(lines: list[str], profile: Mapping[str, object]) -> None:
+    services = profile.get("service_catalog")
+    if not isinstance(services, list):
+        return
+    rendered = [
+        f"{_clean(item.get('title'))}（{_clean(item.get('summary'))}）"
+        for item in services
+        if isinstance(item, Mapping) and _clean(item.get("title"))
+    ]
+    if rendered:
+        lines.append(f"正式服务: {'；'.join(rendered)}")
+
+
+def _append_profile_knowledge(lines: list[str], profile: Mapping[str, object]) -> None:
+    knowledge_refs = profile.get("knowledge_refs")
+    if not isinstance(knowledge_refs, list):
+        return
+    rendered = [
+        f"{_clean(item.get('id'))}（{_clean(item.get('owning_org'))}，默认{_clean(item.get('default_mode'))}检索）"
+        for item in knowledge_refs
+        if isinstance(item, Mapping) and _clean(item.get("id"))
+    ]
+    if rendered:
+        lines.append(f"授权知识库: {'；'.join(rendered)}")
+
+
+def _job_charter_direct_response(
+    context: InvocationContext,
+    profile: DigitalEmployeeProfile,
+) -> str | None:
+    if context.state.get("digital_employee_status") != "found":
+        return None
+    message = _clean(context.state.get("latest_user_message")) or _prompt_content(context.prompt)
+    intent = match_job_charter_intent(message)
+    if intent is None:
+        return None
+    response = render_job_charter_response(profile, intent)
+    try:
+        from agentseek_enterprise.observability import emit_enterprise_event
+    except ImportError:
+        return response
+    emit_enterprise_event(
+        "digital_employee_service_discovery",
+        status="succeeded",
+        session_id=context.session_id,
+        digital_employee_id=profile.digital_employee_id,
+        profile_version=profile.profile_version,
+        intent=intent.value,
+    )
+    return response
+
+
+def _prompt_content(prompt: str | list[dict[str, Any]]) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    return "\n".join(str(item.get("text") or "") for item in prompt if isinstance(item, Mapping))
 
 
 def _current_work_message(state: Mapping[str, object]) -> SystemMessage | None:

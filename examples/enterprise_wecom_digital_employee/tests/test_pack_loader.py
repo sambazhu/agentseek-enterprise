@@ -49,12 +49,21 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.9.3"
+    assert loaded.pack_version == "1.10.0"
+    assert loaded.profile.profile_schema_version == 2
+    assert loaded.profile.employee_code == "DE-SD-001"
+    assert loaded.profile.display_name == "战略发展部数字员工"
+    assert loaded.profile.identity_scope == "department"
+    assert loaded.profile.mission.startswith("基于授权知识")
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.8.3"
+    assert loaded.profile.profile_version == "1.9.0"
+    assert loaded.profile.service_catalog[0].service_id == "securities-report"
+    assert loaded.profile.service_catalog[0].playbook_ref == "securities-industry-report@1"
+    assert loaded.profile.behavior_policy_refs == ("industry-report-v1",)
+    assert loaded.policy_ids == ("industry-report-v1",)
     assert len(loaded.profile.knowledge_refs) == 1
     knowledge = loaded.profile.knowledge_refs[0]
     assert knowledge.server == "department-knowledge"
@@ -235,6 +244,91 @@ def test_loader_rejects_write_capability_in_knowledge_contract(tmp_path: Path) -
         lambda document: document["playbooks"][0].update({"entrypoint": "outside.module:run"}),
     )
     with pytest.raises(PackLoadError, match="outside the allowed package"):
+        loader(pack_root).load()
+
+
+def test_profile_v1_remains_loadable_with_compatible_defaults(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+
+    def mutate(document: dict) -> None:
+        for field in (
+            "profile_schema_version",
+            "employee_code",
+            "display_name",
+            "identity_scope",
+            "mission",
+            "service_catalog",
+            "behavior_principles",
+            "behavior_policy_refs",
+        ):
+            document.pop(field, None)
+
+    rewrite_yaml(pack_root / "profile.yaml", mutate)
+
+    profile = loader(pack_root).load().profile
+
+    assert profile.profile_schema_version == 1
+    assert profile.employee_code == profile.digital_employee_id
+    assert profile.display_name == profile.name
+    assert profile.identity_scope == "role"
+    assert profile.mission == profile.job_role
+    assert profile.service_catalog == ()
+    assert profile.behavior_principles == ()
+    assert profile.behavior_policy_refs == ()
+
+
+@pytest.mark.parametrize("schema_version", [0, 3, True, "2"])
+def test_loader_rejects_unsupported_profile_schema_version(
+    tmp_path: Path,
+    schema_version: object,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "profile.yaml",
+        lambda document: document.update({"profile_schema_version": schema_version}),
+    )
+
+    with pytest.raises(PackLoadError, match="unsupported profile_schema_version"):
+        loader(pack_root).load()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("playbook_ref", "unknown@1", "service_catalog playbook_ref contains undeclared"),
+        ("service_id", "securities-report", "duplicate service id"),
+    ],
+)
+def test_loader_rejects_invalid_service_catalog(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    pack_root = copy_pack(tmp_path)
+
+    def mutate(document: dict) -> None:
+        if field == "service_id":
+            duplicate = dict(document["service_catalog"][0])
+            duplicate[field] = value
+            document["service_catalog"].append(duplicate)
+        else:
+            document["service_catalog"][0][field] = value
+
+    rewrite_yaml(pack_root / "profile.yaml", mutate)
+
+    with pytest.raises(PackLoadError, match=message):
+        loader(pack_root).load()
+
+
+def test_loader_rejects_undeclared_behavior_policy(tmp_path: Path) -> None:
+    pack_root = copy_pack(tmp_path)
+    rewrite_yaml(
+        pack_root / "profile.yaml",
+        lambda document: document["behavior_policy_refs"].append("unknown-policy"),
+    )
+
+    with pytest.raises(PackLoadError, match="behavior_policy_refs contains undeclared"):
         loader(pack_root).load()
 
 

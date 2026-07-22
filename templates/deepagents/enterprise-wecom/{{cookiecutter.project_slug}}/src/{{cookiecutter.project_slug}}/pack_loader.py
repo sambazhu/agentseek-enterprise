@@ -67,13 +67,31 @@ class KnowledgeRefSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceCatalogEntry:
+    service_id: str
+    title: str
+    summary: str
+    playbook_ref: str
+    workflow_steps: tuple[str, ...]
+    example_requests: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DigitalEmployeeProfile:
+    profile_schema_version: int
     digital_employee_id: str
+    employee_code: str
     tenant_id: str
     name: str
+    display_name: str
+    identity_scope: str
     owning_org: str
     job_role: str
+    mission: str
     responsibilities: tuple[str, ...]
+    service_catalog: tuple[ServiceCatalogEntry, ...]
+    behavior_principles: tuple[str, ...]
+    behavior_policy_refs: tuple[str, ...]
     pack_id: str
     pack_version: str
     supported_playbooks: tuple[str, ...]
@@ -107,6 +125,7 @@ class LoadedPackManifest:
     playbooks: tuple[PlaybookSpec, ...]
     assets: tuple[AssetSpec, ...]
     policies: tuple[str, ...]
+    policy_ids: tuple[str, ...]
     eval_manifest: str
     content_files: tuple[PackContentFile, ...]
 
@@ -144,9 +163,16 @@ class RestrictedPackLoader:
         playbooks = self._load_playbooks(manifest.get("playbooks", []), skills=skills)
         assets = self._load_assets(manifest.get("assets", []))
         policies = self._load_policy_paths(manifest.get("policies", []))
+        policy_ids = self._load_policy_ids(policies)
         eval_manifest = self._load_eval_manifest(manifest.get("evals"))
         profile = self._load_profile(profile_path, pack_id=pack_id, pack_version=pack_version)
-        _validate_profile_refs(profile, skills=skills, playbooks=playbooks, assets=assets)
+        _validate_profile_refs(
+            profile,
+            skills=skills,
+            playbooks=playbooks,
+            assets=assets,
+            policy_ids=policy_ids,
+        )
 
         content_paths = {"pack.yaml", profile_path, *policies, eval_manifest}
         for skill in skills:
@@ -167,6 +193,7 @@ class RestrictedPackLoader:
             playbooks=playbooks,
             assets=assets,
             policies=policies,
+            policy_ids=policy_ids,
             eval_manifest=eval_manifest,
             content_files=content_files,
         )
@@ -288,6 +315,14 @@ class RestrictedPackLoader:
         _require_unique(paths, "policy path")
         return paths
 
+    def _load_policy_ids(self, paths: Sequence[str]) -> tuple[str, ...]:
+        policy_ids = tuple(
+            _required_text(_yaml_mapping(self._local_file(path).read_bytes(), path), "policy_id")
+            for path in paths
+        )
+        _require_unique(policy_ids, "policy id")
+        return policy_ids
+
     def _load_eval_manifest(self, value: Any) -> str:
         mapping = _require_mapping(value, "evals")
         path = _required_text(mapping, "manifest")
@@ -302,14 +337,54 @@ class RestrictedPackLoader:
         pack_version: str,
     ) -> DigitalEmployeeProfile:
         profile = _yaml_mapping(self._local_file(path).read_bytes(), path)
+        profile_schema_version = profile.get("profile_schema_version", 1)
+        if (
+            not isinstance(profile_schema_version, int)
+            or isinstance(profile_schema_version, bool)
+            or profile_schema_version not in {1, 2}
+        ):
+            raise PackLoadError("unsupported profile_schema_version")
+        digital_employee_id = _required_text(profile, "digital_employee_id")
+        name = _required_text(profile, "name")
+        job_role = _required_text(profile, "job_role")
         owning_org = _required_text(profile, "owning_org")
+        if profile_schema_version == 2:
+            employee_code = _required_text(profile, "employee_code")
+            display_name = _required_text(profile, "display_name")
+            identity_scope = _required_text(profile, "identity_scope")
+            mission = _required_text(profile, "mission")
+            service_catalog = _service_catalog(profile.get("service_catalog"))
+            behavior_principles = _text_sequence(
+                profile.get("behavior_principles"),
+                "behavior_principles",
+            )
+            behavior_policy_refs = _text_sequence(
+                profile.get("behavior_policy_refs"),
+                "behavior_policy_refs",
+            )
+        else:
+            employee_code = digital_employee_id
+            display_name = name
+            identity_scope = "role"
+            mission = job_role
+            service_catalog = ()
+            behavior_principles = ()
+            behavior_policy_refs = ()
         loaded = DigitalEmployeeProfile(
-            digital_employee_id=_required_text(profile, "digital_employee_id"),
+            profile_schema_version=profile_schema_version,
+            digital_employee_id=digital_employee_id,
+            employee_code=employee_code,
             tenant_id=_required_text(profile, "tenant_id"),
-            name=_required_text(profile, "name"),
+            name=name,
+            display_name=display_name,
+            identity_scope=identity_scope,
             owning_org=owning_org,
-            job_role=_required_text(profile, "job_role"),
+            job_role=job_role,
+            mission=mission,
             responsibilities=_text_sequence(profile.get("responsibilities"), "responsibilities"),
+            service_catalog=service_catalog,
+            behavior_principles=behavior_principles,
+            behavior_policy_refs=behavior_policy_refs,
             pack_id=_required_text(profile, "pack_id"),
             pack_version=_required_text(profile, "pack_version"),
             supported_playbooks=_text_sequence(profile.get("supported_playbooks"), "supported_playbooks"),
@@ -475,6 +550,7 @@ def _validate_profile_refs(
     skills: Sequence[SkillSpec],
     playbooks: Sequence[PlaybookSpec],
     assets: Sequence[AssetSpec],
+    policy_ids: Sequence[str],
 ) -> None:
     _require_declared_refs(
         profile.skill_refs,
@@ -490,6 +566,16 @@ def _validate_profile_refs(
         profile.asset_refs,
         {f"{item.asset_id}@{item.version}" for item in assets},
         "asset_refs",
+    )
+    _require_declared_refs(
+        tuple(service.playbook_ref for service in profile.service_catalog),
+        {f"{item.playbook_id}@{item.version}" for item in playbooks},
+        "service_catalog playbook_ref",
+    )
+    _require_declared_refs(
+        profile.behavior_policy_refs,
+        set(policy_ids),
+        "behavior_policy_refs",
     )
 
 
@@ -632,6 +718,23 @@ def _knowledge_refs(value: Any, *, owning_org: str) -> tuple[KnowledgeRefSpec, .
         )
     _require_unique((reference.knowledge_id for reference in references), "knowledge reference id")
     return tuple(references)
+
+
+def _service_catalog(value: Any) -> tuple[ServiceCatalogEntry, ...]:
+    entries = _mapping_sequence(value, "service_catalog")
+    services = tuple(
+        ServiceCatalogEntry(
+            service_id=_required_text(entry, "service_id"),
+            title=_required_text(entry, "title"),
+            summary=_required_text(entry, "summary"),
+            playbook_ref=_required_text(entry, "playbook_ref"),
+            workflow_steps=_text_sequence(entry.get("workflow_steps"), "workflow_steps"),
+            example_requests=_text_sequence(entry.get("example_requests"), "example_requests"),
+        )
+        for entry in entries
+    )
+    _require_unique((service.service_id for service in services), "service id")
+    return services
 
 
 def _text_sequence(value: Any, label: str) -> tuple[str, ...]:

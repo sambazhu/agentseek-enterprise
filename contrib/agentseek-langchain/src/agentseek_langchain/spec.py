@@ -24,6 +24,7 @@ InputBuilder = Callable[[InvocationContext], object]
 OutputParser = Callable[[object], str]
 ConfigBuilder = Callable[[InvocationContext], Mapping[str, object] | None]
 StreamBuilder = Callable[[object, object, Mapping[str, object] | None, InvocationContext], AsyncIterator[str]]
+DirectResponder = Callable[[InvocationContext], str | None]
 
 
 @runtime_checkable
@@ -43,13 +44,23 @@ class RunnableSpec:
     parse_output: OutputParser
     build_config: ConfigBuilder = lambda _context: default_runnable_config(_context)
     stream_output: StreamBuilder | None = None
+    direct_response: DirectResponder | None = None
 
     async def invoke(self, context: InvocationContext) -> str:
+        if self.direct_response is not None:
+            response = self.direct_response(context)
+            if response is not None:
+                return response
         runnable_input, config = self._prepare(context)
         result = await invoke_runnable(self.runnable, runnable_input, config, runtime_context=context.runtime_context)
         return self.parse_output(result)
 
     async def stream(self, context: InvocationContext) -> AsyncIterator[str]:
+        if self.direct_response is not None:
+            response = self.direct_response(context)
+            if response is not None:
+                yield response
+                return
         runnable_input, config = self._prepare(context)
         if self.stream_output is None:
             yield self.parse_output(

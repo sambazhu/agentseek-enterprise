@@ -102,7 +102,11 @@ def test_enrichment_publishes_safe_profile_and_preserves_enterprise_context(tmp_
     assert state["digital_employee_status"] == "found"
     profile = state["digital_employee_profile"]
     assert profile["digital_employee_id"] == "industry-report"
+    assert profile["employee_code"] == "DE-SD-001"
+    assert profile["display_name"] == "战略发展部数字员工"
     assert profile["owning_org"] == "战略发展部"
+    assert profile["service_catalog"][0]["playbook_ref"] == "securities-industry-report@1"
+    assert profile["behavior_policy_refs"] == ["industry-report-v1"]
     assert "tool_grants" not in profile
     assert "data_scopes" not in profile
     runtime = state["_langgraph_runtime_context"]
@@ -141,9 +145,9 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.8.3"
-    assert first.item.digital_employee_profile_version == "1.8.3"
-    assert first.item.pack_version == "1.9.3"
+    assert first.item.skill_set_version == "1.9.0"
+    assert first.item.digital_employee_profile_version == "1.9.0"
+    assert first.item.pack_version == "1.10.0"
     assert composition.research_template_path.is_relative_to(tmp_path / "snapshots")
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests

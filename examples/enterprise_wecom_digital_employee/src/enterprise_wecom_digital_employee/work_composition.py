@@ -1812,11 +1812,29 @@ def _merge_runtime_context(state: dict[str, Any], key: str, value: Mapping[str, 
 
 def _profile_summary(profile: DigitalEmployeeProfile) -> dict[str, object]:
     return {
+        "profile_schema_version": profile.profile_schema_version,
         "digital_employee_id": profile.digital_employee_id,
+        "employee_code": profile.employee_code,
         "name": profile.name,
+        "display_name": profile.display_name,
+        "identity_scope": profile.identity_scope,
         "owning_org": profile.owning_org,
         "job_role": profile.job_role,
+        "mission": profile.mission,
         "responsibilities": list(profile.responsibilities),
+        "service_catalog": [
+            {
+                "service_id": service.service_id,
+                "title": service.title,
+                "summary": service.summary,
+                "playbook_ref": service.playbook_ref,
+                "workflow_steps": list(service.workflow_steps),
+                "example_requests": list(service.example_requests),
+            }
+            for service in profile.service_catalog
+        ],
+        "behavior_principles": list(profile.behavior_principles),
+        "behavior_policy_refs": list(profile.behavior_policy_refs),
         "pack_id": profile.pack_id,
         "pack_version": profile.pack_version,
         "supported_playbooks": list(profile.supported_playbooks),
@@ -1857,6 +1875,7 @@ def _permissions_digest(profile: DigitalEmployeeProfile) -> str:
         ],
         "requester_scope": profile.requester_scope,
         "escalation_policy": dict(profile.escalation_policy),
+        "behavior_policy_refs": profile.behavior_policy_refs,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return f"sha256:{sha256(encoded).hexdigest()}"
