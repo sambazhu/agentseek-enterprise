@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from enterprise_wecom_digital_employee.channel_command import authenticated_user_command_text
+from enterprise_wecom_digital_employee.channel_command import (
+    authenticated_user_command_text,
+    has_untrusted_channel_envelope,
+)
 from enterprise_wecom_digital_employee.pack_loader import PlaybookSpec
 
 
@@ -70,6 +74,12 @@ def route_playbook(
         return PlaybookRouteResult(
             status=PlaybookRouteStatus.FORBIDDEN,
             reason_code=PlaybookRouteReason.REQUESTER_FORBIDDEN,
+        )
+
+    if has_untrusted_channel_envelope(message):
+        return PlaybookRouteResult(
+            status=PlaybookRouteStatus.OUT_OF_SCOPE,
+            reason_code=PlaybookRouteReason.NO_MATCH,
         )
 
     command = _normalized_command(message)
@@ -156,13 +166,18 @@ def _candidate_result(
 
 
 def _normalized_command(message: str) -> str:
-    command = authenticated_user_command_text(message).strip().lower()
+    command = _visible_normalized_text(authenticated_user_command_text(message))
     command = _TRAILING_PUNCTUATION_RE.sub("", command).strip()
     return re.sub(r"\s+", "", command)
 
 
 def _normalized_term(term: str) -> str:
-    return re.sub(r"\s+", "", term.strip().lower())
+    return re.sub(r"\s+", "", _visible_normalized_text(term))
+
+
+def _visible_normalized_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    return "".join(character for character in normalized if unicodedata.category(character) != "Cf")
 
 
 def _explicitly_selects(command: str, alias: str) -> bool:

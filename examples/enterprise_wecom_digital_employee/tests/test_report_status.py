@@ -57,32 +57,67 @@ def test_status_renderer_returns_selected_ledger_facts_without_draft_body() -> N
             "claim_count": 9,
             "markdown": "# This must never be rendered",
         },
-        "report_artifacts": [{
-            "artifact_id": "artifact_test",
-            "format": "docx",
-            "report_draft_version": 4,
-            "current": True,
-            "publication_status": "published",
-            "delivery_status": "delivered",
-            "storage_key": "/private/secret.docx",
-        }],
-        "report_publications": [{
-            "publication_version": 2,
-            "status": "published",
-            "artifact_id": "artifact_test",
-            "report_draft_version": 4,
-            "current": True,
-            "delivery_status": "delivered",
-        }],
-        "report_deliveries": [{
-            "delivery_version": 3,
-            "status": "delivered",
-            "artifact_id": "artifact_test",
-            "report_draft_version": 4,
-            "current": True,
-            "grant_state": "consumed",
-            "grant_hash": "secret-token",
-        }],
+        "report_artifacts": [
+            {
+                "artifact_id": "artifact_test",
+                "format": "docx",
+                "report_draft_version": 4,
+                "current": True,
+                "publication_status": "published",
+                "delivery_status": "delivered",
+                "storage_key": "/private/secret.docx",
+            },
+            {
+                "artifact_id": "artifact_old",
+                "format": "docx",
+                "report_draft_version": 3,
+                "current": False,
+            },
+        ],
+        "report_publications": [
+            {
+                "publication_version": 2,
+                "status": "published",
+                "artifact_id": "artifact_test",
+                "report_draft_version": 4,
+                "current": True,
+                "delivery_status": "delivered",
+            },
+            {
+                "publication_version": 1,
+                "status": "published",
+                "artifact_id": "artifact_old",
+                "report_draft_version": 3,
+                "current": False,
+            },
+        ],
+        "report_deliveries": [
+            {
+                "delivery_version": 3,
+                "status": "delivered",
+                "artifact_id": "artifact_test",
+                "report_draft_version": 4,
+                "current": True,
+                "grant_state": "consumed",
+                "grant_hash": "secret-token",
+            },
+            {
+                "delivery_version": 2,
+                "status": "delivered",
+                "artifact_id": "artifact_test",
+                "report_draft_version": 4,
+                "current": True,
+                "grant_state": "expired",
+            },
+            {
+                "delivery_version": 1,
+                "status": "delivered",
+                "artifact_id": "artifact_old",
+                "report_draft_version": 3,
+                "current": False,
+                "grant_state": "consumed",
+            },
+        ],
     }
 
     rendered = render_report_status(
@@ -94,14 +129,45 @@ def test_status_renderer_returns_selected_ledger_facts_without_draft_body() -> N
         ),
     )
 
-    assert "artifact_id=artifact_test" in rendered
-    assert "publication_v2" in rendered
-    assert "delivery_v3" in rendered
-    assert "grant_state=consumed" in rendered
+    assert "当前文件：ReportArtifact v4（DOCX），发布=已发布，交付=已交付" in rendered
+    assert "当前发布：ReportPublication v2，绑定 ReportArtifact v4，已发布" in rendered
+    assert "最近交付：ReportDelivery v3，绑定 ReportArtifact v4，已交付" in rendered
+    assert "下载授权=已下载" in rendered
+    assert "历史 ReportArtifact：1 个" in rendered
+    assert "历史 ReportPublication：1 个" in rendered
+    assert "历史 ReportDelivery：2 个" in rendered
+    assert "artifact_test" not in rendered
+    assert "artifact_old" not in rendered
     assert "This must never be rendered" not in rendered
     assert "/private/secret.docx" not in rendered
     assert "secret-token" not in rendered
     assert "ReportDraft" not in rendered
+
+
+def test_status_renderer_labels_all_stale_records_as_history() -> None:
+    summary = {
+        "work_id": "work_test",
+        "status": "draft",
+        "current_phase": "intake",
+        "playbook_id": "securities-industry-report",
+        "playbook_version": "1",
+        "report_artifacts": [{
+            "artifact_id": "artifact_old",
+            "format": "docx",
+            "report_draft_version": 3,
+            "current": False,
+        }],
+    }
+
+    rendered = render_report_status(
+        summary,
+        sections=(ReportStatusSection.ARTIFACT,),
+    )
+
+    assert "当前没有有效的 ReportArtifact" in rendered
+    assert "历史 ReportArtifact：1 个" in rendered
+    assert "当前文件" not in rendered
+    assert "artifact_old" not in rendered
 
 
 def test_status_renderer_reports_absent_selected_section() -> None:

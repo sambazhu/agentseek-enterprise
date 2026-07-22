@@ -53,6 +53,7 @@ from bub.envelope import content_of, field_of
 from bub.types import Envelope, State
 from sqlalchemy import Engine, create_engine
 
+from {{ cookiecutter.project_slug }}.capability_registry import build_capability_registry
 from {{ cookiecutter.project_slug }}.pack_loader import (
     DigitalEmployeeProfile,
     FilesystemPackSnapshotStore,
@@ -1653,14 +1654,27 @@ def build_work_binding() -> PlaybookRegistry:
 @lru_cache(maxsize=1)
 def get_playbook_registry() -> PlaybookRegistry:
     composition = get_work_composition()
+    capability_registry = build_capability_registry(
+        composition.profile,
+        mcp_config_path=get_settings().resolved_mcp_config_path(),
+    )
     spec = composition.playbook
     service = _service_for_playbook(composition.profile, spec.ref)
     factory = load_playbook_factory(
         spec.entrypoint,
         allowed_package="{{ cookiecutter.project_slug }}",
     )
-    binding = factory(composition=composition, spec=spec, service=service)
-    return PlaybookRegistry(profile=composition.profile, bindings=(binding,))
+    binding = factory(
+        composition=composition,
+        spec=spec,
+        service=service,
+        capability_registry=capability_registry,
+    )
+    return PlaybookRegistry(
+        profile=composition.profile,
+        bindings=(binding,),
+        capability_registry=capability_registry,
+    )
 
 
 @lru_cache(maxsize=1)

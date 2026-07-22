@@ -17,3 +17,14 @@ def authenticated_user_command_text(message: str) -> str:
     if not _WECOM_CHANNEL_RE.search(text[:marker.start()]):
         return text
     return text[marker.end():].lstrip("\r\n")
+
+
+def has_untrusted_channel_envelope(message: str) -> bool:
+    """Return true when a Date marker is present without an authenticated channel prefix."""
+
+    text = str(message or "")
+    matches = tuple(_CHANNEL_DATE_LINE_RE.finditer(text))
+    if not matches:
+        return False
+    marker = matches[-1]
+    return _WECOM_CHANNEL_RE.search(text[:marker.start()]) is None

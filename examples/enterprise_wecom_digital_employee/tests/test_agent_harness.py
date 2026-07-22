@@ -118,6 +118,48 @@ def test_routed_agent_invokes_only_the_selected_playbook(monkeypatch) -> None:
     assert calls == ["summary-agent", "direct-agent"]
 
 
+def test_runtime_agents_share_one_profile_capability_pool(monkeypatch) -> None:
+    shared_tools = (object(), object())
+    calls: list[dict[str, object]] = []
+    report_binding = object()
+    summary_binding = object()
+
+    class FakeRegistry:
+        profile = SimpleNamespace(tool_grants=("legacy-grant",))
+        playbook_refs = (
+            "securities-industry-report@1",
+            "department-summary-test@1",
+        )
+
+        @staticmethod
+        def shared_capability_tools():
+            return shared_tools
+
+        @staticmethod
+        def get(reference: str):
+            return {
+                "securities-industry-report@1": report_binding,
+                "department-summary-test@1": summary_binding,
+            }[reference]
+
+    def fake_build_agent(**kwargs):
+        calls.append(kwargs)
+        return kwargs.get("binding") or "direct"
+
+    monkeypatch.setattr(agent_module, "build_agent", fake_build_agent)
+
+    routed = agent_module._build_runtime_runnable(cast(Any, FakeRegistry()))
+
+    assert isinstance(routed, agent_module.RoutedAgentRunnable)
+    assert len(calls) == 3
+    assert all(call["shared_capability_tools"] == shared_tools for call in calls)
+    assert calls[0]["profile_tool_grants"] == ("legacy-grant",)
+    assert {call.get("binding") for call in calls[1:]} == {
+        report_binding,
+        summary_binding,
+    }
+
+
 def test_employee_context_hides_internal_employee_hash_from_employee_reply_context() -> None:
     message = agent_module._employee_context_message({
         "employee_context": {
@@ -153,7 +195,7 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
     class FakeRegistry:
         profile = SimpleNamespace(
             digital_employee_id="industry-report",
-            profile_version="1.11.0",
+            profile_version="1.12.0",
         )
 
         @staticmethod
@@ -202,7 +244,7 @@ def test_deterministic_playbook_response_bypasses_model_and_emits_safe_event(
                 "status": "succeeded",
                 "session_id": "wecom:test",
                 "digital_employee_id": "industry-report",
-                "profile_version": "1.11.0",
+                "profile_version": "1.12.0",
                 "playbook_ref": "securities-industry-report@1",
                 "response_kind": "ledger_status",
             },

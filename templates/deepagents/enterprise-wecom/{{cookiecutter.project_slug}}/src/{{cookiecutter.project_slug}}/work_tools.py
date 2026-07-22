@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
 from agentseek_wecom.outbound import TemplateCardIntent, register_template_card_intent
 from agentseek_work import (
@@ -71,8 +72,14 @@ from {{ cookiecutter.project_slug }}.work_composition import (
     WorkCompositionError,
 )
 
+MCPInvoker = Callable[[str, str, dict[str, Any] | None, bool], Awaitable[str]]
 
-def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  # noqa: C901
+
+def work_tools(  # noqa: C901
+    composition: IndustryReportWorkComposition,
+    *,
+    invoke_mcp: MCPInvoker = call_mcp_tool,
+) -> list[BaseTool]:
     """Return requester-scoped tools backed by the durable WorkItem ledger."""
 
     @tool("create_industry_report_work")
@@ -198,7 +205,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         """
 
         async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
-            return await call_mcp_tool(server, tool_name, arguments, confirmed)
+            return await invoke_mcp(server, tool_name, arguments, confirmed)
 
         try:
             result = await _run_internal_research(
@@ -245,7 +252,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         """
 
         async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
-            return await call_mcp_tool(server, tool_name, arguments, confirmed)
+            return await invoke_mcp(server, tool_name, arguments, confirmed)
 
         try:
             result = await _resolve_research_gaps(
@@ -340,7 +347,7 @@ def work_tools(composition: IndustryReportWorkComposition) -> list[BaseTool]:  #
         """
 
         async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
-            return await call_mcp_tool(server, tool_name, arguments, confirmed)
+            return await invoke_mcp(server, tool_name, arguments, confirmed)
 
         try:
             context = await _prepare_report_draft_context(

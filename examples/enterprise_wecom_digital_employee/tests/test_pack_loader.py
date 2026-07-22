@@ -49,7 +49,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.12.0"
+    assert loaded.pack_version == "1.13.0"
     assert loaded.profile.profile_schema_version == 2
     assert loaded.profile.employee_code == "DE-SD-001"
     assert loaded.profile.display_name == "战略发展部数字员工"
@@ -59,7 +59,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
     assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.11.0"
+    assert loaded.profile.profile_version == "1.12.0"
     assert loaded.profile.service_catalog[0].service_id == "securities-report"
     assert loaded.profile.service_catalog[0].playbook_ref == "securities-industry-report@1"
     assert loaded.profile.behavior_policy_refs == ("industry-report-v1",)

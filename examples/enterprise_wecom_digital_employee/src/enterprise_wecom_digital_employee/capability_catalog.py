@@ -41,7 +41,7 @@ def resolve_runtime_capabilities(
     effective_data_scopes: frozenset[str],
     configured_servers: frozenset[str],
 ) -> RuntimeCapabilityAvailability:
-    """Intersect Profile declarations, Playbook permissions, and deployment config."""
+    """Intersect declared grants and scopes with the current deployment config."""
 
     knowledge_servers = {reference.server for reference in profile.knowledge_refs}
     return RuntimeCapabilityAvailability(

@@ -53,6 +53,7 @@ from bub.envelope import content_of, field_of
 from bub.types import Envelope, State
 from sqlalchemy import Engine, create_engine
 
+from enterprise_wecom_digital_employee.capability_registry import build_capability_registry
 from enterprise_wecom_digital_employee.pack_loader import (
     DigitalEmployeeProfile,
     FilesystemPackSnapshotStore,
@@ -1653,14 +1654,27 @@ def build_work_binding() -> PlaybookRegistry:
 @lru_cache(maxsize=1)
 def get_playbook_registry() -> PlaybookRegistry:
     composition = get_work_composition()
+    capability_registry = build_capability_registry(
+        composition.profile,
+        mcp_config_path=get_settings().resolved_mcp_config_path(),
+    )
     spec = composition.playbook
     service = _service_for_playbook(composition.profile, spec.ref)
     factory = load_playbook_factory(
         spec.entrypoint,
         allowed_package="enterprise_wecom_digital_employee",
     )
-    binding = factory(composition=composition, spec=spec, service=service)
-    return PlaybookRegistry(profile=composition.profile, bindings=(binding,))
+    binding = factory(
+        composition=composition,
+        spec=spec,
+        service=service,
+        capability_registry=capability_registry,
+    )
+    return PlaybookRegistry(
+        profile=composition.profile,
+        bindings=(binding,),
+        capability_registry=capability_registry,
+    )
 
 
 @lru_cache(maxsize=1)

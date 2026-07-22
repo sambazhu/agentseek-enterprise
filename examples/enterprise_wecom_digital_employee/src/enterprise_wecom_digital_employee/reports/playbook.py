@@ -7,6 +7,7 @@ from typing import Any
 from agentseek_work import WorkItem
 from bub.types import Envelope, State
 
+from enterprise_wecom_digital_employee.capability_registry import CapabilityRegistry
 from enterprise_wecom_digital_employee.pack_loader import PlaybookSpec, ServiceCatalogEntry
 from enterprise_wecom_digital_employee.report_output_guard import enforce_m2_output_guard
 from enterprise_wecom_digital_employee.report_status import (
@@ -22,6 +23,7 @@ class IndustryReportPlaybookBinding:
     spec: PlaybookSpec
     composition: IndustryReportWorkComposition
     service: ServiceCatalogEntry
+    capability_registry: CapabilityRegistry | None = None
 
     @property
     def playbook_ref(self) -> str:
@@ -41,7 +43,12 @@ class IndustryReportPlaybookBinding:
         self.composition.enrich_state(message, session_id, state)
 
     def tools(self) -> Sequence[Any]:
-        return work_tools(self.composition)
+        if self.capability_registry is None:
+            return work_tools(self.composition)
+        return work_tools(
+            self.composition,
+            invoke_mcp=self.capability_registry.invoke_mcp,
+        )
 
     def guard_output(self, result: object, output: str) -> str:
         return enforce_m2_output_guard(result, output)
@@ -77,7 +84,13 @@ def build_playbook(
     composition: IndustryReportWorkComposition,
     spec: PlaybookSpec,
     service: ServiceCatalogEntry,
+    capability_registry: CapabilityRegistry | None = None,
 ) -> IndustryReportPlaybookBinding:
     if composition.playbook.ref != spec.ref or service.playbook_ref != spec.ref:
         raise ValueError("report Playbook binding inputs do not share one versioned reference")
-    return IndustryReportPlaybookBinding(spec=spec, composition=composition, service=service)
+    return IndustryReportPlaybookBinding(
+        spec=spec,
+        composition=composition,
+        service=service,
+        capability_registry=capability_registry,
+    )

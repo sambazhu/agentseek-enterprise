@@ -22,6 +22,18 @@ class ReportStatusSection(StrEnum):
 _ALL_SECTIONS = tuple(ReportStatusSection)
 _READ_PREFIX_RE = re.compile(r"^(?:请)?(?:查看|查询|显示|告诉我)(?:一下)?")
 _WHITESPACE_RE = re.compile(r"\s+")
+_STATUS_LABELS = {
+    "draft": "处理中",
+    "provisional": "待确认",
+    "confirmed": "已确认",
+    "pending": "待审批",
+    "approved": "已批准",
+    "published": "已发布",
+    "delivered": "已交付",
+    "consumed": "已下载",
+    "active": "可下载",
+    "expired": "已过期",
+}
 
 
 def match_report_status_sections(message: str) -> tuple[ReportStatusSection, ...] | None:
@@ -64,9 +76,9 @@ def render_report_status(
         return "当前员工没有可见的进行中任务。"
     selected = frozenset(sections)
     lines = [
-        f"当前任务：work_id={summary['work_id']}，status={summary['status']}，"
-        f"phase={summary['current_phase']}，"
-        f"playbook={summary['playbook_id']}@{summary['playbook_version']}。"
+        f"当前报告任务：work_id={summary['work_id']}，"
+        f"状态={_status_label(summary['status'])}，阶段={summary['current_phase']}，"
+        f"服务={summary['playbook_id']}@{summary['playbook_version']}。"
     ]
     if ReportStatusSection.BRIEF in selected:
         _append_brief(lines, summary.get(ReportStatusSection.BRIEF.value))
@@ -91,7 +103,9 @@ def _append_brief(lines: list[str], value: object) -> None:
     if not isinstance(value, Mapping):
         lines.append("当前任务尚未形成 ReportBrief。")
         return
-    lines.append(f"当前 ReportBrief：v{value.get('contract_version')}，status={value.get('status')}。")
+    lines.append(
+        f"ReportBrief v{value.get('contract_version')}：{_status_label(value.get('status'))}。"
+    )
     if value.get("status") == "provisional":
         lines.append(
             "如认可，请明确回复"
@@ -104,9 +118,8 @@ def _append_gap_decision(lines: list[str], value: object) -> None:
         return
     lines.extend((
         "最新缺口决策："
-        f"contract_v{value.get('contract_version')}，"
-        f"bound_report_brief_v{value.get('report_brief_version')}，"
-        f"status={value.get('status')}，action={value.get('action')}。",
+        f"v{value.get('contract_version')}，绑定 ReportBrief v{value.get('report_brief_version')}，"
+        f"{_status_label(value.get('status'))}，选择={value.get('action')}。",
         "缺口决策绑定版本是历史决策字段，不代表当前 ReportBrief 版本。",
     ))
 
@@ -116,10 +129,9 @@ def _append_outline(lines: list[str], value: object) -> None:
         lines.append("当前任务尚未形成 ReportOutline。")
         return
     lines.append(
-        "当前 ReportOutline："
-        f"v{value.get('contract_version')}，status={value.get('status')}，"
-        f"bound_report_brief_v{value.get('report_brief_version')}，"
-        f"unresolved={value.get('unresolved_question_count')}。"
+        f"ReportOutline v{value.get('contract_version')}：{_status_label(value.get('status'))}，"
+        f"绑定 ReportBrief v{value.get('report_brief_version')}，"
+        f"未解决问题 {value.get('unresolved_question_count')} 个。"
     )
     if value.get("status") == "provisional":
         lines.append(
@@ -133,10 +145,9 @@ def _append_draft(lines: list[str], value: object) -> None:
         lines.append("当前任务尚未形成 ReportDraft。")
         return
     lines.append(
-        "当前 ReportDraft："
-        f"v{value.get('contract_version')}，status={value.get('status')}，"
-        f"bound_report_outline_v{value.get('report_outline_version')}，"
-        f"quality={value.get('quality_status')}，claims={value.get('claim_count')}。"
+        f"ReportDraft v{value.get('contract_version')}：{_status_label(value.get('status'))}，"
+        f"绑定 ReportOutline v{value.get('report_outline_version')}，"
+        f"质量检查={value.get('quality_status')}，事实声明 {value.get('claim_count')} 条。"
     )
     if value.get("status") == "provisional":
         lines.append(
@@ -155,10 +166,9 @@ def _append_approval(lines: list[str], value: object) -> None:
         lines.append("当前任务尚未形成 ReportApproval。")
         return
     lines.append(
-        "当前 ReportApproval："
-        f"contract_v{value.get('contract_version')}，status={value.get('status')}，"
-        f"bound_report_draft_v{value.get('report_draft_version')}，"
-        f"current={str(bool(value.get('current'))).lower()}。"
+        f"ReportApproval v{value.get('contract_version')}：{_status_label(value.get('status'))}，"
+        f"绑定 ReportDraft v{value.get('report_draft_version')}，"
+        f"{'当前有效' if value.get('current') is True else '历史记录'}。"
     )
     if value.get("status") == "pending" and value.get("current") is True:
         lines.append(
@@ -177,15 +187,17 @@ def _append_artifacts(lines: list[str], value: object) -> None:
     if not records:
         lines.append("当前任务尚未形成 ReportArtifact。")
         return
-    for artifact in records:
+    current = tuple(record for record in records if record.get("current") is True)
+    for artifact in current:
         lines.append(
-            "当前 ReportArtifact："
-            f"artifact_id={artifact.get('artifact_id')}，format={artifact.get('format')}，"
-            f"bound_report_draft_v{artifact.get('report_draft_version')}，"
-            f"current={str(bool(artifact.get('current'))).lower()}，"
-            f"publication={artifact.get('publication_status')}，"
-            f"delivery={artifact.get('delivery_status')}。"
+            f"当前文件：ReportArtifact v{artifact.get('report_draft_version')}"
+            f"（{str(artifact.get('format') or '').upper()}），"
+            f"发布={_status_label(artifact.get('publication_status'))}，"
+            f"交付={_status_label(artifact.get('delivery_status'))}。"
         )
+    if not current:
+        lines.append("当前没有有效的 ReportArtifact。")
+    _append_history_count(lines, "ReportArtifact", len(records) - len(current))
 
 
 def _append_publications(lines: list[str], value: object) -> None:
@@ -193,16 +205,17 @@ def _append_publications(lines: list[str], value: object) -> None:
     if not records:
         lines.append("当前任务尚未形成 ReportPublication。")
         return
-    for publication in records:
+    current = tuple(record for record in records if record.get("current") is True)
+    for publication in current:
         lines.append(
-            "当前 ReportPublication："
-            f"publication_v{publication.get('publication_version')}，"
-            f"status={publication.get('status')}，"
-            f"artifact_id={publication.get('artifact_id')}，"
-            f"bound_report_draft_v{publication.get('report_draft_version')}，"
-            f"current={str(bool(publication.get('current'))).lower()}，"
-            f"delivery={publication.get('delivery_status')}。"
+            f"当前发布：ReportPublication v{publication.get('publication_version')}，"
+            f"绑定 ReportArtifact v{publication.get('report_draft_version')}，"
+            f"{_status_label(publication.get('status'))}，"
+            f"交付={_status_label(publication.get('delivery_status'))}。"
         )
+    if not current:
+        lines.append("当前没有有效的 ReportPublication。")
+    _append_history_count(lines, "ReportPublication", len(records) - len(current))
 
 
 def _append_deliveries(lines: list[str], value: object) -> None:
@@ -210,16 +223,18 @@ def _append_deliveries(lines: list[str], value: object) -> None:
     if not records:
         lines.append("当前任务尚未形成 ReportDelivery。")
         return
-    for delivery in records:
+    current = tuple(record for record in records if record.get("current") is True)
+    latest = max(current, key=_record_version, default=None)
+    if latest is not None:
         lines.append(
-            "当前 ReportDelivery："
-            f"delivery_v{delivery.get('delivery_version')}，"
-            f"status={delivery.get('status')}，"
-            f"artifact_id={delivery.get('artifact_id')}，"
-            f"bound_report_draft_v{delivery.get('report_draft_version')}，"
-            f"current={str(bool(delivery.get('current'))).lower()}，"
-            f"grant_state={delivery.get('grant_state')}。"
+            f"最近交付：ReportDelivery v{latest.get('delivery_version')}，"
+            f"绑定 ReportArtifact v{latest.get('report_draft_version')}，"
+            f"{_status_label(latest.get('status'))}，"
+            f"下载授权={_status_label(latest.get('grant_state'))}。"
         )
+    else:
+        lines.append("当前没有有效的 ReportDelivery。")
+    _append_history_count(lines, "ReportDelivery", len(records) - (1 if latest is not None else 0))
 
 
 def _mapping_records(value: object) -> tuple[Mapping[str, object], ...]:
@@ -239,6 +254,23 @@ def _append_if(
 ) -> None:
     if condition and section not in sections:
         sections.append(section)
+
+
+def _append_history_count(lines: list[str], contract_name: str, count: int) -> None:
+    if count > 0:
+        lines.append(f"历史 {contract_name}：{count} 个，完整记录保留在审计账本中。")
+
+
+def _record_version(record: Mapping[str, object]) -> int:
+    try:
+        return int(str(record.get("delivery_version") or "0"))
+    except ValueError:
+        return 0
+
+
+def _status_label(value: object) -> str:
+    raw = str(value or "未记录").strip()
+    return _STATUS_LABELS.get(raw, raw)
 
 
 def _normalized_command(message: str) -> str:

@@ -9,6 +9,7 @@ from agentseek_enterprise.observability import emit_enterprise_event
 from bub.envelope import content_of
 from bub.types import Envelope, State
 
+from enterprise_wecom_digital_employee.capability_registry import CapabilityRegistry
 from enterprise_wecom_digital_employee.pack_loader import (
     DigitalEmployeeProfile,
     PlaybookSpec,
@@ -72,6 +73,7 @@ class PlaybookRegistry:
         *,
         profile: DigitalEmployeeProfile,
         bindings: Sequence[PlaybookBinding],
+        capability_registry: CapabilityRegistry | None = None,
     ) -> None:
         by_ref: dict[str, PlaybookBinding] = {}
         for binding in bindings:
@@ -89,6 +91,7 @@ class PlaybookRegistry:
             details = ", ".join([*(f"missing={item}" for item in missing), *(f"extra={item}" for item in extra)])
             raise PlaybookRegistryError(f"Playbook bindings do not match Profile: {details}")
         self.profile = profile
+        self.capability_registry = capability_registry
         self._bindings = MappingProxyType({reference: by_ref[reference] for reference in profile.supported_playbooks})
 
     @property
@@ -162,6 +165,11 @@ class PlaybookRegistry:
 
     def tools(self) -> tuple[Any, ...]:
         return tuple(self.active_binding().tools())
+
+    def shared_capability_tools(self) -> tuple[Any, ...]:
+        if self.capability_registry is None:
+            return ()
+        return tuple(self.capability_registry.tools)
 
     def guard_output(self, result: object, output: str) -> str:
         return self.active_binding().guard_output(result, output)

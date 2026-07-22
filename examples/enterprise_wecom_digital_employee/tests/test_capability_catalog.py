@@ -44,7 +44,7 @@ def test_configured_mcp_server_names_reads_identifiers_only_and_fails_closed(tmp
     assert configured_mcp_server_names(tmp_path / "missing.json") == frozenset()
 
 
-def test_runtime_capabilities_intersect_profile_playbook_and_deployment() -> None:
+def test_runtime_capabilities_intersect_declared_access_and_deployment() -> None:
     profile = _load_profile()
 
     capabilities = resolve_runtime_capabilities(

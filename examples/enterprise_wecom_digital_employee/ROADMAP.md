@@ -890,14 +890,15 @@ v0.1.1 把已经活体验证的“行业报告编写数字员工”演进为“�
 - 保留 `digital_employee_id=industry-report` 作为不可变技术身份，避免已有 WorkItem 失联；
 - Profile v2 和 Pack 内 Playbook 权限声明向后兼容 v1 单 Playbook 配置；Pack schema 仍为 v1；
 - 建立 Playbook Registry，移除运行时“Profile 必须恰好一个 Playbook”的限制；
-- 按 Profile 最大权限、Playbook 权限子集、员工授权和当前政策求交集；
+- 建立 Profile 级统一能力池，Skills、文件、知识与 MCP 能力由普通对话和正式 Playbook 共享；
+- Playbook 仅额外引入 WorkItem、合同、状态机、审批和审计，不建立第二套能力系统；
 - 按“当前任务绑定、员工显式选择、确定性匹配、歧义澄清”在 Bot 内选择 Playbook；
 - 使用测试型第二 Playbook 验证隔离，不在缺少业务合同的情况下上线第二个正式流程；
 - 证券行业报告继续作为第一个生产 Playbook，v0.1.0 全部账本、状态机和交付协议保持不变。
 
-当前进度：M0 合同冻结、M1 Job Charter、M2 Playbook Registry 和 M3 确定性内部路由均已通过
-Mac mini 企微活体验收并正式关闭。M4 发布加固已启动：把精确报告状态查询下沉为 Binding 的
-确定性账本响应，按实际授权与 MCP 配置生成业务能力概览，并完成 v0.1.1 RC 全生命周期回归。
+当前进度：M0 合同冻结、M1 Job Charter、M2 Playbook Registry、M3 确定性内部路由和 M4-00 确定性服务响应
+均已通过 Mac mini 企微活体验收并正式关闭。M4-01 建立 Profile 级统一 Capability Registry，简化
+普通对话与正式服务的能力模型，并在此基础上完成 v0.1.1 RC 全生命周期回归。
 生产仍只启用证券报告 Playbook，第二 Playbook 继续只作为路由和隔离测试夹具。
 
 v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
