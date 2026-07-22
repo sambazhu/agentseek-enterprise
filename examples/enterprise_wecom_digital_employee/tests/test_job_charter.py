@@ -83,9 +83,13 @@ def test_job_charter_responses_are_profile_backed_and_explain_the_formal_workflo
     assert "analyze_file" not in capabilities
     assert "department-knowledge" not in capabilities
     assert "关键版本需要你明确确认" in capabilities
-    assert "正式服务\n" in capabilities
-    assert "\n\n协助能力\n" in capabilities
-    assert "\n\n执行边界\n" in capabilities
+    assert "**数字员工身份**" in identity
+    assert "**工作准则**" in identity
+    assert "**正式服务**\n" in capabilities
+    assert "\n\n**协助能力**\n- " in capabilities
+    assert "\n\n**执行边界**\n- " in capabilities
+    assert "**使用方式**" in usage
+    assert "**当前正式服务**" in usage
     assert "不会静默启动任务" in usage
     assert profile.service_catalog[0].example_requests[0] in usage
 
@@ -146,7 +150,7 @@ def test_agent_direct_response_requires_loaded_employee_profile_and_emits_safe_e
                 "status": "succeeded",
                 "session_id": "wecom:test",
                 "digital_employee_id": "industry-report",
-                    "profile_version": "1.12.0",
+                "profile_version": "1.12.0",
                 "intent": "identity",
             },
         )

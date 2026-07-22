@@ -86,11 +86,12 @@ def _identity_response(
     if profile.service_catalog:
         services = "、".join(service.title for service in profile.service_catalog)
         identity_lines.append(f"当前正式服务包括：{services}。")
-    sections = ["\n".join(identity_lines)]
+    sections = [f"**数字员工身份**\n{'\n'.join(identity_lines)}"]
     if overview := _capability_overview(capabilities):
-        sections.append(f"协助能力\n{overview}")
+        sections.append(f"**协助能力**\n- {overview}")
     if profile.behavior_principles:
-        sections.append(f"工作准则\n{'；'.join(profile.behavior_principles)}。")
+        principles = "\n".join(f"- {principle}" for principle in profile.behavior_principles)
+        sections.append(f"**工作准则**\n{principles}")
     sections.append("你可以回复“你能做什么”查看服务，或回复“怎么使用你”查看操作方式。")
     return "\n\n".join(sections)
 
@@ -103,15 +104,19 @@ def _capabilities_response(
         responsibilities = "；".join(profile.responsibilities)
         return f"我的岗位职责包括：{responsibilities}。"
 
-    service_lines = ["正式服务"]
+    service_lines = ["**正式服务**"]
     for index, service in enumerate(profile.service_catalog, start=1):
-        service_lines.append(f"{index}. {service.title}：{service.summary}。")
-        service_lines.append(f"   工作过程：{' → '.join(service.workflow_steps)}。")
-        service_lines.append(f"   示例：{service.example_requests[0]}")
+        service_lines.append(f"{index}. **{service.title}**")
+        service_lines.append(f"   - 服务说明：{service.summary}。")
+        service_lines.append(f"   - 工作过程：{' → '.join(service.workflow_steps)}。")
+        service_lines.append(f"   - 示例：{service.example_requests[0]}")
     sections = ["\n".join(service_lines)]
     if overview := _capability_overview(capabilities):
-        sections.append(f"协助能力\n{overview}")
-    sections.append("执行边界\n正式流程中的关键版本需要你明确确认，未完成授权或审批时不会自动推进。")
+        sections.append(f"**协助能力**\n- {overview}")
+    sections.append(
+        "**执行边界**\n"
+        "- 正式流程中的关键版本需要你明确确认，未完成授权或审批时不会自动推进。"
+    )
     return "\n\n".join(sections)
 
 
@@ -134,13 +139,19 @@ def _capability_overview(capabilities: RuntimeCapabilityAvailability) -> str:
 
 def _usage_response(profile: DigitalEmployeeProfile) -> str:
     lines = [
-        "你可以直接说明业务目标、报告主题、覆盖期和期望交付物。",
-        "我会先判断请求属于普通协助还是正式 Playbook；存在歧义时会先请你选择，不会静默启动任务。",
+        "**使用方式**",
+        "- 直接说明业务目标、报告主题、覆盖期和期望交付物。",
+        "- 我会先判断请求属于普通协助还是正式 Playbook；存在歧义时会先请你选择，不会静默启动任务。",
     ]
     if profile.service_catalog:
         service = profile.service_catalog[0]
-        lines.append(f"当前可以从这句话开始：{service.example_requests[0]}")
-        lines.append(f"该服务按以下步骤推进：{' → '.join(service.workflow_steps)}。")
+        lines.extend((
+            "",
+            "**当前正式服务**",
+            f"- 可以从这句话开始：{service.example_requests[0]}",
+            f"- 工作过程：{' → '.join(service.workflow_steps)}。",
+        ))
     if profile.behavior_principles:
-        lines.append(f"执行边界：{'；'.join(profile.behavior_principles)}。")
+        lines.extend(("", "**执行边界**"))
+        lines.extend(f"- {principle}" for principle in profile.behavior_principles)
     return "\n".join(lines)

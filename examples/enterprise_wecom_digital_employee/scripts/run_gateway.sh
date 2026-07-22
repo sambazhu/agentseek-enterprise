@@ -14,7 +14,7 @@ GATEWAY_LOG="${AGENTSEEK_GATEWAY_LOG:-$HOME/Library/Logs/agentseek-wecom/gateway
 mkdir -p "$(dirname "$GATEWAY_LOG")"
 
 exec uv run --offline --env-file "$AGENTSEEK_ENV_FILE" --with jaydebeapi --with JPype1 \
-  python examples/enterprise_wecom_digital_employee/scripts/bub_gateway.py gateway \
+  python -u examples/enterprise_wecom_digital_employee/scripts/bub_gateway.py gateway \
   --enable-channel wecom \
   --enable-channel mcp.lifecycle \
   --enable-channel skills.lifecycle \
