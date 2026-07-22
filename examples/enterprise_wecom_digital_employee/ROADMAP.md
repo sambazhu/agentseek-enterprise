@@ -3,12 +3,13 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-07-12
+verified_on: 2026-07-22
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.0_INDUSTRY_REPORT_DIGITAL_EMPLOYEE_PLAN.md
   - examples/enterprise_wecom_digital_employee/V0.1.0_M0_FREEZE.md
+  - examples/enterprise_wecom_digital_employee/V0.1.1_DEPARTMENT_DIGITAL_EMPLOYEE_PLAN.md
   - docs/concepts/enterprise-wecom-template.zh.md
   - templates/deepagents/enterprise-wecom/README.md
 ---
@@ -739,7 +740,7 @@ M3 先以运行时前置切片启动：
     后续实施前必须确定使用企业 OIDC/SAML 还是企微网页授权，以及 IdP 端点、client/agent 授权和
     HTTPS 回调域名；届时在 grant 之外校验浏览器身份并与 Delivery.recipient_key 绑定，不使用第二个
     bearer cookie 冒充身份认证。
-13. **RC 可靠性收口（进行中）**：功能范围冻结后只处理阻断稳定性与账本幂等缺陷。Artifact 精确重渲染
+13. **RC 可靠性收口（已完成）**：功能范围冻结后只处理阻断稳定性与账本幂等缺陷。Artifact 精确重渲染
     必须返回同一内容寻址记录，不新增 Artifact、事件或 WorkItem 版本；render/publish/deliver 的精确动作
     均由模型调用动作工具、服务端决定幂等，不由模型以只读查询替代动作。render/publish 的下一步命令由
     output guard 在模型漏转述时按本轮成功账本工具结果确定性补齐；RC 自动化与 Mac mini 活体验收矩阵见
@@ -785,9 +786,13 @@ DigitalEmployeePack
 Skills 负责方法和规范，Playbook 负责正式流程，Tools 执行动作，Policy 强制边界，
 WorkItem 保存状态和证据。Skill 不能授予工具权限或替代审批、事务、egress 和审计。
 
-v0.1.0 采用一个生成项目、一个企微 Bot、一个 Profile、一个启用角色包。
-未来多数字员工单 gateway 需要 profile-scoped agent registry 和 SkillResolver，
-不能把所有岗位 Skills 同时暴露给一个 agent。
+v0.1.0 采用一个生成项目、一个企微 Bot、一个 Profile、一个启用 Playbook。
+v0.1.1 保持一个独立企微 Bot 对应一名部门数字员工，在同一 Profile 下引入
+Job Charter、服务目录和多个受治理 Playbook。运行时只向模型暴露当前选中
+Playbook 的有效工具集，不把全部 Playbook 工具合并为一个无边界 Agent。
+
+多数字员工共享单 gateway 的 profile-scoped agent registry 和跨岗位委派继续留作
+后续架构，不作为 v0.1.1 前置。
 
 ### Sandbox 的新定位
 
@@ -872,17 +877,26 @@ registered outputs
 
 这样行业研究、报告写作和文件生成都站在同一个任务与隔离边界上。
 
-## v0.1.1：企业授权、审批与运营
+## v0.1.1：部门数字员工与 Multi-Playbook Foundation
 
-v0.1.1 建议增强组织级治理：
+v0.1.1 把已经活体验证的“行业报告编写数字员工”演进为“一 Bot、一部门数字员工、
+多 Skill、多受治理 Playbook”的扩展模型。完整方案见
+`V0.1.1_DEPARTMENT_DIGITAL_EMPLOYEE_PLAN.md`。
 
-- 在 v0.1.0 简化角色映射基础上支持可选的多人评审和职责分离；
-- 组织 RBAC 和数据范围；
-- 职责分离；
-- 审批中心；
-- SLA、超时和升级；
-- 任务管理和人工接管；
-- 质量、成本和风险指标。
+首版范围：
+
+- 建立 Digital Employee Job Charter，增加员工编号、展示名称、使命、服务目录和行为政策引用；
+- 确定性回答“你是谁”“你能做什么”“怎么使用你”，并区分人类员工“我是谁”；
+- 保留 `digital_employee_id=industry-report` 作为不可变技术身份，避免已有 WorkItem 失联；
+- Profile v2 和 Pack v2 向后兼容 v1 单 Playbook 配置；
+- 建立 Playbook Registry，移除运行时“Profile 必须恰好一个 Playbook”的限制；
+- 按 Profile 最大权限、Playbook 权限子集、员工授权和当前政策求交集；
+- 按“当前任务绑定、员工显式选择、确定性匹配、歧义澄清”在 Bot 内选择 Playbook；
+- 使用测试型第二 Playbook 验证隔离，不在缺少业务合同的情况下上线第二个正式流程；
+- 证券行业报告继续作为第一个生产 Playbook，v0.1.0 全部账本、状态机和交付协议保持不变。
+
+v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
+组织 RBAC、审批中心、SLA、任务运营和人工接管，放在 Multi-Playbook 基础稳定后的治理切片。
 
 ## v0.1.2：受治理的企业 research workflow
 
@@ -1017,7 +1031,7 @@ v0.1.0 开始进入岗位和任务完成层：
 v0.0.8  可观测、可部署、可审计的企业 runtime
 v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
 v0.1.0  行业报告数字员工、WorkItem、Playbook、证据、评审和报告交付
-v0.1.1  企业授权、正式审批、任务运营和人工接管
+v0.1.1  部门数字员工 Job Charter、服务目录和 Multi-Playbook Foundation
 v0.1.2  受 WorkItem 治理的 enterprise research
 v0.1.3  企业 content、模板化报告和多格式产物
 v0.1.4  团队任务队列、岗位协作和跨数字员工移交
