@@ -4,6 +4,20 @@ Enterprise WeCom digital employee scaffolded from `deepagents/enterprise-wecom`.
 
 It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent robot callbacks, resolves the WeCom user to an employee context, and exposes business MCP tools from `.agents/mcp.json`.
 
+## Developer Documentation
+
+The current verified baseline is `enterprise-wecom-v0.1.1-ga`. Developers who
+deploy or extend this framework should start with:
+
+- [企业数字员工框架研发指南](DEVELOPER_GUIDE.md)
+- [快速部署与创建企业数字员工](DEVELOPER_QUICKSTART.md)
+- [扩展数字员工的 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
+- [数字员工研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
+
+The sections below retain detailed implementation and historical rollout notes.
+When a version reference conflicts, the v0.1.1 developer documents and immutable
+GA tag are authoritative.
+
 The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context, plus ContextSeek semantic recall across the same employee's sessions.
 
 ## Deployment Baseline
@@ -16,15 +30,15 @@ need an immutable rollback or audit target.
 git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
-To pin the verified v0.0.9 build:
+To pin the current verified v0.1.1 build:
 
 ```bash
-git clone --branch enterprise-wecom-v0.0.9-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.1.1-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
 ```
 
 GitHub mirrors both refs at `https://github.com/sambazhu/agentseek-enterprise.git`.
 
-### v0.0.9 GA
+### Historical v0.0.9 GA
 
 `enterprise-wecom-v0.0.9-ga` adds verified AI Bot file intake, MinerU OCR,
 CurrentFiles refresh, complete large-file analysis, multi-sheet XLSX statistics,
@@ -229,14 +243,14 @@ Generate a new namespace secret before formal production handoff:
 examples/enterprise_wecom_digital_employee/scripts/prod_check.py --generate-namespace-secret
 ```
 
-The GA baseline is frozen in `PRODUCTION_FREEZE.md`. Use it to pin the verified
-commit/tag, GitHub release, company GitLab mirror, required runtime switches,
-smoke-test prompts, and rollback knobs before changing production behavior.
+`PRODUCTION_FREEZE.md` records the historical v0.0.9 freeze. For current
+deployments, use this README's developer-documentation entry, the verified
+`production` branch, and the immutable v0.1.1 GA tag.
 
 For production deployment, prefer the immutable GA tag:
 
 ```bash
-git checkout enterprise-wecom-v0.0.9-ga
+git checkout enterprise-wecom-v0.1.1-ga
 ```
 
 For Mac mini process supervision, edit the repo path in
@@ -379,10 +393,10 @@ employee's next turn, so completed text replaces the earlier pending snapshot.
 Background OCR lifecycle fields (`mixed_pdf_bg_ocr`, `bg_ocr_status`, and
 `bg_ocr_task_id`) are persisted at the top level of each file's `metadata.json`.
 
-v0.1.0 follow-up: MinerU can leave signatures, seals, logos, flowcharts, and
+MinerU can leave signatures, seals, logos, flowcharts, and
 architecture diagrams as image references. An optional VLM image-description
-stage can replace those references with model-generated visual summaries; it is
-not part of the v0.0.9 receive pipeline.
+stage could replace those references with model-generated visual summaries; it
+is not part of the current GA receive pipeline.
 
 ### MCP Policy And Audit
 
