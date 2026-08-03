@@ -27,7 +27,7 @@ from typer.testing import CliRunner
 
 from agentseek.cli.commands import create as create_module
 from agentseek.cli.lifecycle import normalize_lifecycle
-from agentseek.cli.lifecycle.authored import LifecycleSpecV1
+from agentseek.cli.lifecycle.authored import LifecycleSpecV1, LifecycleSpecV2
 from agentseek.cli.lifecycle.spec import read_lifecycle_spec
 from tests.cli_commands.helpers import build_command_app
 
@@ -59,6 +59,10 @@ def _discover_templates() -> list[tuple[str, str, Path]]:
 
 
 TEMPLATES = _discover_templates()
+LIFECYCLE_V2_TEMPLATE_KEYS = {("deepagents", "enterprise-wecom")}
+LIFECYCLE_V1_TEMPLATES = [
+    template for template in TEMPLATES if (template[0], template[1]) not in LIFECYCLE_V2_TEMPLATE_KEYS
+]
 LOCAL_SOURCE_PATH_TEMPLATES = {
     ("bub", "contextseek"),
     ("bub", "default"),
@@ -194,6 +198,23 @@ def _assert_enterprise_wecom_template(
     assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
     assert "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS=60" in env_example
     assert lifecycle_data["env"]["AGENTSEEK_WORK_ENABLED"]["default"] == "false"
+    assert lifecycle_data["version"] == 2
+    assert lifecycle_data["guide"] == "README.md"
+    assert lifecycle_data["services"]["wecom-gateway"] == {
+        "name": "Enterprise WeCom gateway",
+        "url": "http://127.0.0.1:12000/health",
+        "kind": "api",
+        "display": "advanced",
+        "primary": True,
+        "description": "Local health endpoint for the enterprise WeCom callback gateway.",
+        "tech": "wecom",
+    }
+    assert lifecycle_data["processes"]["gateway"]["provides"] == ["wecom-gateway"]
+    assert lifecycle_data["checks"]["wecom-gateway"] == {
+        "target": "http://127.0.0.1:12000/health",
+        "timeout": 2.0,
+        "attempts": 10,
+    }
 
 
 def _assert_fork_template_variant(
@@ -616,7 +637,8 @@ def test_template_renders_without_unrendered_jinja(
         "variable was referenced but not substituted."
     )
     lifecycle_data = tomllib.loads(lifecycle_text)
-    assert lifecycle_data["version"] == 1, f"{type_name}/{template_name} must retain lifecycle version 1"
+    expected_lifecycle_version = 2 if (type_name, template_name) in LIFECYCLE_V2_TEMPLATE_KEYS else 1
+    assert lifecycle_data["version"] == expected_lifecycle_version
     assert lifecycle_data["template"] == f"{type_name}/{template_name}"
     assert lifecycle_data["processes"]
     _assert_fork_template_variant(type_name, template_name, generated, dependencies, lifecycle_data)
@@ -711,8 +733,8 @@ def test_template_renders_local_source_path_safely(
 
 @pytest.mark.parametrize(
     ("type_name", "template_name", "template_dir"),
-    TEMPLATES,
-    ids=[f"{t}/{n}" for t, n, _ in TEMPLATES],
+    LIFECYCLE_V1_TEMPLATES,
+    ids=[f"{t}/{n}" for t, n, _ in LIFECYCLE_V1_TEMPLATES],
 )
 def test_rendered_v1_template_normalizes_conservatively(
     type_name: str,
@@ -779,6 +801,50 @@ def test_rendered_v1_template_normalizes_conservatively(
     for requirement in spec.env.values():
         if requirement.default and requirement.default not in projected_authored_literals:
             assert requirement.default not in normalized_scalars
+
+
+def test_enterprise_wecom_lifecycle_v2_discovery_contract(tmp_path: Path) -> None:
+    template_dir = next(
+        template_dir
+        for type_name, template_name, template_dir in TEMPLATES
+        if (type_name, template_name) == ("deepagents", "enterprise-wecom")
+    )
+    patched = _patch_template_for_test(template_dir, tmp_path)
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    cookiecutter(template=str(patched), output_dir=str(out_dir), no_input=True)
+    generated = next(path for path in out_dir.iterdir() if path.is_dir())
+
+    spec = read_lifecycle_spec(generated / ".agentseek" / "lifecycle.toml", project_root=generated)
+    assert isinstance(spec, LifecycleSpecV2)
+    normalized = normalize_lifecycle(spec, project_root=generated)
+
+    assert normalized.lifecycle_version == 2
+    assert normalized.metadata_complete is True
+    assert normalized.project.guide is not None
+    assert normalized.project.guide.path == "README.md"
+    assert len(normalized.services) == 1
+    service = normalized.services[0]
+    assert service.id == "wecom-gateway"
+    assert service.url == "http://127.0.0.1:12000/health"
+    assert service.kind == "api"
+    assert service.display == "advanced"
+    assert service.primary is True
+    assert service.tech == "wecom"
+    assert tuple(provider.id for provider in service.providers) == ("process:gateway",)
+    assert service.check_ids == ("wecom-gateway",)
+    assert len(normalized.checks) == 1
+    assert normalized.checks[0].service_id == "wecom-gateway"
+    assert normalized.checks[0].target == "http://127.0.0.1:12000/health"
+    assert tuple(action.id for action in normalized.actions) == (
+        "project:start_dev",
+        "service:wecom-gateway:copy",
+    )
+
+    normalized_dump = normalized.model_dump_json()
+    assert str(generated.resolve()) not in normalized_dump
+    assert "/ai-bot/callback/demo/<botid>" not in normalized_dump
+    assert json.dumps(["scripts/run_gateway.sh"], separators=(",", ":")) not in normalized_dump
 
 
 @pytest.mark.parametrize(

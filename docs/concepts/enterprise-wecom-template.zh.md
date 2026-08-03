@@ -3,7 +3,7 @@ title: 企业微信模板
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-07-08
+verified_on: 2026-08-03
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
@@ -19,7 +19,7 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 
 ## 当前状态
 
-`enterprise-wecom-v0.0.8-ga` 是当前 GA 基线。
+`enterprise-wecom-v0.1.1-ga` 是当前 GA 基线。
 
 它已经完成两类验证：
 
@@ -41,8 +41,10 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 -> MCP tools
 ```
 
-生成项目通过 `.agentseek/lifecycle.toml` 和 `scripts/run_gateway.sh` 管理自己的
-runtime 细节。
+生成项目通过 Lifecycle v2 `.agentseek/lifecycle.toml` 和
+`scripts/run_gateway.sh` 管理自己的 runtime 细节。Lifecycle 服务发现将回调
+gateway 建模为唯一主服务，绑定 gateway 进程并检查本机 `/health` 端点；
+企微回调路径、Bot ID 和凭据不会进入可发现元数据。
 
 ## 记忆分层
 
@@ -58,7 +60,7 @@ runtime 细节。
 生产环境可以把前两层迁到 PostgreSQL/MySQL：
 `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` 控制短期记忆，
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` 控制显式长期记忆。语义长期记忆仍由
-ContextSeek 的 backend 配置控制。v0.0.8 生产基线使用
+ContextSeek 的 backend 配置控制。当前生产基线使用
 `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`、`AGENTSEEK_CTX_PGVECTOR_URL` 和
 bge-m3 ONNX embedding 路径。
 
@@ -102,7 +104,7 @@ reason 和脱敏后的 arguments。它不是下游业务系统日志，也不能
 生产部署使用 GA tag：
 
 ```bash
-git checkout enterprise-wecom-v0.0.8-ga
+git checkout enterprise-wecom-v0.1.1-ga
 ```
 
 详细冻结记录在 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`。

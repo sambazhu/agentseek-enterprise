@@ -1,7 +1,9 @@
-version = 1
+version = 2
 template = "deepagents/enterprise-wecom"
 name = "{{ cookiecutter.project_name }}"
+description = "Governed enterprise WeCom digital employee gateway."
 env_file = ".env"
+guide = "README.md"
 
 [tools]
 required = ["uv"]
@@ -160,11 +162,23 @@ description = "Path to the exported bge-m3 ONNX model used by the pgvector backe
 required = false
 description = "Path to bge-m3 tokenizer.json used by the pgvector backend."
 
-[services.wecom]
-url = "http://127.0.0.1:{{ cookiecutter.wecom_port }}{{ cookiecutter.wecom_callback_path }}"
+[services.wecom-gateway]
+name = "Enterprise WeCom gateway"
+url = "http://127.0.0.1:{{ cookiecutter.wecom_port }}/health"
+kind = "api"
+display = "advanced"
+primary = true
+description = "Local health endpoint for the enterprise WeCom callback gateway."
+tech = "wecom"
 
 [processes.gateway]
 command = ["scripts/run_gateway.sh"]
+provides = ["wecom-gateway"]
+
+[checks.wecom-gateway]
+target = "http://127.0.0.1:{{ cookiecutter.wecom_port }}/health"
+timeout = 2.0
+attempts = 10
 
 [tasks.sync]
 description = "Install Python dependencies."

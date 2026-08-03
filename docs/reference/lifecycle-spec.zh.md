@@ -38,7 +38,7 @@ AgentSeek 当前加载并验证编写的生命周期版本 `1` 和 `2`。现有�
 | 编写版本或位置 | 当前边界 |
 | --- | --- |
 | `1`, `2` | 编写的生命周期文件会被加载和验证。 |
-| `templates/` | core 仍是 `version = 1` 兼容镜像。 |
+| `templates/` | 上游镜像仍保持 `version = 1`；本 fork 专有的 `deepagents/enterprise-wecom` 模板使用 `version = 2`。 |
 | `agentseek-ai/agentseek-templates` | 锁定的独立 `v0.1.0` catalog 为新项目提供 `version = 2` 模板。 |
 | 规范化与机器接口 | V1 和 v2 都投影到同一个安全规范化模型；`info --json` 和 `doctor --json` 提供公共 schema 版本 `1`。 |
 

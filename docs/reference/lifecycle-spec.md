@@ -38,7 +38,7 @@ AgentSeek currently loads and validates authored lifecycle versions `1` and
 | Authored version or location | Current boundary |
 | --- | --- |
 | `1`, `2` | Authored lifecycle files load and validate. |
-| `templates/` | Core remains the `version = 1` compatibility mirror. |
+| `templates/` | Upstream mirrors remain `version = 1`; this fork's enterprise-only `deepagents/enterprise-wecom` template uses `version = 2`. |
 | `agentseek-ai/agentseek-templates` | The locked `v0.1.0` standalone catalog supplies new `version = 2` templates. |
 | Normalized and machine surfaces | V1 and v2 project into one safe normalized model; `info --json` and `doctor --json` expose public schema version `1`. |
 

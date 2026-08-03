@@ -3,7 +3,7 @@ title: Enterprise WeCom Template
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-07-08
+verified_on: 2026-08-03
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
@@ -20,7 +20,7 @@ layered memory.
 
 ## Current Status
 
-`enterprise-wecom-v0.0.8-ga` is the current GA baseline.
+`enterprise-wecom-v0.1.1-ga` is the current GA baseline.
 
 It was verified in two forms:
 
@@ -43,8 +43,11 @@ WeCom intelligent robot
 -> MCP tools
 ```
 
-The generated project owns its runtime details through `.agentseek/lifecycle.toml`
-and `scripts/run_gateway.sh`.
+The generated project owns its runtime details through a Lifecycle v2
+`.agentseek/lifecycle.toml` and `scripts/run_gateway.sh`. Lifecycle discovery
+models the callback gateway as one primary advanced API service, binds it to
+the gateway process, and checks its local `/health` endpoint. It intentionally
+does not publish the callback path, Bot ID, or credentials as discovery data.
 
 ## Memory Layers
 
@@ -63,7 +66,7 @@ Production deployments can move the first two layers to PostgreSQL/MySQL:
 `AGENTSEEK_ENTERPRISE_MEMORY_SQLALCHEMY_URL` controls short-term memory, and
 `AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL` controls explicit durable memory.
 Semantic memory is controlled separately by ContextSeek backend settings. The
-v0.0.8 production baseline uses `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`,
+current production baseline uses `AGENTSEEK_CTX_STORAGE_BACKEND=pgvector`,
 `AGENTSEEK_CTX_PGVECTOR_URL`, and bge-m3 ONNX embedding paths.
 
 ## Isolation Choices
@@ -113,7 +116,7 @@ small, local approval and audit surface.
 Use the GA tag for deployments:
 
 ```bash
-git checkout enterprise-wecom-v0.0.8-ga
+git checkout enterprise-wecom-v0.1.1-ga
 ```
 
 The detailed freeze record lives in

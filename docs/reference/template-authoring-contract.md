@@ -21,7 +21,9 @@ New template work belongs in
 [`agentseek-ai/agentseek-templates`](https://github.com/agentseek-ai/agentseek-templates).
 The core repository's `templates/` tree is a frozen lifecycle-v1 compatibility
 mirror for published 0.0.x clients and does not accept normal template feature
-development.
+development. This enterprise fork maintains `deepagents/enterprise-wecom` as
+an explicit local Lifecycle v2 exception; it is not added to the locked
+upstream catalog.
 
 ## Required Structure
 

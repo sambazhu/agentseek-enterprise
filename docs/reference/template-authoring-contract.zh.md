@@ -18,7 +18,9 @@ sources:
 新模板在独立的
 [`agentseek-ai/agentseek-templates`](https://github.com/agentseek-ai/agentseek-templates)
 仓库中开发。core 仓库的 `templates/` 是为已发布 0.0.x 客户端冻结的 lifecycle-v1
-兼容镜像，不再承载常规模板功能开发。
+兼容镜像，不再承载常规模板功能开发。本企业 fork 将
+`deepagents/enterprise-wecom` 作为显式的本地 Lifecycle v2 例外维护，
+不将它加入上游锁定目录。
 
 ## 必需结构
 

@@ -132,15 +132,20 @@ never advertises report generation.
 scripts/run_gateway.sh
 ```
 
-The project also declares `.agentseek/lifecycle.toml`, so the new AgentSeek
-lifecycle commands can inspect and start it:
+The project declares a Lifecycle v2 contract in `.agentseek/lifecycle.toml`.
+AgentSeek can discover the gateway, run its local health check, and start the
+declared process without exposing the WeCom callback path or credentials:
 
 ```bash
-agentseek info
-agentseek doctor
+agentseek info --json
+agentseek doctor --live
 agentseek dev
 agentseek task prod-check
 ```
+
+The discoverable `wecom-gateway` service points only to the local `/health`
+endpoint. Configure the real callback path and secrets exclusively through the
+explicit `.env` loading in `scripts/run_gateway.sh`.
 
 Before installing launchd, run the production preflight. It redacts secrets and
 checks only presence, file paths, writable runtime directories, tracing intent,

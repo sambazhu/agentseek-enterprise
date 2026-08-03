@@ -46,7 +46,7 @@ AgentSeek 0.1.0 使用独立的
 | `bub/default` | 带 AgentSeek 生命周期规范的轻量 Bub agent。 |
 | `deepagents/content-builder` | 带写作流程、图像生成、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents 内容构建器。 |
 | `deepagents/default` | 带 AgentSeek 生命周期规范的最小 DeepAgents 应用。 |
-| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、受治理 MCP 能力、pgvector 语义记忆、企业事件、WorkItem 合同和签名链接交付。它是本 fork 保留的 lifecycle-v1 模板，不属于上游默认目录。 |
+| `deepagents/enterprise-wecom` | 企业微信数字员工，包含员工身份、受治理 MCP 能力、pgvector 语义记忆、企业事件、WorkItem 合同、签名链接交付和 Lifecycle v2 服务发现。它是本 fork 保留的模板，不属于上游默认目录。 |
 | `deepagents/mcp` | DeepAgents MCP Tools 应用，提供经过校验的 stdio/HTTP 配置、本地计算器示例、流式 UI 和 AgentSeek 生命周期规范。 |
 | `deepagents/research` | 带检索流程、本地 UI 和 AgentSeek 生命周期规范的 DeepAgents research 应用。 |
 | `deepagents/sandbox` | DeepAgents sandbox coding agent，默认接入 Daytona，并提供收费的 LangSmith Sandbox 备选、本地 UI 和 AgentSeek 生命周期规范。 |
@@ -103,8 +103,8 @@ AgentSeek 0.1.0 使用独立的
 
 ## 企业微信 Fork 模板
 
-在企业模板目录边界完成前，`deepagents/enterprise-wecom` 继续作为本 fork 的
-lifecycle-v1 模板维护。请从显式本地 checkout 创建，不要假定它存在于上游锁定目录：
+`deepagents/enterprise-wecom` 是本 fork 维护的 Lifecycle v2 模板。请从显式本地
+checkout 创建，不要假定它存在于上游锁定目录：
 
 ```bash
 agentseek create ./templates/deepagents/enterprise-wecom
@@ -124,3 +124,5 @@ agentseek create ./templates/deepagents/enterprise-wecom
 生成项目包含 `.agentseek/lifecycle.toml`、`scripts/run_gateway.sh`、
 `scripts/bub_gateway.py`、`scripts/prod_check.py`、macOS LaunchAgent 模板和
 用于 DM JDBC 驱动的 `vendor/dameng/`。
+Lifecycle 服务发现只暴露本机 gateway 健康检查端点；企微回调路径和凭据
+仍仅存在于由启动脚本显式加载的本地 `.env` 中。
