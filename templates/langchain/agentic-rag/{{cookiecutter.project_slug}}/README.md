@@ -13,9 +13,8 @@ markdown answer.
 cp .env.example .env
 $EDITOR .env
 
-uv sync
-npm install --prefix frontend
-docker compose up -d
+agentseek task sync
+agentseek task frontend
 
 agentseek info
 agentseek doctor
@@ -25,6 +24,28 @@ agentseek dev
 
 Use `agentseek task --list` to see lifecycle helper tasks. The generated
 project declares the development stack in `.agentseek/lifecycle.toml`.
+
+The default mode uses embedded OceanBase seekdb in-process. Ingest and the
+backend share `SEEKDB_PATH`, which defaults outside the project tree so native
+database writes do not trigger LangGraph reloads.
+
+To explicitly use the optional Docker server instead, set `SEEKDB_MODE=server`
+in `.env`, then run `agentseek task seekdb-docker`. Stop it with
+`agentseek task seekdb-docker-stop`.
+
+For optional coding-agent assistance around OceanBase seekdb, run:
+
+```bash
+agentseek task seekdb-skills
+```
+
+## Agent Skills
+
+`agentseek task seekdb-skills` runs
+`npx skills add oceanbase/seekdb-ecology-plugins --all` to install recommended
+OceanBase seekdb skills for supported coding agents. This uses the external `skills`
+tooling; `agentseek task --list` remains the canonical way to discover
+template tasks.
 
 ## Environment
 
@@ -53,8 +74,8 @@ model served by that provider. The scaffold defaults to `openai` with
 `{{ cookiecutter.default_model }}`, so pointing `OPENAI_API_BASE` at a
 compatible gateway (e.g. SiliconFlow) works out of the box.
 
-The lifecycle spec checks `.env`, frontend dependencies, and the stable SeekDB
-connection variables. Provider API keys are documented in `.env.example` but
+The lifecycle spec checks `.env`, frontend dependencies, and the stable
+OceanBase seekdb connection variables. Provider API keys are documented in `.env.example` but
 are not lifecycle-required because lifecycle v1 does not support conditional
 requirements by selected provider.
 
@@ -66,7 +87,7 @@ Before running the agent, ingest documents into the knowledge base:
 # Web pages
 uv run ingest https://lilianweng.github.io/posts/2023-06-23-agent/
 
-# Local files or directories (.txt, .md)
+# Local files or directories (.txt, .md). ./docs/ is only an example path.
 uv run ingest ./docs/
 
 # Multiple sources at once
@@ -75,8 +96,18 @@ uv run ingest ./notes/ https://example.com/article
 
 Documents are split into 1000-character chunks with 200-character overlap,
 embedded via `DefaultEmbeddingFunctionAdapter` from `langchain-oceanbase`
-(384-dim, runs locally, no API key), and indexed into the configured SeekDB
-table.
+(384-dim, runs locally, no API key), and indexed into the configured
+OceanBase seekdb table.
+
+## Test
+
+The generated smoke test starts a real embedded seekdb in a child process,
+adds deterministic document embeddings, and retrieves the expected document
+without Docker or hosted APIs:
+
+```bash
+agentseek task embedded-smoke
+```
 
 ## Run
 
@@ -86,6 +117,18 @@ agentseek dev
 
 By default the backend listens on `http://127.0.0.1:2024` and the frontend on
 `http://127.0.0.1:{{ cookiecutter.frontend_port }}`.
+
+For a trusted remote development host such as an ECS instance, bind both
+servers to all interfaces from the shell that starts AgentSeek:
+
+```bash
+LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev
+```
+
+Open the frontend with the server's reachable host name or IP. The browser
+defaults the LangGraph API URL to the same host on port `2024`; set
+`VITE_LANGGRAPH_API_URL` before starting the frontend if the backend uses a
+different public URL.
 
 Run `agentseek doctor --live` after `agentseek dev` starts to check the
 backend and frontend HTTP endpoints declared in the lifecycle spec.

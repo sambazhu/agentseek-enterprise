@@ -11,20 +11,29 @@ nav:
       - Overview: get-started/index.md
   - Guides:
       - Overview: guides/index.md
+      - Choose a Template: guides/choose-template.md
       - Create a Project: guides/create-project.md
+      - Create a Template: guides/create-template.md
       - Inspect a Project: guides/inspect-project.md
       - Check a Project: guides/check-project.md
       - Run Local Development: guides/run-local-development.md
+      - Local Execution Modes: guides/local-execution-modes.md
+      - Observability and Tracing: guides/observability-tracing.md
       - Run Project Tasks: guides/run-project-tasks.md
   - Reference:
       - Overview: reference/index.md
       - CLI: reference/cli.md
       - Lifecycle Spec: reference/lifecycle-spec.md
+      - Lifecycle v2 Service Discovery: reference/lifecycle-v2-service-discovery.md
       - Templates: reference/templates.md
-      - Concepts:
-          - Overview: concepts/index.md
-          - Lifecycle Toolkit: concepts/lifecycle-toolkit.md
-          - Enterprise WeCom Template: concepts/enterprise-wecom-template.md
+      - Template Authoring Contract: reference/template-authoring-contract.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - Lifecycle Toolkit: concepts/lifecycle-toolkit.md
+      - Enterprise WeCom Template: concepts/enterprise-wecom-template.md
+  - Architecture Decisions:
+      - Overview: adr/index.md
+      - "ADR 0001: Versioned Template Catalog": adr/0001-versioned-template-catalog-boundary.md
 
 theme:
   name: terminal
@@ -49,20 +58,29 @@ plugins:
                 - 概览: get-started/index.md
             - 指南:
                 - 概览: guides/index.md
+                - 选择模板: guides/choose-template.md
                 - 创建项目: guides/create-project.md
+                - 创建模板: guides/create-template.md
                 - 查看项目: guides/inspect-project.md
                 - 检查项目: guides/check-project.md
                 - 运行本地开发: guides/run-local-development.md
+                - 本地执行模式: guides/local-execution-modes.md
+                - 可观测性和追踪: guides/observability-tracing.md
                 - 运行项目任务: guides/run-project-tasks.md
             - 参考:
                 - 概览: reference/index.md
                 - CLI: reference/cli.md
                 - 生命周期规范: reference/lifecycle-spec.md
+                - Lifecycle v2 服务发现: reference/lifecycle-v2-service-discovery.md
                 - 模板: reference/templates.md
+                - 模板编写规范: reference/template-authoring-contract.md
             - 概念:
                 - 概览: concepts/index.md
                 - 生命周期工具包: concepts/lifecycle-toolkit.md
                 - 企业微信模板: concepts/enterprise-wecom-template.md
+            - 架构决策:
+                - 概览: adr/index.md
+                - "ADR 0001：版本化模板目录（英文）": adr/0001-versioned-template-catalog-boundary.md
 
 markdown_extensions:
   - toc:

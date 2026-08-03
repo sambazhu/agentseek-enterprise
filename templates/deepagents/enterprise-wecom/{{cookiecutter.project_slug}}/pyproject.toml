@@ -40,15 +40,15 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.uv.sources]
-{% if cookiecutter._agentseek_source_path %}
-agentseek = { path = "{{ cookiecutter._agentseek_source_path }}", editable = true }
-agentseek-contextseek = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-contextseek", editable = true }
-agentseek-enterprise = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-enterprise", editable = true }
-agentseek-files = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-files", editable = true }
-agentseek-langchain = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-langchain", editable = true }
-agentseek-schedule-sqlalchemy = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-schedule-sqlalchemy", editable = true }
-agentseek-wecom = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-wecom", editable = true }
-agentseek-work = { path = "{{ cookiecutter._agentseek_source_path }}/contrib/agentseek-work", editable = true }
+{% if cookiecutter._agentseek_source_path_posix %}
+agentseek = { path = {{ cookiecutter._agentseek_source_path_posix | tojson }}, editable = true }
+agentseek-contextseek = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-contextseek") | tojson }}, editable = true }
+agentseek-enterprise = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-enterprise") | tojson }}, editable = true }
+agentseek-files = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-files") | tojson }}, editable = true }
+agentseek-langchain = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-langchain") | tojson }}, editable = true }
+agentseek-schedule-sqlalchemy = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-schedule-sqlalchemy") | tojson }}, editable = true }
+agentseek-wecom = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-wecom") | tojson }}, editable = true }
+agentseek-work = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-work") | tojson }}, editable = true }
 {% else %}
 agentseek = { git = "{{ cookiecutter._agentseek_source_url }}" }
 agentseek-contextseek = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-contextseek" }

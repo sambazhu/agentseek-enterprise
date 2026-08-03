@@ -13,15 +13,22 @@ catch Jinja errors, missing files, and unsubstituted variables before they hit
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import shutil
 import tomllib
-from pathlib import Path
+from collections.abc import Sequence
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import Any
 
 import pytest
 from cookiecutter.main import cookiecutter
 from typer.testing import CliRunner
 
 from agentseek.cli.commands import create as create_module
+from agentseek.cli.lifecycle import normalize_lifecycle
+from agentseek.cli.lifecycle.authored import LifecycleSpecV1
+from agentseek.cli.lifecycle.spec import read_lifecycle_spec
 from tests.cli_commands.helpers import build_command_app
 
 
@@ -52,6 +59,496 @@ def _discover_templates() -> list[tuple[str, str, Path]]:
 
 
 TEMPLATES = _discover_templates()
+LOCAL_SOURCE_PATH_TEMPLATES = {
+    ("bub", "contextseek"),
+    ("bub", "default"),
+    ("deepagents", "default"),
+    ("deepagents", "enterprise-wecom"),
+    ("langchain", "cli-remote"),
+    ("langchain", "default"),
+}
+LOCAL_SOURCE_TEMPLATES = [
+    template for template in TEMPLATES if (template[0], template[1]) in LOCAL_SOURCE_PATH_TEMPLATES
+]
+LOCAL_SOURCE_PATH_CASES = (
+    pytest.param(PureWindowsPath(r"D:\source trees\agentseek"), id="windows"),
+    pytest.param(PurePosixPath('/workspace/agent"seek'), id="quoted-posix"),
+)
+seekdb_skill_templates = {
+    ("bub", "contextseek"),
+    ("langchain", "agentic-rag-hybrid"),
+    ("langchain", "agentic-rag"),
+    ("langchain", "agentic-rag-openvino"),
+    ("langchain", "default"),
+}
+seekdb_skill_command = ["npx", "skills", "add", "oceanbase/seekdb-ecology-plugins", "--all"]
+rag_host_binding_templates = {
+    ("langchain", "agentic-rag-hybrid"),
+    ("langchain", "agentic-rag"),
+    ("langchain", "agentic-rag-openvino"),
+}
+language_instruction_templates = {
+    ("deepagents", "mcp"),
+    ("deepagents", "research"),
+    ("deepagents", "sandbox"),
+    ("langchain", "agentic-rag"),
+    ("langchain", "agentic-rag-hybrid"),
+    ("langchain", "agentic-rag-openvino"),
+    ("langchain", "cli-remote"),
+    ("langchain", "default"),
+    ("langchain", "markdown-messages"),
+}
+dependency_sync_templates = {
+    ("deepagents", "content-builder"),
+    ("deepagents", "mcp"),
+    ("deepagents", "research"),
+    ("deepagents", "sandbox"),
+    ("langchain", "agentic-rag-hybrid"),
+}
+
+
+def _assert_rag_template_host_binding(generated: Path, *, check_frontend_env: bool = False) -> None:
+    """RAG frontend/backend dev servers bind locally by default and opt into remote hosts."""
+    lifecycle_text = (generated / ".agentseek" / "lifecycle.toml").read_text(encoding="utf-8")
+    vite_text = (generated / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+    app_text = (generated / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "[env.LANGGRAPH_HOST]" in lifecycle_text
+    assert "--host ${LANGGRAPH_HOST:-127.0.0.1}" in lifecycle_text
+    assert "FRONTEND_HOST" in vite_text
+    assert "window.location.hostname" in app_text
+    assert "agentseek task sync" in readme_text
+    assert "agentseek task frontend" in readme_text
+    assert "LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev" in readme_text
+    if check_frontend_env:
+        frontend_env_text = (generated / "frontend" / ".env.example").read_text(encoding="utf-8")
+        assert "VITE_LANGGRAPH_API_URL=http://127.0.0.1" not in frontend_env_text
+
+
+def _assert_bub_default_dependencies(dependencies: list[Any], pyproject_data: dict[str, Any]) -> None:
+    assert "bub==0.3.9" in dependencies
+    assert "agentseek-ag-ui" in dependencies
+    assert "duty>=1.9" not in pyproject_data.get("dependency-groups", {}).get("dev", [])
+
+
+def _assert_enterprise_wecom_template(
+    generated: Path,
+    dependencies: list[Any],
+    lifecycle_data: dict[str, Any],
+) -> None:
+    assert "agentseek-work" in dependencies
+    assert "pyyaml>=6.0" in dependencies
+    package = generated / "src" / generated.name
+    files = {
+        "pack_manifest": generated / "digital_employees" / "industry-report" / "pack.yaml",
+        "agent_module": package / "agent.py",
+        "pack_loader": package / "pack_loader.py",
+        "report_brief": package / "report_brief.py",
+        "report_outline": package / "report_outline.py",
+        "report_draft": package / "report_draft.py",
+        "report_approval": package / "report_approval.py",
+        "report_research": package / "report_research.py",
+        "report_output_guard": package / "report_output_guard.py",
+        "external_research": package / "external_research.py",
+        "research_gap_decision": package / "research_gap_decision.py",
+        "work_composition": package / "work_composition.py",
+        "work_tools": package / "work_tools.py",
+        "knowledge_server": package / "department_knowledge" / "mcp_server.py",
+        "knowledge_import": generated / "scripts" / "import_department_knowledge.py",
+        "knowledge_probe": generated / "scripts" / "probe_department_knowledge.py",
+        "knowledge_config": generated / ".agents" / "mcp.department-knowledge.example.json",
+        "research_template": generated
+        / "digital_employees"
+        / "industry-report"
+        / "skills"
+        / "report-intake"
+        / "references"
+        / "securities-industry-internal-research.yaml",
+        "report_writing_skill": generated
+        / "digital_employees"
+        / "industry-report"
+        / "skills"
+        / "report-writing"
+        / "SKILL.md",
+    }
+    assert all(path.is_file() for path in files.values())
+    for path in files.values():
+        assert "{{" not in path.read_text(encoding="utf-8")
+    for name in (
+        "agent_module",
+        "report_approval",
+        "report_draft",
+        "report_outline",
+        "report_output_guard",
+        "work_composition",
+        "work_tools",
+    ):
+        path = files[name]
+        compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    agent_source = files["agent_module"].read_text(encoding="utf-8")
+    assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
+    assert "GeneralPurposeSubagentProfile" not in agent_source
+    env_example = (generated / ".env.example").read_text(encoding="utf-8")
+    assert "AGENTSEEK_WORK_ENABLED=false" in env_example
+    assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example
+    assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
+    assert "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS=60" in env_example
+    assert lifecycle_data["env"]["AGENTSEEK_WORK_ENABLED"]["default"] == "false"
+
+
+def _assert_fork_template_variant(
+    type_name: str,
+    template_name: str,
+    generated: Path,
+    dependencies: list[Any],
+    lifecycle_data: dict[str, Any],
+) -> None:
+    if (type_name, template_name) == ("deepagents", "enterprise-wecom"):
+        _assert_enterprise_wecom_template(generated, dependencies, lifecycle_data)
+
+
+def _assert_seekdb_skill_task(generated: Path, lifecycle_data: dict[str, Any]) -> None:
+    task = lifecycle_data["tasks"]["seekdb-skills"]
+    assert task["description"] == "Install recommended OceanBase seekdb agent skills."
+    assert task["command"] == seekdb_skill_command
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "agentseek task seekdb-skills" in readme_text
+    assert "## Agent Skills" in readme_text
+
+
+def _assert_langchain_default_template(generated: Path) -> None:
+    env_text = (generated / ".env.example").read_text(encoding="utf-8")
+    compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
+    dev_text = (generated / "src" / generated.name / "dev.py").read_text(encoding="utf-8")
+    process_group_text = (generated / "src" / generated.name / "process_group.py").read_text(encoding="utf-8")
+    feishu_text = (generated / "src" / generated.name / "feishu.py").read_text(encoding="utf-8")
+    wecom_text = (generated / "src" / generated.name / "wecom.py").read_text(encoding="utf-8")
+    pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "AGENTSEEK_PHOENIX_IMAGE=ghcr.io/agentseek-ai/agentseek-phoenix:main" in env_text
+    assert "OCEANBASE_SEEKDB_IMAGE=quay.io/oceanbase/seekdb:latest" in env_text
+    assert "BUB_WECOM_BOT_ID=" in env_text
+    assert "BUB_WECOM_SECRET=" in env_text
+    assert "BUB_WECOM_GROUP_ALLOW_FROM" in env_text
+    assert "${AGENTSEEK_PHOENIX_IMAGE:-ghcr.io/agentseek-ai/agentseek-phoenix:main}" in compose_text
+    assert "${OCEANBASE_SEEKDB_IMAGE:-quay.io/oceanbase/seekdb:latest}" in compose_text
+    assert "agentseek task frontend" in dev_text
+    assert "npm install --prefix frontend" not in dev_text
+    assert "from .process_group import" in dev_text
+    assert "CREATE_NEW_PROCESS_GROUP" in process_group_text
+    assert "AssignProcessToJobObject" in process_group_text
+    assert 'serve-wecom = "my_langchain_agent.wecom:main"' in pyproject_text
+    assert '"bub-wecom"' in pyproject_text
+    assert '["bub", "gateway", "--enable-channel", "wecom"]' in wecom_text
+    assert "raise SystemExit(0) from None" in feishu_text
+    assert "raise SystemExit(0) from None" in wecom_text
+    assert "BUB_WECOM_DM_POLICY=allowlist" in readme_text
+    assert "only one active long connection" in readme_text
+
+
+def _assert_deepagents_content_builder_template(generated: Path) -> None:
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    agents_text = (generated / "AGENTS.md").read_text(encoding="utf-8")
+    assert "agentseek task frontend" in readme_text
+    assert "same language as the user's question" in agents_text
+
+
+def _assert_deepagents_default_template(generated: Path) -> None:
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    binding_text = (generated / "src" / generated.name / "demo_binding.py").read_text(encoding="utf-8")
+    assert "does not include a frontend" in readme_text
+    assert "Answer in the same language as the user's question." in readme_text
+    assert "Answer in the same language as the user's question." in binding_text
+
+
+def _assert_deepagents_mcp_template(generated: Path, lifecycle_data: dict[str, Any]) -> None:
+    pyproject_data = tomllib.loads((generated / "pyproject.toml").read_text(encoding="utf-8"))
+    requires_python = pyproject_data["project"]["requires-python"]
+    assert requires_python == ">=3.12"
+    assert pyproject_data["project"]["dependencies"] == [
+        "deepagents==0.6.12",
+        "langchain>=1.0",
+        "langchain-anthropic>=1.0",
+        "langchain-google-genai>=4.0",
+        "langchain-mcp-adapters>=0.3,<0.4",
+        "langchain-openai>=0.3",
+        "mcp>=1.28,<2",
+        "python-dotenv>=1.0",
+        "starlette>=0.27",
+        "langgraph-cli[inmem]>=0.4",
+    ]
+    assert set(lifecycle_data["processes"]) == {"calculator-http", "langgraph", "frontend"}
+    assert set(lifecycle_data["tasks"]) == {"sync", "frontend", "mcp-smoke"}
+    assert lifecycle_data["paths"]["required"] == [
+        "pyproject.toml",
+        "langgraph.json",
+        ".mcp.json",
+        "frontend/package.json",
+        "frontend/node_modules",
+    ]
+    assert lifecycle_data["tasks"]["mcp-smoke"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.mcp_smoke",
+    ]
+    assert json.loads((generated / ".mcp.json").read_text(encoding="utf-8")) == {
+        "mcpServers": {
+            "calculator": {
+                "transport": "stdio",
+                "command": "${PYTHON_EXECUTABLE}",
+                "args": ["-m", f"{generated.name}.calculator_server"],
+            },
+            "calculator_http": {
+                "transport": "http",
+                "url": "http://127.0.0.1:8765/mcp",
+            },
+        }
+    }
+    config = json.loads((generated / "langgraph.json").read_text(encoding="utf-8"))
+    mcp_tools_text = (generated / "src" / generated.name / "mcp_tools.py").read_text(encoding="utf-8")
+    agent_text = (generated / "src" / generated.name / "agent.py").read_text(encoding="utf-8")
+    assert config["graphs"]["mcp"] == f"./src/{generated.name}/agent.py:make_graph"
+    assert "tool_name_prefix=True" in mcp_tools_text
+    assert "register_harness_profile" in agent_text
+    assert "GeneralPurposeSubagentProfile(enabled=False)" in agent_text
+    assert "Answer in the same language as the user's question." in agent_text
+    assert "frontend" in lifecycle_data["services"]
+    assert "langgraph" in lifecycle_data["services"]
+    assert lifecycle_data["services"]["calculator-http"] == {"url": "http://127.0.0.1:8765/health"}
+    assert lifecycle_data["processes"]["calculator-http"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.calculator_http_server",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765",
+    ]
+    assert lifecycle_data["checks"]["calculator-http"] == {
+        "type": "http",
+        "target": "http://127.0.0.1:8765/health",
+        "timeout": 2,
+        "attempts": 10,
+    }
+    assert "mcp-smoke" in lifecycle_data["tasks"]
+    assert lifecycle_data["env"]["AGENTSEEK_MODEL_API_KEY"] == {
+        "required": True,
+        "description": "Provider-independent credential passed to the selected model adapter.",
+    }
+    assert "OPENAI_API_KEY" not in lifecycle_data["env"]
+    assert "ANTHROPIC_API_KEY" not in lifecycle_data["env"]
+    assert "GOOGLE_API_KEY" not in lifecycle_data["env"]
+    assert "LANGGRAPH_HOST" in lifecycle_data["env"]
+    assert "FRONTEND_HOST" in lifecycle_data["env"]
+    assert lifecycle_data["env"]["LANGGRAPH_HOST"] == {
+        "required": False,
+        "default": "127.0.0.1",
+        "description": "Bind address for the LangGraph development server.",
+    }
+    assert lifecycle_data["env"]["FRONTEND_HOST"] == {
+        "required": False,
+        "default": "127.0.0.1",
+        "description": "Bind address for the Vite development server.",
+    }
+    assert lifecycle_data["processes"]["langgraph"]["command"] == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        f"{generated.name}.langgraph_dev",
+    ]
+    frontend = generated / "frontend"
+    assert (frontend / "package.json").is_file()
+    assert (frontend / "src" / "App.test.tsx").is_file()
+    assert (frontend / "src" / "ToolCallCard.test.tsx").is_file()
+    app_text = (frontend / "src" / "App.tsx").read_text(encoding="utf-8")
+    vite_text = (frontend / "vite.config.ts").read_text(encoding="utf-8")
+    assert "window.location.hostname" in app_text
+    assert 'assistantId: "mcp"' in app_text
+    assert "FRONTEND_HOST" in vite_text
+    assert "process.env.FRONTEND_HOST" in vite_text
+    frontend_env_text = (frontend / ".env.example").read_text(encoding="utf-8")
+    production_surfaces = {
+        ".env.example",
+        ".gitignore",
+        "index.html",
+        "package.json",
+        "src/App.tsx",
+        "src/ThinkingBlock.tsx",
+        "src/TodoList.tsx",
+        "src/ToolCallCard.tsx",
+        "src/main.tsx",
+        "src/styles.css",
+        "src/vite-env.d.ts",
+        "tsconfig.json",
+        "tsconfig.node.json",
+        "vite.config.ts",
+    }
+    test_surfaces = {
+        "src/App.test.tsx",
+        "src/ToolCallCard.test.tsx",
+        "vite.config.test.ts",
+    }
+    rendered_frontend_files = {path.relative_to(frontend).as_posix() for path in frontend.rglob("*") if path.is_file()}
+    assert rendered_frontend_files == production_surfaces | test_surfaces
+    surface_text = {
+        relative_path: (frontend / relative_path).read_text(encoding="utf-8") for relative_path in production_surfaces
+    }
+    shipped_production_config = "\n".join(surface_text.values())
+    browser_env_variables = set(re.findall(r"import\.meta\.env\.([A-Z][A-Z0-9_]*)", shipped_production_config))
+    assert browser_env_variables == {"VITE_LANGGRAPH_API_URL"}
+    forbidden_patterns = {
+        "static server URL": r"https?://[a-z0-9]",
+        "server header": r"(?:['\"]?(?:authorization|x-api-key|headers?)['\"]?\s*:)",
+        "credential value": r"\b(?:api[_-]?key|token|password|bearer)\b",
+        "MCP config": r"(?:\.mcp\.json|mcpservers|vite_[a-z0-9_]*mcp|mcp[_-](?:url|token|key|password|headers?))",
+        "config editor": r"(?:config(?:uration)?\s*editor|edit(?:or)?\s+(?:mcp|server|connection))",
+    }
+    for label, pattern in forbidden_patterns.items():
+        assert re.search(pattern, shipped_production_config, flags=re.IGNORECASE) is None, label
+    assert "# VITE_LANGGRAPH_API_URL=" in frontend_env_text
+    assert "VITE_LANGGRAPH_API_URL=http://127.0.0.1" not in frontend_env_text
+    root_env_text = (generated / ".env.example").read_text(encoding="utf-8")
+    assert "LANGGRAPH_HOST=" not in root_env_text
+    assert "FRONTEND_HOST=" not in root_env_text
+    package_data = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
+    assert package_data["engines"]["node"] == "^20.19.0 || ^22.13.0 || >=24.0.0"
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "Run `agentseek task sync`, `agentseek task frontend`, and" in readme_text
+    assert "`agentseek task mcp-smoke`, then inspect with `agentseek doctor`" in readme_text
+    assert "all three development services with `agentseek dev`." in readme_text
+    assert "agentseek task mcp-smoke" in readme_text
+    assert "LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev" in readme_text
+    assert "`frontend/.env`" in readme_text
+    assert "Node.js `^20.19.0 || ^22.13.0 || >=24.0.0`" in readme_text
+    assert f"Python {requires_python.removeprefix('>=')} or newer with `uv`." in readme_text
+
+
+def _assert_language_instruction_template(generated: Path) -> None:
+    agent_files = sorted((generated / "src" / generated.name).glob("*.py"))
+    rendered_python = "\n".join(path.read_text(encoding="utf-8") for path in agent_files)
+    assert "Answer in the same language as the user's question." in rendered_python
+
+
+def _assert_agentic_rag_openvino_template(generated: Path) -> None:
+    agent_text = (generated / "src" / generated.name / "agent.py").read_text(encoding="utf-8")
+    converter_text = (generated / "src" / generated.name / "convert_models.py").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert '"optimum-cli", "export", "openvino"' in converter_text
+    assert "python -m optimum.exporters.openvino" not in converter_text
+    assert "from langgraph.graph import MessagesState, StateGraph" in agent_text
+    assert "create_agent" not in agent_text
+    assert "ChatHuggingFace" not in agent_text
+    assert "Answer in the same language as the user's question." in agent_text
+    assert "bind_tools" not in readme_text
+    assert "deterministic retrieve-then-generate graph" in readme_text
+    assert "agentseek task sync" in readme_text
+    assert "uv sync" not in readme_text
+
+
+def _assert_agentic_rag_hybrid_template(generated: Path, lifecycle_data: dict[str, Any]) -> None:
+    env_text = (generated / ".env.example").read_text(encoding="utf-8")
+    compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
+    lifecycle_text = (generated / ".agentseek" / "lifecycle.toml").read_text(encoding="utf-8")
+    pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    app_text = (generated / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert "AGENTSEEK_OTEL_ENABLED=false" in env_text
+    assert "AGENTSEEK_API_KEY=" in env_text
+    assert "AGENTSEEK_API_BASE=https://api.siliconflow.cn/v1" in env_text
+    assert "OPENAI_API_BASE=" not in env_text
+    assert "VITE_LANGGRAPH_API_URL=http://127.0.0.1" not in env_text
+    assert "VITE_CUSTOM_ROUTES_URL=http://127.0.0.1" not in env_text
+    assert "AGENTSEEK_PHOENIX_IMAGE=ghcr.io/agentseek-ai/agentseek-phoenix:main" in env_text
+    assert "OCEANBASE_SEEKDB_IMAGE=quay.io/oceanbase/seekdb:latest" in env_text
+    assert "${AGENTSEEK_PHOENIX_IMAGE:-ghcr.io/agentseek-ai/agentseek-phoenix:main}" in compose_text
+    assert "${OCEANBASE_SEEKDB_IMAGE:-quay.io/oceanbase/seekdb:latest}" in compose_text
+    assert "PHOENIX_SQL_DATABASE_URL: mysql://root@seekdb:2881/phoenix" in compose_text
+    assert "AGENTSEEK_API_KEY" in lifecycle_data["env"]
+    assert "AGENTSEEK_API_BASE" in lifecycle_data["env"]
+    assert "agentseek task phoenix" in readme_text
+    assert "agentseek doctor" in readme_text
+    assert "LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev" in readme_text
+    assert "custom/observability" in readme_text
+    assert "window.location.hostname" in app_text
+    assert "phoenix" in lifecycle_data["tasks"]
+    assert "phoenix-stop" in lifecycle_data["tasks"]
+    assert "mysql://127.0.0.1:2884/phoenix" in lifecycle_text
+    assert "openinference-instrumentation-langchain" in pyproject_text
+
+
+def _assert_agentic_rag_template(generated: Path, lifecycle_data: dict[str, Any]) -> None:
+    lifecycle_text = (generated / ".agentseek" / "lifecycle.toml").read_text(encoding="utf-8")
+    env_text = (generated / ".env.example").read_text(encoding="utf-8")
+    compose_text = (generated / "docker-compose.yml").read_text(encoding="utf-8")
+    gitignore_text = (generated / ".gitignore").read_text(encoding="utf-8")
+    pyproject_text = (generated / "pyproject.toml").read_text(encoding="utf-8")
+    agent_text = (generated / "src" / "my_rag_agent" / "agent.py").read_text(encoding="utf-8")
+    ingest_text = (generated / "src" / "my_rag_agent" / "ingest.py").read_text(encoding="utf-8")
+    helper_text = (generated / "src" / "my_rag_agent" / "vector_store.py").read_text(encoding="utf-8")
+    smoke_test = (generated / "tests" / "test_seekdb_embedded.py").read_text(encoding="utf-8")
+    assert set(lifecycle_data["processes"]) == {"backend", "frontend"}
+    assert "docker" not in lifecycle_data["tools"]["required"]
+    assert "docker compose" not in lifecycle_text
+    assert lifecycle_data["tasks"]["seekdb-docker"]["command"] == ["docker", "compose", "up", "-d", "seekdb"]
+    assert lifecycle_data["tasks"]["embedded-smoke"]["command"] == [
+        "uv",
+        "run",
+        "--extra",
+        "dev",
+        "python",
+        "-m",
+        "pytest",
+    ]
+    assert "SEEKDB_MODE=embedded" in env_text
+    assert "SEEKDB_PATH=~/.agentseek/agentic-rag/my_rag_agent/seekdb" in env_text
+    assert "./.seekdb-docker-data:/var/lib/oceanbase" in compose_text
+    assert ".seekdb-docker-data/" in gitignore_text
+    assert ".seekdb-data/" not in gitignore_text
+    assert "pytest>=8.2" in pyproject_text
+    assert "path" in helper_text and "SEEKDB_MODE" in helper_text
+    assert "get_vector_store" in agent_text
+    assert "get_vector_store" in ingest_text
+    assert "from my_rag_agent.vector_store import get_vector_store" in agent_text
+    assert "from my_rag_agent.vector_store import get_vector_store" in ingest_text
+    assert "from .vector_store" not in agent_text
+    assert "DeterministicEmbeddings" in smoke_test
+    assert "subprocess.run" in smoke_test
+    assert "shutil.rmtree" in smoke_test
+    assert "similarity_search" in smoke_test
+    assert "agentseek task seekdb-docker" in (generated / "README.md").read_text(encoding="utf-8")
+    assert "agentseek task embedded-smoke" in (generated / "README.md").read_text(encoding="utf-8")
+
+
+def _assert_frontend_package_json(generated: Path) -> None:
+    """Validate package.json when the rendered template includes a frontend."""
+    frontend_package = generated / "frontend" / "package.json"
+    if not frontend_package.is_file():
+        return
+
+    try:
+        json.loads(frontend_package.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        pytest.fail(f"frontend/package.json is not valid JSON: {exc}")
+
+
+def _assert_dependency_sync_task(
+    type_name: str,
+    template_name: str,
+    generated: Path,
+    lifecycle_data: dict[str, Any],
+) -> None:
+    if (type_name, template_name) not in dependency_sync_templates:
+        return
+
+    assert "sync" in lifecycle_data["tasks"]
+    assert lifecycle_data["tasks"]["sync"]["command"] == ["uv", "sync"]
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "agentseek task sync" in readme_text
 
 
 def test_at_least_one_template_discovered() -> None:
@@ -60,6 +557,19 @@ def test_at_least_one_template_discovered() -> None:
         "No templates discovered under templates/. Either the templates root "
         "moved or _local_templates_root() can no longer find it."
     )
+
+
+def _assert_agentic_rag_variant(
+    type_name: str,
+    template_name: str,
+    generated: Path,
+    lifecycle_data: dict[str, Any],
+) -> None:
+    template = (type_name, template_name)
+    if template == ("langchain", "agentic-rag-hybrid"):
+        _assert_agentic_rag_hybrid_template(generated, lifecycle_data)
+    elif template == ("langchain", "agentic-rag"):
+        _assert_agentic_rag_template(generated, lifecycle_data)
 
 
 @pytest.mark.parametrize(
@@ -97,102 +607,7 @@ def test_template_renders_without_unrendered_jinja(
     dependencies = pyproject_data["project"].get("dependencies", [])
     assert isinstance(dependencies, list)
     if (type_name, template_name) == ("bub", "default"):
-        assert "bub==0.3.9" in dependencies
-        assert "agentseek-ag-ui" in dependencies
-        assert "duty>=1.9" not in pyproject_data.get("dependency-groups", {}).get("dev", [])
-    if (type_name, template_name) == ("deepagents", "enterprise-wecom"):
-        assert "agentseek-work" in dependencies
-        assert "pyyaml>=6.0" in dependencies
-        pack_manifest = generated / "digital_employees" / "industry-report" / "pack.yaml"
-        agent_module = generated / "src" / generated.name / "agent.py"
-        pack_loader = generated / "src" / generated.name / "pack_loader.py"
-        report_brief = generated / "src" / generated.name / "report_brief.py"
-        report_outline = generated / "src" / generated.name / "report_outline.py"
-        report_draft = generated / "src" / generated.name / "report_draft.py"
-        report_approval = generated / "src" / generated.name / "report_approval.py"
-        report_research = generated / "src" / generated.name / "report_research.py"
-        report_output_guard = generated / "src" / generated.name / "report_output_guard.py"
-        external_research = generated / "src" / generated.name / "external_research.py"
-        research_gap_decision = generated / "src" / generated.name / "research_gap_decision.py"
-        work_composition = generated / "src" / generated.name / "work_composition.py"
-        work_tools = generated / "src" / generated.name / "work_tools.py"
-        knowledge_server = generated / "src" / generated.name / "department_knowledge" / "mcp_server.py"
-        knowledge_import = generated / "scripts" / "import_department_knowledge.py"
-        knowledge_probe = generated / "scripts" / "probe_department_knowledge.py"
-        knowledge_config = generated / ".agents" / "mcp.department-knowledge.example.json"
-        research_template = (
-            generated
-            / "digital_employees"
-            / "industry-report"
-            / "skills"
-            / "report-intake"
-            / "references"
-            / "securities-industry-internal-research.yaml"
-        )
-        report_writing_skill = (
-            generated
-            / "digital_employees"
-            / "industry-report"
-            / "skills"
-            / "report-writing"
-            / "SKILL.md"
-        )
-        assert pack_manifest.is_file()
-        assert agent_module.is_file()
-        assert pack_loader.is_file()
-        assert report_brief.is_file()
-        assert report_outline.is_file()
-        assert report_draft.is_file()
-        assert report_approval.is_file()
-        assert report_research.is_file()
-        assert report_output_guard.is_file()
-        assert external_research.is_file()
-        assert research_gap_decision.is_file()
-        assert work_composition.is_file()
-        assert work_tools.is_file()
-        assert knowledge_server.is_file()
-        assert knowledge_import.is_file()
-        assert knowledge_probe.is_file()
-        assert knowledge_config.is_file()
-        assert research_template.is_file()
-        assert report_writing_skill.is_file()
-        assert "{{" not in pack_manifest.read_text(encoding="utf-8")
-        rendered_python_modules = (
-            agent_module,
-            report_approval,
-            report_draft,
-            report_outline,
-            report_output_guard,
-            work_composition,
-            work_tools,
-        )
-        for module_path in rendered_python_modules:
-            source = module_path.read_text(encoding="utf-8")
-            compile(source, str(module_path), "exec")
-        agent_source = agent_module.read_text(encoding="utf-8")
-        assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
-        assert "GeneralPurposeSubagentProfile" not in agent_source
-        assert "{{" not in report_brief.read_text(encoding="utf-8")
-        assert "{{" not in report_approval.read_text(encoding="utf-8")
-        assert "{{" not in report_draft.read_text(encoding="utf-8")
-        assert "{{" not in report_outline.read_text(encoding="utf-8")
-        assert "{{" not in report_research.read_text(encoding="utf-8")
-        assert "{{" not in report_output_guard.read_text(encoding="utf-8")
-        assert "{{" not in external_research.read_text(encoding="utf-8")
-        assert "{{" not in research_gap_decision.read_text(encoding="utf-8")
-        assert "{{" not in work_composition.read_text(encoding="utf-8")
-        assert "{{" not in knowledge_server.read_text(encoding="utf-8")
-        assert "{{" not in knowledge_import.read_text(encoding="utf-8")
-        assert "{{" not in knowledge_probe.read_text(encoding="utf-8")
-        assert "{{" not in knowledge_config.read_text(encoding="utf-8")
-        assert "{{" not in research_template.read_text(encoding="utf-8")
-        assert "{{" not in report_writing_skill.read_text(encoding="utf-8")
-        env_example = (generated / ".env.example").read_text(encoding="utf-8")
-        assert "AGENTSEEK_WORK_ENABLED=false" in env_example
-        assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example
-        assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
-        assert "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS=60" in env_example
-
+        _assert_bub_default_dependencies(dependencies, pyproject_data)
     lifecycle = generated / ".agentseek" / "lifecycle.toml"
     assert lifecycle.is_file(), f"missing .agentseek/lifecycle.toml in {generated}"
     lifecycle_text = lifecycle.read_text(encoding="utf-8")
@@ -201,18 +616,169 @@ def test_template_renders_without_unrendered_jinja(
         "variable was referenced but not substituted."
     )
     lifecycle_data = tomllib.loads(lifecycle_text)
+    assert lifecycle_data["version"] == 1, f"{type_name}/{template_name} must retain lifecycle version 1"
     assert lifecycle_data["template"] == f"{type_name}/{template_name}"
     assert lifecycle_data["processes"]
-    if (type_name, template_name) == ("deepagents", "enterprise-wecom"):
-        assert lifecycle_data["env"]["AGENTSEEK_WORK_ENABLED"]["default"] == "false"
+    _assert_fork_template_variant(type_name, template_name, generated, dependencies, lifecycle_data)
     assert not (generated / "duties.py").exists()
+    assert "backend" not in lifecycle_data.get("tasks", {})
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
+    assert "agentseek task backend" not in readme_text
+    _assert_dependency_sync_task(type_name, template_name, generated, lifecycle_data)
+    if (type_name, template_name) in seekdb_skill_templates:
+        _assert_seekdb_skill_task(generated, lifecycle_data)
 
-    frontend_pkg = generated / "frontend" / "package.json"
-    if frontend_pkg.is_file():
-        try:
-            json.loads(frontend_pkg.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            pytest.fail(f"frontend/package.json is not valid JSON: {exc}")
+    if (type_name, template_name) == ("langchain", "default"):
+        _assert_langchain_default_template(generated)
+
+    if (type_name, template_name) in rag_host_binding_templates:
+        _assert_rag_template_host_binding(
+            generated,
+            check_frontend_env=(type_name, template_name) == ("langchain", "agentic-rag-openvino"),
+        )
+
+    if (type_name, template_name) == ("deepagents", "content-builder"):
+        _assert_deepagents_content_builder_template(generated)
+
+    if (type_name, template_name) == ("deepagents", "default"):
+        _assert_deepagents_default_template(generated)
+
+    if (type_name, template_name) == ("deepagents", "mcp"):
+        _assert_deepagents_mcp_template(generated, lifecycle_data)
+
+    if (type_name, template_name) in language_instruction_templates:
+        _assert_language_instruction_template(generated)
+
+    if (type_name, template_name) == ("langchain", "agentic-rag-openvino"):
+        _assert_agentic_rag_openvino_template(generated)
+
+    _assert_agentic_rag_variant(type_name, template_name, generated, lifecycle_data)
+
+    _assert_frontend_package_json(generated)
+
+
+@pytest.mark.parametrize(
+    ("type_name", "template_name", "template_dir"),
+    LOCAL_SOURCE_TEMPLATES,
+    ids=[f"{type_name}/{template_name}" for type_name, template_name, _ in LOCAL_SOURCE_TEMPLATES],
+)
+@pytest.mark.parametrize("source_path", LOCAL_SOURCE_PATH_CASES)
+def test_template_renders_local_source_path_safely(
+    type_name: str,
+    template_name: str,
+    template_dir: Path,
+    source_path: PurePath,
+    tmp_path: Path,
+) -> None:
+    """Local source paths remain valid in TOML, YAML, and Dockerfile output."""
+    patched = _patch_template_for_test(template_dir, tmp_path)
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+
+    generated = create_module._run_cookiecutter(
+        create_module.TemplateSource(
+            template=str(patched),
+            install_source_path=source_path,
+        ),
+        output_dir=out_dir,
+        no_input=True,
+    )
+
+    assert generated is not None
+    with (generated / "pyproject.toml").open("rb") as pyproject_file:
+        pyproject_data = tomllib.load(pyproject_file)
+
+    normalized_source = source_path.as_posix()
+    uv_sources = pyproject_data["tool"]["uv"]["sources"]
+    local_paths = [source["path"] for source in uv_sources.values() if "path" in source]
+    assert local_paths
+    assert all(
+        path == normalized_source or path.startswith(f"{normalized_source}/contrib/") for path in local_paths
+    )
+    assert all("\\" not in path for path in local_paths)
+
+    if (type_name, template_name) == ("langchain", "default"):
+        dockerfile = (generated / "Dockerfile").read_text(encoding="utf-8")
+        compose = (generated / "docker-compose.yml").read_text(encoding="utf-8")
+        ag_ui_path = f"{normalized_source}/contrib/agentseek-ag-ui"
+        assert (f'COPY --from=agentseek_source ["contrib/agentseek-ag-ui", {json.dumps(ag_ui_path)}]') in dockerfile
+        assert f"{shlex.quote(normalized_source)}/contrib/agentseek-ag-ui" in dockerfile
+        assert compose.count(f"agentseek_source: {json.dumps(normalized_source)}") == 2
+        if str(source_path) != normalized_source:
+            assert str(source_path) not in dockerfile
+            assert str(source_path) not in compose
+
+
+@pytest.mark.parametrize(
+    ("type_name", "template_name", "template_dir"),
+    TEMPLATES,
+    ids=[f"{t}/{n}" for t, n, _ in TEMPLATES],
+)
+def test_rendered_v1_template_normalizes_conservatively(
+    type_name: str,
+    template_name: str,
+    template_dir: Path,
+    tmp_path: Path,
+) -> None:
+    patched = _patch_template_for_test(template_dir, tmp_path)
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    cookiecutter(template=str(patched), output_dir=str(out_dir), no_input=True)
+    generated = next(path for path in out_dir.iterdir() if path.is_dir())
+
+    spec = read_lifecycle_spec(generated / ".agentseek" / "lifecycle.toml", project_root=generated)
+    assert isinstance(spec, LifecycleSpecV1), f"{type_name}/{template_name} must remain a lifecycle v1 template"
+    normalized = normalize_lifecycle(spec, project_root=generated)
+
+    assert normalized.lifecycle_version == 1
+    assert normalized.metadata_complete is False
+    assert normalized.actions == ()
+    assert all(
+        service.name is None
+        and service.description is None
+        and service.kind is None
+        and service.display is None
+        and service.primary is None
+        and service.tech is None
+        and service.providers == ()
+        and service.check_ids == ()
+        and service.links == ()
+        for service in normalized.services
+    )
+    assert all(check.service_id is None for check in normalized.checks)
+    assert all(task.starts == () and task.stops == () for task in normalized.tasks)
+    normalized_dump = normalized.model_dump_json()
+    assert str(generated.resolve()) not in normalized_dump
+    for process in spec.processes.values():
+        assert json.dumps(list(process.command), separators=(",", ":")) not in normalized_dump
+    for task in spec.tasks.values():
+        assert json.dumps(list(task.command), separators=(",", ":")) not in normalized_dump
+    projected_authored_literals = {
+        spec.template,
+        spec.name,
+        *spec.required_paths,
+        *(requirement.description for requirement in spec.env.values()),
+        *(alias for requirement in spec.env.values() for alias in requirement.aliases),
+        *(service.url for service in spec.services.values()),
+        *(check.target for check in spec.checks.values()),
+        *(task.description for task in spec.tasks.values()),
+    }
+    normalized_scalars: set[object] = set()
+
+    def collect_scalars(value: object) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                collect_scalars(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect_scalars(item)
+        else:
+            normalized_scalars.add(value)
+
+    collect_scalars(normalized.model_dump(mode="json"))
+    for requirement in spec.env.values():
+        if requirement.default and requirement.default not in projected_authored_literals:
+            assert requirement.default not in normalized_scalars
 
 
 @pytest.mark.parametrize(
@@ -247,6 +813,23 @@ def test_template_lifecycle_commands_smoke(
     info = runner.invoke(app, ["info"])
     assert info.exit_code == 0, info.stdout + info.stderr
     assert f"Template: {type_name}/{template_name}" in info.stdout
+
+    if (type_name, template_name) in dependency_sync_templates:
+        task_calls: list[tuple[list[str], Path]] = []
+
+        def record_task(command: Sequence[str], *, project, cwd: str) -> int:
+            task_calls.append((list(command), project.root / cwd))
+            return 0
+
+        monkeypatch.setattr("agentseek.cli.lifecycle.core._run_command", record_task)
+
+        sync = runner.invoke(app, ["task", "sync"])
+        assert sync.exit_code == 0, sync.stdout + sync.stderr
+        assert task_calls == [(["uv", "sync"], generated)]
+
+        backend = runner.invoke(app, ["task", "backend"])
+        assert backend.exit_code == 1
+        assert "Unknown lifecycle task: backend" in backend.stderr
 
     dev = runner.invoke(app, ["dev", "--dry-run", "--skip-check"])
     assert dev.exit_code == 0, dev.stdout + dev.stderr

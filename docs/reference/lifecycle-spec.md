@@ -3,10 +3,18 @@ title: Lifecycle Spec
 type: reference
 audience: [A2]
 runs: no
-verified_on: 2026-06-23
+verified_on: 2026-07-28
 sources:
   - src/agentseek/cli/lifecycle/spec.py
   - src/agentseek/cli/lifecycle/core.py
+  - src/agentseek/cli/lifecycle/authored.py
+  - src/agentseek/cli/lifecycle/normalize.py
+  - src/agentseek/cli/lifecycle/json_output.py
+  - src/agentseek/cli/lifecycle/safety.py
+  - specs/lifecycle-v2-service-discovery.md
+  - docs/adr/0001-versioned-template-catalog-boundary.md
+  - templates/index.json
+  - tests/cli_commands/test_templates_render.py
   - "templates/bub/default/{{cookiecutter.project_slug}}/.agentseek/lifecycle.toml"
 ---
 
@@ -22,7 +30,24 @@ AgentSeek discovers the lifecycle spec from the current directory upward:
 
 Other project files are outside lifecycle discovery.
 
-## Shape
+## Authored versions and catalog boundary
+
+AgentSeek currently loads and validates authored lifecycle versions `1` and
+`2`. The existing human commands and their v1 behavior remain compatible.
+
+| Authored version or location | Current boundary |
+| --- | --- |
+| `1`, `2` | Authored lifecycle files load and validate. |
+| `templates/` | Core remains the `version = 1` compatibility mirror. |
+| `agentseek-ai/agentseek-templates` | The locked `v0.1.0` standalone catalog supplies new `version = 2` templates. |
+| Normalized and machine surfaces | V1 and v2 project into one safe normalized model; `info --json` and `doctor --json` expose public schema version `1`. |
+
+For the complete authored contract, see the published [lifecycle v2 overview
+(`lifecycle-v2-service-discovery.md`)](lifecycle-v2-service-discovery.md).
+The exact canonical source is
+<https://github.com/ob-labs/agentseek/blob/main/specs/lifecycle-v2-service-discovery.md>.
+
+## Lifecycle v1 shape
 
 ```toml
 version = 1
@@ -75,6 +100,9 @@ command = ["npm", "install", "--prefix", "frontend"]
 | `checks.<name>` | Live HTTP readiness checks used by `agentseek doctor --live`. 2xx and 3xx responses are successful. |
 | `tasks.<name>` | One-shot tasks run by `agentseek task <name>`. `cwd` is project-relative and must exist. |
 
+For lifecycle v2 HTTP checks, `timeout` is a finite number of seconds greater
+than `0` and no greater than `300`; `attempts` is a positive integer.
+
 ## Environment Checks
 
 AgentSeek checks environment requirements from lifecycle defaults, the optional
@@ -89,19 +117,43 @@ Only keys declared under `[env.<name>]` and their aliases are read from
 may use. AgentSeek does not pass the env file or lifecycle defaults to child
 processes.
 
-## First Phase Scope
+## Lifecycle v1 first-phase scope
 
 Version 1 supports required tools, required paths, project environment
 requirements, HTTP live checks, long-running processes, and one-shot tasks.
 It does not support optional tool/path checks, TCP checks, process env
 overrides, multiple env files, or env interpolation.
 
+## Lifecycle v2 authored fields
+
+V2 retains the v1 `tools`, `paths`, and `env` sections and requires at least
+one process. Its root fields are `version`, `template`, and `name`, with
+optional `description`, `env_file`, and `guide`; `template` and `name` must be
+nonblank. `guide`, `env_file`, `paths.required`, and process/task `cwd` values
+must remain project-relative and confined to the project root.
+
+Each `services.<id>` entry has `name`, `url`, `kind`, `display`, `primary`,
+`description`, optional `tech`, and typed `links`. `kind` is one of `web`,
+`api`, `protocol`, `database`, or `other`; `display` is one of `default`,
+`advanced`, or `hidden`. `display` is only a presentation hint: it never
+controls authentication, authorization, network exposure, or process startup.
+
+V2 uses same-ID relationships by default: a matching process provides a
+service and a matching check checks a service. Use `processes.<id>.provides`,
+`checks.<id>.service`, and `tasks.<id>.starts` or `tasks.<id>.stops` for
+explicit relationships. Identifiers must use the v2 identifier grammar and
+every referenced service must exist. Projects with services require exactly one
+non-hidden `primary = true` service; checks require a matching or explicit
+service. Validation also rejects unknown fields, empty commands, duplicate
+`tools.required` or `paths.required` values, unsafe executable names, paths,
+endpoints, and typed reference URLs.
+
 ## Public Commands
 
 | Command | Behavior |
 | --- | --- |
-| `agentseek info [--verbose]` | Prints project facts from the lifecycle spec. |
-| `agentseek doctor [--live] [--strict]` | Checks tools, paths, env, and optional live endpoints. |
+| `agentseek info [--verbose] [--json]` | Prints project facts, or emits deterministic safe lifecycle metadata as JSON. |
+| `agentseek doctor [--live] [--strict] [--json]` | Checks tools, paths, env, and optional live endpoints; JSON is incompatible with `--strict`. |
 | `agentseek dev [--dry-run] [--skip-check]` | Prints or starts declared development processes. `--skip-check` skips only the preliminary strict `doctor` pass. |
 | `agentseek task --list` | Lists tasks declared under `tasks`. |
 | `agentseek task <name>` | Runs a declared one-shot task. |

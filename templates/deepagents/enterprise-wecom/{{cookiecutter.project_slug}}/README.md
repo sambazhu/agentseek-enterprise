@@ -9,7 +9,7 @@ The template injects `state["employee_context"]` and `state["short_term_memory"]
 ## Setup
 
 ```bash
-uv sync
+agentseek task sync
 cp .env.example .env
 ```
 
@@ -534,7 +534,7 @@ the keys and host, run a single probe before enabling long-running gateway
 traffic:
 
 ```bash
-uv sync
+agentseek task sync
 scripts/probe_langfuse_event.py --env-file .env
 ```
 

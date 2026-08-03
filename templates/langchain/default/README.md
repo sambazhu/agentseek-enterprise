@@ -2,8 +2,8 @@
 
 Scaffolds a `create_agent` project with CopilotKit middleware bound to
 agentseek via `agentseek-langchain`, for local AG-UI development, and also
-includes a first-class Feishu gateway path plus optional OpenTelemetry export
-to Phoenix backed by SeekDB.
+includes first-class Feishu and WeCom (企业微信) gateway paths plus optional
+OpenTelemetry export to Phoenix backed by OceanBase seekdb.
 
 The generated project uses the AgentSeek dev lifecycle v1 contract:
 
@@ -29,7 +29,7 @@ Browser (CopilotKit v2)
         -> bub gateway :{{ gateway_port }}  /agent  (AG-UI channel)
           -> agentseek-langchain messages_spec(...)
             -> create_agent(...) + CopilotKitMiddleware
-              -> OpenTelemetry spans -> Phoenix :6006/v1/traces -> SeekDB
+              -> OpenTelemetry spans -> Phoenix :6006/v1/traces -> OceanBase seekdb
 ```
 
 | LangChain guide | Generated project | Conversion point |
@@ -70,6 +70,7 @@ Browser (CopilotKit v2)
     observability.py
     settings.py
     feishu.py
+    wecom.py
     dev.py
   frontend/
     README.md
@@ -116,9 +117,18 @@ def build_agent():
 ```
 
 The generated `docker-compose.yml` is the default lifecycle stack: it starts
-Bub gateway, the CopilotKit frontend, Phoenix, and a SeekDB backend in one
-`agentseek dev` run. Phoenix uses
+Bub gateway, the CopilotKit frontend, Phoenix, and an OceanBase seekdb backend
+in one `agentseek dev` run. Phoenix uses
 `PHOENIX_SQL_DATABASE_URL=mysql://root@seekdb:2881/phoenix` and persists data in
-`quay.io/oceanbase/seekdb:latest`. Its optional `feishu` profile starts the
-Feishu gateway with the same LangChain spec and environment surface; enable it
-with `COMPOSE_PROFILES=feishu` in `.env`.
+`quay.io/oceanbase/seekdb:latest`. The Phoenix image defaults to
+`ghcr.io/agentseek-ai/agentseek-phoenix:main` and can be overridden with
+`AGENTSEEK_PHOENIX_IMAGE`. Its optional `feishu` profile starts the Feishu
+gateway with the same LangChain spec and environment surface; enable it with
+`COMPOSE_PROFILES=feishu` in `.env`. WeCom is available through the generated
+local `serve-wecom` entry point; a Compose profile is deliberately not added
+because a WeCom AI bot permits only one active long connection at a time.
+
+The repository CI job `agentseek-phoenix-compose` protects this contract. It
+renders this template, starts Phoenix with OceanBase seekdb, emits three
+independent OpenTelemetry root spans, and confirms that each trace marker is
+persisted in the Phoenix schema inside OceanBase seekdb.

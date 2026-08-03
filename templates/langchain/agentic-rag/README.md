@@ -2,7 +2,7 @@
 
 Cookiecutter template for an **agentic RAG** application using
 [LangChain](https://docs.langchain.com/oss/langchain) with an
-[OceanBase/SeekDB](https://github.com/oceanbase/seekdb) vector store and
+[OceanBase seekdb](https://github.com/oceanbase/seekdb) vector store and
 seekdb embed (384-dim, no API key required).
 
 The generated project includes:
@@ -13,7 +13,7 @@ The generated project includes:
 - **Frontend** — React + Vite chat UI with streaming tool-call cards and
   markdown rendering via `@langchain/react` `useStream`.
 - **Ingest CLI** — `uv run ingest` loads documents from files, directories,
-  or URLs, chunks them, and indexes into SeekDB.
+  or URLs, chunks them, and indexes into OceanBase seekdb.
 - **AgentSeek lifecycle** — `.agentseek/lifecycle.toml` declares
   `agentseek info`, `agentseek doctor`, `agentseek dev`, and helper tasks.
 
@@ -26,9 +26,9 @@ for dependency management. Install uv first:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-You also need a running SeekDB instance. The generated project includes a
-`docker-compose.yml` that starts one, or you can use the embedded
-`pylibseekdb` launcher on Linux.
+Embedded OceanBase seekdb is the default and runs in-process; no Docker
+container is needed. The generated project also includes a `docker-compose.yml`
+for explicit server-mode use.
 
 ## Quick start
 
@@ -40,14 +40,20 @@ agentseek create langchain/agentic-rag          # scaffold the project
 # 2. Project setup
 cd <project_slug>
 cp .env.example .env        # fill in API keys
-uv sync
-npm install --prefix frontend
-docker compose up -d        # start SeekDB
+agentseek task sync
+agentseek task frontend
 agentseek doctor
 agentseek dev --dry-run
 
 # 3. Run
 agentseek dev
+```
+
+For trusted remote development hosts such as ECS, start dev with explicit bind
+hosts:
+
+```bash
+LANGGRAPH_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 agentseek dev
 ```
 
 ## Cookiecutter variables
@@ -59,8 +65,9 @@ agentseek dev
 | `author` | Your Name | Author for pyproject.toml |
 | `default_model_provider` | openai | openai / anthropic / google_genai |
 | `default_model` | openai:Pro/zai-org/GLM-5.1 | Model ID for the chosen provider |
-| `seekdb_path` | ./.seekdb-data | Local data path (Docker volume mount) |
-| `seekdb_db_name` | test | SeekDB database name |
+| `seekdb_path` | ~/.agentseek/agentic-rag/<project_slug>/seekdb | Embedded data path |
+| `seekdb_docker_path` | ./.seekdb-docker-data | Optional Docker server data path |
+| `seekdb_db_name` | test | OceanBase seekdb database name |
 | `vector_table_name` | rag_documents | Vector store table name |
 | `frontend_port` | 5174 | Frontend Vite dev server port |
 
@@ -78,6 +85,9 @@ agentseek dev
     __init__.py
     agent.py
     ingest.py
+    vector_store.py
+  tests/
+    test_seekdb_embedded.py
   frontend/
     package.json
     index.html
@@ -109,3 +119,6 @@ agentseek dev
   multi-step retrieval — complex queries trigger multiple searches
   autonomously, unlike a fixed two-step RAG chain.
 - LangSmith tracing is opt-in via `LANGSMITH_TRACING=true` in `.env`.
+- Remote development is opt-in: `LANGGRAPH_HOST` and `FRONTEND_HOST` stay
+  `127.0.0.1` by default and can be set to `0.0.0.0` from the shell on trusted
+  networks.
