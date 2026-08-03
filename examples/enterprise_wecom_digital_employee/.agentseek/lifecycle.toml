@@ -28,7 +28,7 @@ description = "LangChain model provider used by the enterprise WeCom agent."
 
 [env.AGENTSEEK_MODEL]
 required = true
-default = "openai:gpt-4o-mini"
+default = "deepseek-v4-flash-0731"
 description = "Model id used by the enterprise WeCom agent."
 aliases = ["BUB_MODEL", "DEEPAGENTS_MODEL"]
 

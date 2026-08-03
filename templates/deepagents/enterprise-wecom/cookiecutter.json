@@ -2,7 +2,7 @@
   "project_name": "Enterprise WeCom Digital Employee",
   "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '_').replace('-', '_') }}",
   "author": "Your Name",
-  "default_model": "openai:gpt-4o-mini",
+  "default_model": "deepseek-v4-flash-0731",
   "wecom_port": "12000",
   "wecom_callback_path": "/ai-bot/callback/demo/<botid>",
   "mcp_config_path": ".agents/mcp.json",

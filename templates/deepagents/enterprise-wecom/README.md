@@ -26,7 +26,7 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 | `project_name` | Human-readable project name. |
 | `project_slug` | Python package and directory name. |
 | `author` | Project author. |
-| `default_model` | Default `AGENTSEEK_MODEL` value. |
+| `default_model` | Default `AGENTSEEK_MODEL` value (`deepseek-v4-flash-0731`). |
 | `wecom_port` | Local WeCom callback server port. |
 | `wecom_callback_path` | Callback path configured in the WeCom intelligent robot. |
 | `mcp_config_path` | MCP config path read by AgentSeek and the DeepAgents MCP adapter. |
