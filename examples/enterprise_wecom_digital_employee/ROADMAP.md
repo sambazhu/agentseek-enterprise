@@ -12,6 +12,7 @@ sources:
   - examples/enterprise_wecom_digital_employee/V0.1.0_M0_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.1_DEPARTMENT_DIGITAL_EMPLOYEE_PLAN.md
   - examples/enterprise_wecom_digital_employee/V0.1.1_M4_IMPLEMENTATION.md
+  - examples/enterprise_wecom_digital_employee/V0.1.2_M0_PLATFORM_FREEZE.md
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/profile.yaml
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/pack.yaml
   - docs/concepts/enterprise-wecom-template.zh.md
@@ -65,7 +66,8 @@ v0.1.0 和 v0.1.1 在此基础上进一步完成：
 ```
 
 Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具，尚未完成
-第二项真实部门服务的生产验证。
+第二个真实部门数字员工与业务服务的生产验证。v0.1.2 M0 已将该目标
+冻结为信息技术部数字员工的“信息系统需求评审与立项评估”。
 
 所以 v0.0.8 之后的 `enterprise-wecom`，已经不只是一个聊天示例。
 它是可部署、可观测、可审计的企业数字员工运行底座。
@@ -944,7 +946,7 @@ Mac mini 企微活体验收。RC 全生命周期与六项服务端可靠性加�
 v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
 组织 RBAC、审批中心、SLA、任务运营和人工接管，放在 Multi-Playbook 基础稳定后的治理切片。
 
-## v0.1.2：平台化加固与第二个真实 Playbook
+## v0.1.2：平台化加固与第二个部门数字员工
 
 v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或交付链路。
 本版本要回答两个问题：
@@ -962,13 +964,20 @@ v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或�
 - 将早期 research/content 设想保留为历史，不再列为待实现主线；
 - 公开当前权限、身份、运行时、下载和任务生命周期限制；
 - 冻结 v0.1.2 的里程碑顺序与不做事项；
-- 为第二个真实 Playbook 选择业务负责人、输入、输出、审批人和验收样例。
+- 为第二个真实部门数字员工和 Playbook 选择业务负责人、输入、
+  输出、审批人和验收样例。
 
 验收：
 
 - `ROADMAP.md`、`DEVELOPER_GUIDE.md` 和 GA 标签口径一致；
 - 研发团队能够区分 Shared Capability、Skill 和 Playbook；
-- 第二个 Playbook 在编码前具备业务合同和验收 oracle。
+- 信息技术部数字员工与 `information-system-requirement-review@1`
+  在编码前具备业务合同和验收 oracle。
+
+M0 决策见 `V0.1.2_M0_PLATFORM_FREEZE.md`。首个交付物冻结为
+《信息系统立项评估报告》；数字员工只提供立项建议，不代替正式立项审批。
+本文档与配套研发指南完成后，由 Mac mini 执行文档一致性和模板回归复核；
+复核通过即关闭 M0，再进入 M1，不在 M0 提前修改运行时代码或 schema。
 
 ### M1：组织授权与身份 Provider 抽象
 
@@ -1014,12 +1023,14 @@ v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或�
 - Playbook 不能扩大 Profile 权限，也不能绕过确认、审批和审计；
 - 模板生成项目自带可运行的扩展回归测试。
 
-### M3：第二个真实部门 Playbook
+### M3：信息技术部数字员工与需求评审 Playbook
 
-目标是用真实业务证明 Multi-Playbook Foundation，而不是继续依赖测试夹具。
+目标是用第二个真实部门部署证明模板、身份、授权、Capability 和
+Playbook 治理可跨部门复用，而不是复制证券报告。
 
-候选服务是“战略会议简报”或“经营分析简报”。最终名称由业务负责人在 M0 冻结。
-它应复用文件分析、部门知识、Gildata 和公开搜索等共享能力，但使用独立的：
+服务已冻结为 `information-system-requirement-review@1`，交付
+《信息系统立项评估报告》。它应复用文件分析、信息技术部知识和经员工
+明确授权的外部公开信息，但使用独立的：
 
 - 服务目录和确定性路由词；
 - WorkItem playbook ID；
@@ -1029,11 +1040,11 @@ v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或�
 
 验收：
 
-- 一个 Bot 中两个真实 Playbook 可被确定性选择；
-- 当前任务绑定优先于新意图，歧义请求必须澄清；
-- 两个 Playbook 的合同、工具、数据和 Artifact 互不串扰；
-- Shared Capability 在普通协助和两个正式 Playbook 中复用同一注册来源；
-- Mac mini 完成跨 Playbook、跨员工和重启后的活体复验。
+- 战略发展部与信息技术部数字员工必须使用独立 Bot、Profile、Pack 和稳定技术身份；
+- 两个部署的合同、工具、数据和 Artifact 互不串扰；
+- Shared Capability 由同一 SDK 和注册接口构建，不复制证券报告私有模块；
+- 同 Bot Multi-Playbook 仍由 M2 fixture 验证当前任务优先、确定性选择和歧义澄清；
+- Mac mini 完成跨部门、跨员工和重启后的活体复验。
 
 ### M4：生产运行时加固
 
@@ -1104,7 +1115,7 @@ v0.0.8  企业身份、记忆、MCP、审计和观测 runtime
 v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
 v0.1.0  证券行业报告 WorkItem 全生命周期与 signed-link 交付
 v0.1.1  部门数字员工、Job Charter、统一能力池和 Multi-Playbook Foundation
-v0.1.2  组织授权、扩展 SDK、第二个真实 Playbook 和生产运行时加固
+v0.1.2  组织授权、扩展 SDK、第二个部门数字员工和生产运行时加固
 后续     多人治理、多数字员工协作、多格式产物和管理后台
 ```
 

@@ -3,8 +3,9 @@ title: 扩展数字员工的 Skill、MCP 和 Playbook
 type: how-to
 audience: [A2, A3]
 runs: yes
-verified_on: 2026-07-23
+verified_on: 2026-08-03
 sources:
+  - V0.1.2_M0_PLATFORM_FREEZE.md
   - src/enterprise_wecom_digital_employee/capability_catalog.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
   - src/enterprise_wecom_digital_employee/playbook_registry.py
@@ -222,20 +223,23 @@ remote tools。Playbook 如需使用，相同 grant/scope 也要声明在 Playbo
 
 ```yaml
 service_catalog:
-  - service_id: department-briefing
-    title: 部门经营分析简报
-    summary: 形成可确认、审批和交付的经营分析材料
-    playbook_ref: department-briefing@1
+  - service_id: information-system-requirement-review
+    title: 信息系统需求评审与立项评估
+    summary: 评估信息系统需求并形成可审批、可交付的立项建议
+    playbook_ref: information-system-requirement-review@1
     workflow_steps:
       - 需求确认
-      - 数据核验
-      - 初稿与审批
-      - 文件交付
+      - 材料与证据核验
+      - 多维评估与立项建议
+      - 审批与文件交付
     example_requests:
-      - 请生成本月经营分析简报
+      - 请启动信息系统需求评审与立项评估
 ```
 
-同时把 `department-briefing@1` 加入 `supported_playbooks`。
+同时把 `information-system-requirement-review@1` 加入信息技术部 Profile 的
+`supported_playbooks`。这项服务属于独立的信息技术部数字员工，不要把它加入
+战略发展部 Profile。冻结的输入合同、审批边界和验收样例见
+[`V0.1.2_M0_PLATFORM_FREEZE.md`](V0.1.2_M0_PLATFORM_FREEZE.md)。
 
 不要为了证明多 Playbook 能运行而发布一个假的生产服务。测试夹具应只放在测试中。
 
@@ -244,7 +248,7 @@ service_catalog:
 新增业务包，例如：
 
 ```text
-src/enterprise_wecom_digital_employee/briefings/
+src/enterprise_wecom_digital_employee/it_requirements/
   playbook.py
   composition.py
   tools.py
@@ -275,31 +279,36 @@ Entrypoint 只能位于允许的项目 Python package 内，外部任意模块�
 
 ```yaml
 playbooks:
-  - id: department-briefing
+  - id: information-system-requirement-review
     version: "1"
-    entrypoint: enterprise_wecom_digital_employee.briefings.playbook:build_playbook
+    entrypoint: enterprise_wecom_digital_employee.it_requirements.playbook:build_playbook
     skill_refs:
-      - department-analysis@1.0.0
+      - information-system-requirement-review@1.0.0
     policy_refs:
-      - department-briefing-v1
+      - information-system-requirement-review-v1
     tool_grants:
       - analyze_file
-      - department-metrics-read
+      - department-knowledge-read
     data_scopes:
       - requester-authorized-files
-      - department-approved-metrics
+      - department-approved-knowledge
     routing:
       explicit_aliases:
-        - 部门经营分析简报
+        - 信息系统需求评审与立项评估
+        - IT 需求评审
       intent_terms:
-        - 经营分析
-        - 月度简报
+        - 系统需求评审
+        - 立项评估
       owned_command_terms:
-        - briefingbrief
-        - briefingdraft
-        - 简报任务状态
+        - systemrequirementbrief
+        - initiationrecommendation
+        - 需求评审任务状态
       priority: 90
 ```
+
+上述 `skill_refs`、grant 和 scope 是最小示例。实际 Pack 只能引用信息技术部
+Profile 已声明且部署中真实可用的能力；不得复制证券报告的专属研究模板或
+默认引入专业证券数据源。
 
 每个 `skill_refs`、`policy_refs`、`tool_grants` 和 `data_scopes` 都必须是 Profile
 声明的子集。Registry 要求 Profile 声明和实际 Binding 一一对应。
@@ -353,7 +362,7 @@ Playbook 最少测试：
 - 合同 create/confirm/revise/幂等/并发/stale；
 - 输出守卫正负向；
 - 跨重启读取；
-- 与现有 Playbook 共存；
+- 与现有部门部署隔离；同 Bot Multi-Playbook 另用测试 fixture 验证；
 - 企微 burst、队列和 exactly-once 不回归。
 
 ## 何时增加 contrib Plugin

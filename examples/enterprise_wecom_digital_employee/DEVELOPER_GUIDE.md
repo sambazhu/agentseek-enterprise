@@ -9,6 +9,7 @@ sources:
   - ../../contrib/README.md
   - ../../templates/deepagents/enterprise-wecom/README.md
   - ROADMAP.md
+  - V0.1.2_M0_PLATFORM_FREEZE.md
   - src/enterprise_wecom_digital_employee/agent.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
   - src/enterprise_wecom_digital_employee/playbook_registry.py
@@ -24,6 +25,7 @@ sources:
 配套文档：
 
 - [当前基线、限制与后续路线](ROADMAP.md)
+- [v0.1.2 平台边界与第二个部门数字员工冻结](V0.1.2_M0_PLATFORM_FREEZE.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
@@ -96,9 +98,15 @@ v0.1.1 采用以下产品模型：
   -> 零个或多个正式 Playbook
 ```
 
-同一名数字员工可以逐步增加服务。例如战略发展部数字员工可以先提供“证券行业
-正式报告”，以后再增加“经营分析材料”或“战略会议简报”。只有在岗位和授权边界
-完全不同、需要独立入口或独立治理时，才新建另一个 Bot 和数字员工。
+同一名数字员工可以逐步增加同一岗位边界内的服务。例如战略发展部数字员工可以
+在证券行业正式报告之外增加属于战略发展岗位的正式服务。岗位、业务 Owner、
+组织授权或知识边界不同，就应新建另一个 Bot 和数字员工，不能为了展示
+Multi-Playbook 而混合部门。
+
+v0.1.2 的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
+“信息系统需求评审与立项评估”。它与战略发展部数字员工复用同一套 SDK 和
+Capability 接口，但不共享部门身份、任务账本或审批边界。同 Bot Multi-Playbook
+继续由测试 fixture 验证。
 
 当前 `digital_employee_id: industry-report` 是已经写入 WorkItem、PackSnapshot 和
 事件的技术标识。展示名称可以升级为“战略发展部数字员工”，但不要为改名而直接
@@ -280,6 +288,25 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 - Playbook 权限必须是 Profile 权限子集。
 - 不直接 `UPDATE`/`DELETE` 正式 Work、合同、证据、Artifact 或 Delivery。
 - 生产交付当前使用一次性短时签名链接；浏览器 SSO 尚未纳入 v0.1.1 GA。
+
+## 当前平台限制
+
+在 v0.1.2 完成对应切片前，部署和扩展时必须接受以下边界：
+
+- 跨部门授权仍有展示名称匹配遗留；第二个部门服务必须等稳定组织 ID 和成员关系
+  校验完成后再上线生产。
+- 会话队列默认是一条 active turn 加三条 pending；只有已接纳消息承诺
+  exactly-once，超出容量的 burst 会明确拒绝，不进入 Agent。
+- 队列、stream ownership、msgid dedup 和 in-flight lease 主要是单进程状态，
+  多实例接管和重启恢复尚未完成。
+- signed-link 下载只有短时、一次性、recipient-bound token，没有浏览器侧
+  OIDC、SAML 或企微网页身份二次校验。
+- `delivered` 任务仍占用同一 requester、数字员工和 Playbook 的活跃范围；
+  正式归档和另建同类任务尚未实现。
+- Evidence/Claim 绑定提供可追溯性，不等于独立事实审查；当前正式产物只支持 DOCX。
+
+完整业务边界和 v0.1.2 实施顺序以
+[M0 冻结文档](V0.1.2_M0_PLATFORM_FREEZE.md)为准。
 
 下一步请根据目标选择：
 

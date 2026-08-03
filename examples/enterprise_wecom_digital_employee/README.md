@@ -566,6 +566,11 @@ turn: the default permits one active turn plus three waiting messages. Each
 accepted waiting message records its queue position in structured events;
 further messages are rejected before they reach the agent. A pending message
 that does not start within the queue-wait timeout is finished as expired.
+Exactly-once applies to accepted messages; it does not mean every message in an
+unbounded burst is accepted. Size test and production headroom for the expected
+burst (prefer `SESSION_QUEUE_MAXSIZE >= N` when validating an `N`-message burst,
+because callback timing varies), and verify the overflow rejection path
+separately.
 Employees can send `查看消息队列` or `查看排队状态` for an immediate status response that
 does not enter the model queue. WeCom AI Bot does not reliably render
 intermediate `finish=false` content, so unsolicited ACK and queue-position
