@@ -3,24 +3,33 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-07-22
+verified_on: 2026-08-03
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
+  - examples/enterprise_wecom_digital_employee/DEVELOPER_GUIDE.md
   - examples/enterprise_wecom_digital_employee/V0.1.0_INDUSTRY_REPORT_DIGITAL_EMPLOYEE_PLAN.md
   - examples/enterprise_wecom_digital_employee/V0.1.0_M0_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.1_DEPARTMENT_DIGITAL_EMPLOYEE_PLAN.md
+  - examples/enterprise_wecom_digital_employee/V0.1.1_M4_IMPLEMENTATION.md
+  - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/profile.yaml
+  - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/pack.yaml
   - docs/concepts/enterprise-wecom-template.zh.md
   - templates/deepagents/enterprise-wecom/README.md
 ---
 
 # Enterprise WeCom 演进路线
 
-本文记录 `enterprise-wecom` 在 v0.0.8 GA 之后的定位澄清和路线规划。
+本文记录 `enterprise-wecom` 的已交付基线、当前限制和后续路线。
+
+文档中的 v0.0.9、v0.1.0 和 v0.1.1 章节保留历史决策与验收记录。
+从 v0.1.2 开始的章节才是当前待执行路线，不能把历史章节中的早期设想
+当作尚未实现的需求。
 
 ## 当前定位
 
-`enterprise-wecom` 当前已经是企业数字员工的 runtime harness 和项目脚手架。
+`enterprise-wecom` 当前已经是企业数字员工的 runtime harness、项目脚手架和
+受治理任务执行样例。
 
 它已经完成的生产底座包括：
 
@@ -36,6 +45,28 @@ sources:
 - PostgreSQL SCRAM、最小权限账号、pgvector、bge-m3 ONNX 等生产化配置；
 - Mac mini 单实例准生产验证。
 
+v0.1.0 和 v0.1.1 在此基础上进一步完成：
+
+- Profile、Job Charter、服务目录和统一 Capability Registry；
+- 确定性 Playbook 路由、歧义澄清和当前任务续接；
+- WorkItem、版本化合同、人工确认点、审批和审计；
+- ReportBrief、内部知识优先研究、缺口决策和外部检索授权；
+- ReportOutline、Evidence、Claim、ReportDraft 和内容审批；
+- DOCX Artifact、发布账本、一次性 signed-link 交付和下载消费；
+- 单会话串行化、队列背压、快速 ACK、exactly-once 交付和健康回归。
+
+当前生产基线是 `enterprise-wecom-v0.1.1-ga`。产品形态仍是：
+
+```text
+一个企微 Bot
+-> 一名部门数字员工
+-> 一个 Profile 级共享能力池
+-> 一个已上线的证券行业报告 Playbook
+```
+
+Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具，尚未完成
+第二项真实部门服务的生产验证。
+
 所以 v0.0.8 之后的 `enterprise-wecom`，已经不只是一个聊天示例。
 它是可部署、可观测、可审计的企业数字员工运行底座。
 
@@ -44,24 +75,32 @@ sources:
 ```text
 员工发消息
 -> 识别员工身份
--> 注入组织、岗位、记忆上下文
--> 调用企业 MCP 工具
--> 执行 policy/audit
--> 观测和脱敏
--> 回复员工
+-> 发现部门数字员工服务并确定性选择 Playbook
+-> 建立 WorkItem 和版本化业务合同
+-> 优先检索部门知识，按员工授权补充外部数据
+-> 形成 Evidence、Claim、提纲和初稿
+-> 经过人工确认、内容审批、渲染和发布
+-> 生成一次性 signed-link 并登记交付
+-> 全程执行 policy、audit、观测和脱敏
 ```
 
-这说明它已经具备企业 MCP 调用能力和 runtime 治理能力。
+这说明它已经具备一条完整的企业任务完成链路，而不只是 MCP 调用能力。
 
-目前较弱的能力是：
+当前主要限制不再是“能不能生成报告”，而是平台复用与生产规模化：
 
-- 文件输入和文件输出；
-- 多步 research；
-- 内容生产；
-- 报告、PPT、Word、Excel 等交付物生成；
-- 更面向团队的业务工作流。
+- 部门授权仍依赖特定 Scope 和组织名称匹配，尚未形成通用组织授权模型；
+- 身份 Provider 当前以 DM 为主，缺少标准的可插拔 Provider Registry；
+- Capability Registry 已统一，但新增业务 MCP 仍需要编写 Python 适配代码；
+- 只有一个真实生产 Playbook，通用边界尚未经过第二项业务服务验证；
+- 企微队列、stream 和去重仍以单进程内存态为主，不支持多实例协同和重启恢复；
+- signed-link 使用短时一次性 Token，尚未增加浏览器侧 OIDC、SAML 或企微网页身份认证；
+- Report Claim 具备来源绑定和可追溯性，但尚未形成独立事实核验闭环；
+- `delivered` WorkItem 用于持续修订，会长期占用同类任务 Scope，尚无正式归档和新建机制；
+- 报告 Composition 与 Output Guard 模块偏大，继续增加合同类型会提高维护成本；
+- 模板能生成项目，但尚未随模板提供完整的扩展测试骨架和第二 Playbook 示例。
 
-后续路线应从“企业工具调用型数字员工”升级为“企业任务完成型数字员工”。
+因此下一阶段不是重复建设 research、content 或 DOCX，而是把已经验证的
+证券报告实现提炼成可复用、可扩展、可规模化运行的平台能力。
 
 ## 关键澄清
 
@@ -896,165 +935,178 @@ v0.1.1 把已经活体验证的“行业报告编写数字员工”演进为“�
 - 使用测试型第二 Playbook 验证隔离，不在缺少业务合同的情况下上线第二个正式流程；
 - 证券行业报告继续作为第一个生产 Playbook，v0.1.0 全部账本、状态机和交付协议保持不变。
 
-当前进度：M0 合同冻结、M1 Job Charter、M2 Playbook Registry、M3 确定性内部路由和 M4-00 确定性服务响应
-均已通过 Mac mini 企微活体验收并正式关闭。M4-01 建立 Profile 级统一 Capability Registry，简化
-普通对话与正式服务的能力模型，已通过 Mac mini 活体复核并关闭。M4-02 收口网关日志即时落盘和
-Job Charter 企微排版，随后执行 v0.1.1 RC 全生命周期回归。
+当前状态：M0 合同冻结、M1 Job Charter、M2 Playbook Registry、M3 确定性内部路由、
+M4-00 确定性服务响应、M4-01 统一 Capability Registry 和 M4-02 RC 收口均已通过
+Mac mini 企微活体验收。RC 全生命周期与六项服务端可靠性加固已通过，版本已经合入
+`production` 并发布 `enterprise-wecom-v0.1.1-ga`。
 生产仍只启用证券报告 Playbook，第二 Playbook 继续只作为路由和隔离测试夹具。
 
 v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
 组织 RBAC、审批中心、SLA、任务运营和人工接管，放在 Multi-Playbook 基础稳定后的治理切片。
 
-## v0.1.2：受治理的企业 research workflow
+## v0.1.2：平台化加固与第二个真实 Playbook
 
-企业 research 不作为脱离 WorkItem 的自由 Agent。
-它在 `enterprise-wecom` 的报告 Playbook 内执行。
+v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或交付链路。
+本版本要回答两个问题：
 
-推荐结构：
+1. 当前实现能否安全地复用于第二个部门业务服务；
+2. 当前单实例样例能否演进为可由研发团队持续扩展和运维的平台。
 
-```text
-research/
-  deep_research.py
-  prompts.py
-  schemas.py
-  report.py
-```
+### M0：当前状态与路线冻结
 
-首版工具：
+目标是让 Roadmap、GA 基线和研发文档描述同一套事实。
 
-```text
-run_enterprise_research(objective, file_ids=None, output_format="summary")
-```
+范围：
 
-能力范围：
+- 标记 v0.1.0 和 v0.1.1 已完成能力；
+- 将早期 research/content 设想保留为历史，不再列为待实现主线；
+- 公开当前权限、身份、运行时、下载和任务生命周期限制；
+- 冻结 v0.1.2 的里程碑顺序与不做事项；
+- 为第二个真实 Playbook 选择业务负责人、输入、输出、审批人和验收样例。
 
-- 读取当前附件摘要；
-- 使用 Tavily / gildata / 企业 MCP；
-- 形成结构化 notes；
-- 输出 Markdown 研究报告草稿；
-- Langfuse 记录 research step metadata；
-- 不直接生成 docx/pdf。
+验收：
 
-目标是让数字员工能执行：
+- `ROADMAP.md`、`DEVELOPER_GUIDE.md` 和 GA 标签口径一致；
+- 研发团队能够区分 Shared Capability、Skill 和 Playbook；
+- 第二个 Playbook 在编码前具备业务合同和验收 oracle。
 
-```text
-plan -> search/query -> read -> synthesize -> answer
-```
+### M1：组织授权与身份 Provider 抽象
 
-## v0.1.3：企业 content 与报告产物
+目标是先解决跨部门复用时最重要的授权边界。
 
-v0.1.3 可以吸收 `content-builder` 的思想，实现企业内容生产工作流。
+范围：
 
-推荐结构：
+- 用稳定组织 ID、组织路径 ID 和成员关系替代部门名称子串判断；
+- 建立类型化 requester scope evaluator，不再硬编码单一
+  `strategic-development-employee` 分支；
+- 保持 `Profile ∩ 部署能力 ∩ 员工授权 ∩ Policy` 的权限上限；
+- 建立 Identity Provider Registry，保留 DM Provider，并允许接入 OIDC、LDAP
+  或企业 HTTP 身份服务；
+- 增加跨部门、相似部门名称、缺失身份和 Provider 故障的 fail-closed 测试；
+- 保持现有 `digital_employee_id`、WorkItem 和历史合同可读，不做破坏式迁移。
 
-```text
-content/
-  planner.py
-  writer.py
-  reviewer.py
-  exporter.py
-  schemas.py
-```
+验收：
 
-首版工具：
+- 不再以组织展示名称的子串作为授权依据；
+- 未授权员工不能发现、创建、读取或推进其他部门 WorkItem；
+- Provider 不可用时不降级为匿名授权；
+- v0.1.1 证券报告全生命周期零回归。
 
-```text
-create_enterprise_content(
-  objective,
-  audience=None,
-  format="wechat_reply|markdown|docx|ppt_outline",
-  source_file_ids=None,
-  use_research=True
-)
-```
+### M2：Playbook 与 Capability 扩展 SDK
 
-支持场景：
+目标是让研发团队增加能力和正式服务时遵循稳定接口，而不是复制报告代码。
 
-- 写汇报材料；
-- 写制度解读；
-- 写培训稿；
-- 写会议纪要；
-- 写 PPT 大纲；
-- 按受众调整语气；
-- 做合规审查。
+范围：
 
-输出链路可以设计为：
+- 定义类型化 `CapabilityDescriptor`、业务工具适配器和 Policy 元数据；
+- MCP server/tool 的固定映射由注册描述生成，仍不向模型暴露通用
+  `call_mcp_tool`；
+- 将 Playbook 的 intent、依赖、Work composition、合同、Guard 和状态摘要
+  收敛为明确扩展接口；
+- 按合同类型拆分过大的 Composition 和 Output Guard 策略；
+- 为 cookiecutter 模板增加 Profile、Capability、Playbook、权限和路由测试骨架；
+- 提供一个只用于开发验证的最小第二 Playbook fixture。
 
-```text
-content result
--> file generator
--> agentseek-files outbound
--> agentseek-wecom send file
-```
+验收：
 
-## v0.1.4 及以后
+- 新增一个共享 MCP 能力主要通过描述和业务适配器完成；
+- 新 Playbook 不修改证券报告私有模块即可完成注册和隔离测试；
+- Playbook 不能扩大 Profile 权限，也不能绕过确认、审批和审计；
+- 模板生成项目自带可运行的扩展回归测试。
 
-后续可以继续扩展：
+### M3：第二个真实部门 Playbook
 
-### 更多文件输出格式
+目标是用真实业务证明 Multi-Playbook Foundation，而不是继续依赖测试夹具。
 
-- 在 v0.1.0 DOCX 报告交付基础上扩展 PDF、XLSX 和 PPTX；
-- 支持公司级模板、样式和品牌规范；
-- 支持文档系统归档和跨渠道交付。
+候选服务是“战略会议简报”或“经营分析简报”。最终名称由业务负责人在 M0 冻结。
+它应复用文件分析、部门知识、Gildata 和公开搜索等共享能力，但使用独立的：
 
-### 高级图片和图表理解
+- 服务目录和确定性路由词；
+- WorkItem playbook ID；
+- 输入合同、输出合同和人工检查点；
+- Policy、审批角色和质量门；
+- 状态摘要、Guard 和验收数据。
 
-- 在 v0.0.9 OCR 基础上增加非文字图片描述；
-- 理解流程图、组织架构图和复杂图表；
-- 对图形化数值生成可验证的结构化数据；
-- 保留图片区域、OCR 结果和报告引用之间的对应关系。
+验收：
 
-### 文件长期化
+- 一个 Bot 中两个真实 Playbook 可被确定性选择；
+- 当前任务绑定优先于新意图，歧义请求必须澄清；
+- 两个 Playbook 的合同、工具、数据和 Artifact 互不串扰；
+- Shared Capability 在普通协助和两个正式 Playbook 中复用同一注册来源；
+- Mac mini 完成跨 Playbook、跨员工和重启后的活体复验。
 
-- 员工明确要求“长期记住这份材料”；
-- 文件摘要进入显式长期记忆；
-- 文件 chunks 进入 pgvector；
-- 按员工和团队隔离。
+### M4：生产运行时加固
 
-### 多团队接入
+目标是从 Mac mini 单实例稳定运行演进到可恢复、可监控的生产部署。
 
-- team profile；
-- team MCP 配置；
-- team prompt；
-- team memory namespace；
-- team policy；
-- team observability 标签。
+范围：
 
-### 管理后台和运维工具
+- 将 session queue、stream ownership、msgid dedup 和 in-flight turn lease
+  持久化到 Redis 或 PostgreSQL；
+- 支持进程重启后的在途任务恢复、超时终止和重复回调幂等；
+- 定义多实例同会话单飞和实例失效接管协议；
+- 增加 `/health/live`、`/health/ready` 和关键依赖 readiness；
+- 增加队列深度、拒绝、超时、模型调用、MCP 和交付指标；
+- 提供容器或标准服务管理部署样例，保留现有 Mac mini 运行方式。
 
-- 查询员工记忆；
-- 删除错误记忆；
-- 查询文件记录；
-- 清理过期文件；
-- 查看 pgvector 命中；
-- Langfuse 指标看板。
+验收：
+
+- gateway 重启不丢失已接收任务，也不重复执行正式动作；
+- 多实例下同一会话仍严格串行，不同会话可以并行；
+- PostgreSQL、身份 Provider、模型或关键 MCP 不可用时 readiness 准确失败；
+- Langfuse 不可用继续保持业务 fail-open、观测有界降级。
+
+### M5：安全、质量与任务生命周期
+
+目标是在扩大使用范围前补齐高价值治理能力。
+
+范围：
+
+- 对机密 Artifact 下载接入 OIDC、SAML 或企微网页认证，并将浏览器身份绑定
+  到 delivery recipient；在企业 IdP 未确定前保留当前一次性短时 Token；
+- 建立 Claim reviewer、事实核验状态、来源冲突和未解决问题处理流程；
+- 区分“内容已批准”和“事实已核验”，不以 ReportApproval 代替事实验证；
+- 设计 `archived` 或等价的正式结束动作，区分“修订当前任务”和“新建独立任务”；
+- 增加任务查询、人工接管、审计检索和过期数据治理入口。
+
+验收：
+
+- 未通过浏览器身份校验的接收人不能下载受保护 Artifact；
+- 报告能够展示 Claim 的核验状态和未解决风险；
+- 员工可以显式归档已交付任务，再创建同 Playbook 的新任务；
+- 历史 WorkItem、合同、Artifact、Publication 和 Delivery 保持不可变可审计。
+
+### v0.1.2 不做事项
+
+- 不使用 LLM-first 路由静默选择正式 Playbook；
+- 不恢复允许模型拼接 MCP server/tool 名的通用工具；
+- 不在一个 Bot 内隐藏多名数字员工；
+- 不让 Skill 或 MCP 调用替代 WorkItem、合同、确认、审批和审计；
+- 不为了支持第二 Playbook 复制整套证券报告 Composition；
+- 不在缺少企业 IdP 和 HTTPS 回调域名时伪造浏览器 SSO；
+- 不把 PDF、XLSX、PPTX 等格式扩展置于权限和第二 Playbook 验证之前。
+
+## 后续候选能力
+
+以下能力保留在 backlog，按真实部门需求进入后续版本：
+
+- PDF、XLSX 和 PPTX 产物，以及公司品牌模板；
+- 图表、流程图和组织架构图的结构化理解；
+- 文件长期化、团队知识治理和文档系统归档；
+- 多人评审、职责分离、统一审批中心和 SLA；
+- 多数字员工服务台、跨岗位委派和跨 Bot 能力发现；
+- 任务、记忆、文件、MCP 和审计管理后台。
 
 ## 总体路线
 
-v0.0.8 完成企业数字员工 runtime 底座，v0.0.9 完成文件输入与分析。
-v0.1.0 开始进入岗位和任务完成层：
-
 ```text
-v0.0.8  可观测、可部署、可审计的企业 runtime
+v0.0.8  企业身份、记忆、MCP、审计和观测 runtime
 v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
-v0.1.0  行业报告数字员工、WorkItem、Playbook、证据、评审和报告交付
-v0.1.1  部门数字员工 Job Charter、服务目录和 Multi-Playbook Foundation
-v0.1.2  受 WorkItem 治理的 enterprise research
-v0.1.3  企业 content、模板化报告和多格式产物
-v0.1.4  团队任务队列、岗位协作和跨数字员工移交
+v0.1.0  证券行业报告 WorkItem 全生命周期与 signed-link 交付
+v0.1.1  部门数字员工、Job Charter、统一能力池和 Multi-Playbook Foundation
+v0.1.2  组织授权、扩展 SDK、第二个真实 Playbook 和生产运行时加固
+后续     多人治理、多数字员工协作、多格式产物和管理后台
 ```
 
-最终目标是把 `enterprise-wecom` 从：
-
-```text
-企业工具调用型数字员工
-```
-
-升级为：
-
-```text
-企业任务完成型数字员工
-```
-
-它不仅能调用 MCP 查数据、办流程，还能接收材料、研究问题、生成内容、
-输出文件，并且全程带身份、权限、记忆、审计和观测。
+最终目标不是继续增加互不关联的工具，而是让研发团队能够在统一的身份、权限、
+能力、任务和审计边界内，持续交付新的部门数字员工服务。

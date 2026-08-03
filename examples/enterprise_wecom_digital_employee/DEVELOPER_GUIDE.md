@@ -3,11 +3,12 @@ title: 企业数字员工框架研发指南
 type: explanation
 audience: [A1, A2, A3]
 runs: no
-verified_on: 2026-07-23
+verified_on: 2026-08-03
 sources:
   - ../../README.md
   - ../../contrib/README.md
   - ../../templates/deepagents/enterprise-wecom/README.md
+  - ROADMAP.md
   - src/enterprise_wecom_digital_employee/agent.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
   - src/enterprise_wecom_digital_employee/playbook_registry.py
@@ -22,6 +23,7 @@ sources:
 
 配套文档：
 
+- [当前基线、限制与后续路线](ROADMAP.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
@@ -260,10 +262,12 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 - 企业身份、记忆、文件和 MCP 配置；
 - 部门知识库 MCP 示例及导入脚本；
 - Profile、Pack、Skill、Policy、Asset 和报告 Playbook；
-- 测试和运行时目录。
+- 运行时目录。
 
 示例目录是已经持续验证的参考实现。凡是希望后续新项目自动获得的能力，都要
 同步修改 Cookiecutter 模板，并运行模板渲染测试；只改示例不会自动更新脚手架。
+当前模板尚未生成与示例工程等价的 Profile、权限、路由和 Playbook 单测骨架，
+该项已进入 v0.1.2 M2。
 
 ## 安全和治理底线
 
