@@ -21,6 +21,7 @@ from agentseek_wecom.outbound import (
     register_artifact_download_resolver,
     register_template_card_intent,
 )
+from agentseek_wecom.transports.callback import AiBotCallbackTransport
 from bub.channels.message import ChannelMessage
 from fastapi.testclient import TestClient
 from republic import StreamEvent
@@ -500,6 +501,10 @@ def test_text_message_resolves_open_userid_before_dispatch() -> None:
     assert received[0].context["oa_account"] == "zhuchunlin"
     assert received[0].context["wecom"]["open_userid"] == "encrypted-open-userid"
     assert received[0].context["wecom"]["resolved_userid"] == "zhuchunlin"
+    assert received[0].context["wecom"]["address"]["transport"] == "aibot_callback"
+    assert received[0].context["wecom"]["address"]["sender_userid"] == "encrypted-open-userid"
+    assert received[0].context["wecom"]["address"]["plaintext_userid"] == "zhuchunlin"
+    assert received[0].context["wecom"]["address"]["chat_id"] == "zhuchunlin"
 
 
 def test_group_messages_are_isolated_by_bot_and_chat_after_userid_resolution() -> None:
@@ -553,6 +558,15 @@ def test_group_messages_are_isolated_by_bot_and_chat_after_userid_resolution() -
         "group",
         "group",
     ]
+    assert [message.context["wecom"]["address"]["bot_or_agent_id"] for message in received] == [
+        "bot-1",
+        "bot-1",
+        "bot-2",
+    ]
+    assert all(
+        message.context["wecom"]["address"]["plaintext_userid"] == "zhuchunlin"
+        for message in received
+    )
 
 
 def test_text_message_includes_quoted_text_without_response_capability() -> None:
@@ -1098,6 +1112,7 @@ def test_signed_artifact_endpoint_uses_fragment_token_and_one_time_redeem() -> N
         ),
     )
     delivery_id = f"delivery_{'a' * 64}"
+    assert channel.app is not None
     client = TestClient(channel.app)
 
     page = client.get(f"/artifacts/{delivery_id}")
@@ -1748,8 +1763,10 @@ def test_stop_cancels_server_task_after_graceful_shutdown_timeout() -> None:
         task = asyncio.create_task(hung_server())
         await asyncio.sleep(0)
         server = SimpleNamespace(should_exit=False)
-        channel._server = server  # ty: ignore[invalid-assignment]
-        channel._server_task = task
+        transport = channel.transport
+        assert isinstance(transport, AiBotCallbackTransport)
+        transport._server = server  # ty: ignore[invalid-assignment]
+        transport._server_task = task
 
         await channel.stop()
 
@@ -1856,6 +1873,8 @@ def test_http_callback_decrypts_dispatches_and_encrypts_stream_response() -> Non
         )
 
     channel.bind_receiver(on_receive)
+    assert isinstance(channel.transport, AiBotCallbackTransport)
+    assert channel.app is not None
     client = TestClient(channel.app)
     encrypted_request = crypto.encrypt_message(
         json.dumps(
@@ -1893,6 +1912,7 @@ def test_http_callback_decrypts_dispatches_and_encrypts_stream_response() -> Non
     assert stream_payload["stream"]["content"] == "HTTP处理完成"
     assert stream_payload["stream"]["finish"] is True
     assert received[0].content == "测试HTTP回调"
+    assert received[0].context["wecom"]["address"]["bot_or_agent_id"] == "bot-1"
 
 
 def test_outbound_routes_to_oldest_unfinished_stream_per_session() -> None:

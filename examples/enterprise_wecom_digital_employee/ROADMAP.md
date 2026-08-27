@@ -998,7 +998,43 @@ M0 决策见 `V0.1.2_M0_PLATFORM_FREEZE.md`。首个交付物冻结为
 - 企微组件和企微数字员工样例回归通过。
 
 详细决策、官方协议基线和非目标见 `V0.1.2_M0_1_WECOM_PROTOCOL_BASELINE.md`。
-M0.1 是 M1 前置安全切片，不改变 M1–M5 原定范围。
+M0.1 是 Transport Kernel 的前置安全切片，不改变 M1–M5 的业务范围。
+
+### M0.2：企微 Transport Kernel
+
+目标是在增加长连接和自建应用前，将现有 Callback 接入从单体
+`WeComChannel` 中拆出，并建立三种渠道共用的会话地址合同。
+
+范围：
+
+- 定义 `WeComTransport` 生命周期、入站绑定和地址解析接口；
+- 定义 `ConversationAddress`，统一 tenant、Bot/Agent、transport、会话、
+  发送人、明文成员、最近交互时间和回复期限；
+- 实现 `AiBotCallbackTransport`，接管 HTTP 路由、消息加解密和 Uvicorn
+  生命周期；
+- `WeComChannel` 保留消息语义、会话队列和 Agent 编排，通过 Transport
+  接收入站消息；
+- 保持 Callback 路径、健康响应、单聊 session、群聊隔离、流式回复和
+  `response_url` 行为兼容。
+
+非目标：
+
+- 不实现 AI Bot 长连接或自建应用；
+- 不增加数据库 schema，不持久化 inbox、outbox 或 msgid 去重；
+- 不改变现网 `.env`、Bot 配置或部署端口；
+- 不改变文件队列和卡片交互行为，这些进入后续渠道切片。
+
+验收：
+
+- Callback HTTP 和加解密实现不再位于 `WeComChannel`；
+- 单聊身份解密前后保持既有 session 兼容；
+- 群聊地址不因成员身份解密而改变；
+- 地址上下文不得包含 `response_url`、签名媒体 URL 或其他回复能力；
+- 企微组件、企微数字员工样例、Ruff 和 ty 全部通过；
+- Linux 使用现有 Callback 配置完成单聊、群聊、引用和脱敏活体回归。
+
+设计说明见 `V0.1.2_M0_2_WECOM_TRANSPORT_KERNEL.md`。M0.2 通过后再进入
+持久化消息基座；长连接和自建应用继续保持关闭，直到各自切片通过验收。
 
 ### M1：组织授权与身份 Provider 抽象
 

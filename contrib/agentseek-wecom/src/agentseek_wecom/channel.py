@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
 import re
 import time
@@ -12,7 +11,6 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
-import uvicorn
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage
 from bub.envelope import content_of
@@ -21,8 +19,8 @@ from fastapi.responses import Response
 from loguru import logger
 from republic import StreamEvent
 
+from agentseek_wecom.addressing import ConversationAddress
 from agentseek_wecom.config import WeComSettings
-from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.media import MediaDownload, WeComMediaClient, decode_encoding_aes_key
 from agentseek_wecom.messages import make_text, make_text_stream
 from agentseek_wecom.outbound import (
@@ -35,11 +33,14 @@ from agentseek_wecom.outbound import (
     validate_artifact_download_base_url,
 )
 from agentseek_wecom.response_url import WeComResponseUrlSender
+from agentseek_wecom.transport import WeComTransport
+from agentseek_wecom.transports.callback import AiBotCallbackTransport
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
 _QUEUE_SESSION_ID_ATTR = "_agentseek_wecom_queue_session_id"
 _FROM_USERID_ATTR = "_agentseek_wecom_from_userid"
+_CONVERSATION_ADDRESS_ATTR = "_agentseek_wecom_conversation_address"
 _QUEUE_STATUS_COMMANDS = frozenset({"查看消息队列", "查看排队状态"})
 
 
@@ -116,13 +117,6 @@ class QueuedTurn:
     expiry_handle: asyncio.TimerHandle | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationScope:
-    session_id: str
-    chat_id: str
-    chat_type: str
-
-
 class WeComChannel(Channel):
     name = "wecom"
 
@@ -135,6 +129,7 @@ class WeComChannel(Channel):
         media_client: MediaClient | None = None,
         file_service: InboundFileServiceProtocol | None = None,
         response_url_sender: ResponseUrlSenderProtocol | None = None,
+        transport: WeComTransport | None = None,
     ) -> None:
         self._on_receive = on_receive
         self.settings = settings
@@ -146,9 +141,6 @@ class WeComChannel(Channel):
             api_base_url=settings.api_base_url,
             timeout_seconds=settings.api_timeout_seconds,
         )
-        self._crypto: WeComJsonCrypto | None = None
-        self._server: uvicorn.Server | None = None
-        self._server_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
@@ -158,53 +150,34 @@ class WeComChannel(Channel):
         self._active_turn_started_at: dict[str, float] = {}
         self._pending_turn_counts: dict[str, int] = {}
         self._queue_expiry_handles: set[asyncio.TimerHandle] = set()
-        self.app = self._build_app()
+        self._transport = transport or AiBotCallbackTransport(
+            settings=settings,
+            tenant_id=os.environ.get("AGENTSEEK_ENTERPRISE_TENANT_ID", "default"),
+        )
+        self._transport.bind_inbound(self._handle_plain_message)
+        app = self._transport.app
+        self.app = app
+        if app is not None:
+            self._register_artifact_routes(app)
+        elif settings.artifact_delivery_mode == "signed_link":
+            raise RuntimeError("signed-link artifact delivery requires a WeCom transport with an ASGI application")
 
     @property
     def enabled(self) -> bool:
         return self.settings.enabled
 
+    @property
+    def transport(self) -> WeComTransport:
+        return self._transport
+
     def bind_receiver(self, on_receive: Any) -> None:
         self._on_receive = on_receive
 
     async def start(self, stop_event: asyncio.Event) -> None:
-        del stop_event
-        if not self.enabled:
-            return
-        self._crypto = self._build_crypto()
-        if self._server_task is not None and not self._server_task.done():
-            return
-        config = uvicorn.Config(
-            self.app,
-            host=self.settings.host,
-            port=self.settings.port,
-            loop="asyncio",
-            log_level="info",
-        )
-        self._server = uvicorn.Server(config)
-        self._server_task = asyncio.create_task(self._server.serve(), name="agentseek-wecom.server")
-        await self._wait_until_started()
+        await self._transport.start(stop_event)
 
     async def stop(self) -> None:
-        server = self._server
-        task = self._server_task
-        self._server = None
-        self._server_task = None
-        if server is not None:
-            server.should_exit = True
-        if task is not None and not task.done():
-            try:
-                async with asyncio.timeout(max(0.1, self.settings.shutdown_timeout_seconds)):
-                    await task
-            except TimeoutError:
-                logger.warning("wecom.server graceful shutdown timed out; cancelling server task")
-                task.cancel()
-                _, pending = await asyncio.wait(
-                    {task},
-                    timeout=max(0.1, self.settings.shutdown_timeout_seconds),
-                )
-                if pending:
-                    logger.error("wecom.server task did not stop after cancellation")
+        await self._transport.stop()
         dispatch_tasks = list(self._dispatch_tasks)
         for dispatch_task in dispatch_tasks:
             dispatch_task.cancel()
@@ -272,69 +245,7 @@ class WeComChannel(Channel):
                         )
             yield event
 
-    def _build_app(self) -> FastAPI:
-        app = FastAPI()
-
-        @app.get(self.settings.callback_path)
-        async def verify_url(
-            request: Request,
-            msg_signature: str,
-            timestamp: str,
-            nonce: str,
-            echostr: str,
-            botid: str | None = None,
-        ) -> Response:
-            del request, botid
-            crypto = self._require_crypto()
-            try:
-                plain_echo = crypto.verify_url(
-                    msg_signature=msg_signature,
-                    timestamp=timestamp,
-                    nonce=nonce,
-                    echostr=echostr,
-                )
-            except WeComCryptoError as exc:
-                logger.warning("wecom.verify_url failed: {}", exc)
-                plain_echo = "verify fail"
-            return Response(content=plain_echo, media_type="text/plain")
-
-        @app.post(self.settings.callback_path)
-        async def handle_message(
-            request: Request,
-            botid: str | None = None,
-            msg_signature: str | None = None,
-            timestamp: str | None = None,
-            nonce: str | None = None,
-        ) -> Response:
-            del botid
-            if not msg_signature or not timestamp or not nonce:
-                raise HTTPException(status_code=400, detail="missing WeCom callback query parameters")
-
-            crypto = self._require_crypto()
-            encrypted_body = await request.body()
-            try:
-                plain_text = crypto.decrypt_message(
-                    post_data=encrypted_body,
-                    msg_signature=msg_signature,
-                    timestamp=timestamp,
-                    nonce=nonce,
-                )
-                data = json.loads(plain_text)
-            except (WeComCryptoError, json.JSONDecodeError) as exc:
-                logger.warning("wecom.decrypt failed: {}", exc)
-                raise HTTPException(status_code=400, detail="decrypt failed") from exc
-
-            response_plain = await self._handle_plain_message(data)
-            if response_plain is None:
-                return Response(content="success", media_type="text/plain")
-
-            encrypted = crypto.encrypt_message(response_plain, nonce=nonce, timestamp=timestamp)
-            return Response(content=encrypted.to_json(), media_type="text/plain")
-
-        @app.get("/health")
-        async def health() -> dict[str, Any]:
-            return {"ok": True, "channel": self.name, "enabled": self.enabled}
-
+    def _register_artifact_routes(self, app: FastAPI) -> None:
         if self.settings.artifact_delivery_mode == "signed_link":
             base_url = validate_artifact_download_base_url(self.settings.artifact_public_base_url)
             download_path = urlparse(base_url).path.rstrip("/")
@@ -390,8 +301,6 @@ class WeComChannel(Channel):
                     },
                 )
 
-        return app
-
     async def _handle_plain_message(self, data: dict[str, Any]) -> str | None:
         msgtype = data.get("msgtype")
         logger.debug("wecom.incoming msgtype={} msgid={}", msgtype, _extract_msgid(data))
@@ -422,7 +331,7 @@ class WeComChannel(Channel):
 
     async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
         from_userid = _extract_from_userid(data)
-        conversation = _conversation_scope(data, from_userid)
+        conversation = self._conversation_address(data)
         stream = await self._create_stream(
             session_id=conversation.session_id,
             chat_id=conversation.chat_id,
@@ -458,7 +367,7 @@ class WeComChannel(Channel):
 
     async def _handle_response_url_template_card_probe(self, data: dict[str, Any]) -> str:
         from_userid = _extract_from_userid(data)
-        conversation = _conversation_scope(data, from_userid)
+        conversation = self._conversation_address(data)
         stream = await self._create_stream(
             session_id=conversation.session_id,
             chat_id=conversation.chat_id,
@@ -531,7 +440,7 @@ class WeComChannel(Channel):
         from_userid = _extract_from_userid(data)
         resolved_userid = await self._resolve_userid(from_userid)
         userid = resolved_userid or from_userid
-        conversation = _conversation_scope(data, userid)
+        conversation = self._conversation_address(data, plaintext_userid=resolved_userid)
         session_id = conversation.session_id
         chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
@@ -630,6 +539,7 @@ class WeComChannel(Channel):
                 resolved_userid=resolved_userid,
                 userid=userid,
                 leading_content=leading_content,
+                address=conversation,
             )
             if stream.response_url:
                 return self._commit_stream_response(stream, force_deferred=True)
@@ -647,9 +557,11 @@ class WeComChannel(Channel):
                 userid=userid,
                 chat_id=chat_id,
                 files_context=files_context,
+                address=conversation,
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
+        setattr(message, _CONVERSATION_ADDRESS_ATTR, conversation)
         self._schedule_receive(message)
         if stream.response_url:
             return self._commit_stream_response(stream)
@@ -662,7 +574,7 @@ class WeComChannel(Channel):
         # plaintext userid before the message reaches the enterprise runtime.
         resolved_userid = None
         userid = from_userid
-        conversation = _conversation_scope(data, userid)
+        conversation = self._conversation_address(data)
         session_id = conversation.session_id
         chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
@@ -718,11 +630,13 @@ class WeComChannel(Channel):
                 resolved_userid=resolved_userid,
                 userid=userid,
                 chat_id=chat_id,
+                address=conversation,
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
         setattr(message, _QUEUE_SESSION_ID_ATTR, session_id)
         setattr(message, _FROM_USERID_ATTR, from_userid)
+        setattr(message, _CONVERSATION_ADDRESS_ATTR, conversation)
         # Fast turns finish in this callback. Slow turns receive one terminal
         # acknowledgement here and deliver their eventual result through the
         # callback's one-shot response_url.
@@ -1188,15 +1102,22 @@ class WeComChannel(Channel):
             return
         resolved_userid = await self._resolve_userid(from_userid)
         userid = resolved_userid or from_userid
-        wecom = message.context.get("wecom")
-        raw = wecom.get("raw") if isinstance(wecom, dict) else None
-        is_group = isinstance(raw, dict) and raw.get("chattype") == "group"
-        if is_group:
-            session_id = self._queue_session_id(message)
-            chat_id = message.chat_id or session_id
+        address = getattr(message, _CONVERSATION_ADDRESS_ATTR, None)
+        if isinstance(address, ConversationAddress):
+            address = address.with_plaintext_userid(resolved_userid)
+            session_id = address.session_id
+            chat_id = address.chat_id
+            setattr(message, _CONVERSATION_ADDRESS_ATTR, address)
         else:
-            session_id = f"wecom:{userid}"
-            chat_id = userid
+            wecom_context = message.context.get("wecom")
+            raw = wecom_context.get("raw") if isinstance(wecom_context, dict) else None
+            is_group = isinstance(raw, dict) and raw.get("chattype") == "group"
+            if is_group:
+                session_id = self._queue_session_id(message)
+                chat_id = message.chat_id or session_id
+            else:
+                session_id = f"wecom:{userid}"
+                chat_id = userid
         message.session_id = session_id
         message.chat_id = chat_id
         message.context.update({
@@ -1205,6 +1126,7 @@ class WeComChannel(Channel):
             "oa_account": userid,
             "chat_id": chat_id,
         })
+        wecom = message.context.get("wecom")
         if isinstance(wecom, dict):
             wecom.update({
                 "from_userid": from_userid,
@@ -1213,6 +1135,16 @@ class WeComChannel(Channel):
                 "userid": userid,
                 "chat_id": chat_id,
             })
+            address_context = wecom.get("address")
+            if isinstance(address_context, dict):
+                if isinstance(address, ConversationAddress):
+                    address_context.clear()
+                    address_context.update(address.to_safe_context())
+                else:
+                    address_context.update({
+                        "chat_id": chat_id,
+                        "plaintext_userid": resolved_userid,
+                    })
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
         if stream is not None:
@@ -1275,28 +1207,6 @@ class WeComChannel(Channel):
             for msgid in stale_msgids:
                 self._stream_ids_by_msgid.pop(msgid, None)
 
-    def _require_crypto(self) -> WeComJsonCrypto:
-        if self._crypto is not None:
-            return self._crypto
-        self._crypto = self._build_crypto()
-        return self._crypto
-
-    def _build_crypto(self) -> WeComJsonCrypto:
-        if not self.settings.token or not self.settings.encoding_aes_key:
-            raise RuntimeError("WeCom token and EncodingAESKey are required")
-        return WeComJsonCrypto(
-            token=self.settings.token,
-            encoding_aes_key=self.settings.encoding_aes_key,
-            receive_id=self.settings.receive_id,
-        )
-
-    async def _wait_until_started(self) -> None:
-        for _ in range(100):
-            server = self._server
-            if server is not None and server.started:
-                return
-            await asyncio.sleep(0.05)
-
     def _message_context(
         self,
         *,
@@ -1306,7 +1216,11 @@ class WeComChannel(Channel):
         userid: str | None,
         chat_id: str,
         files_context: dict[str, Any] | None = None,
+        address: ConversationAddress | None = None,
     ) -> dict[str, Any]:
+        address = address or self._conversation_address(data, plaintext_userid=resolved_userid)
+        address_context = address.to_safe_context()
+        address_context["chat_id"] = chat_id
         context = {
             "from_userid": from_userid,
             "userid": userid,
@@ -1319,14 +1233,25 @@ class WeComChannel(Channel):
                 "resolved_userid": resolved_userid,
                 "userid": userid,
                 "chat_id": chat_id,
-                "chat_type": str(data.get("chattype") or "single"),
+                "chat_type": address.chat_type,
                 "msgtype": data.get("msgtype"),
+                "address": address_context,
                 "raw": _safe_wecom_payload(data),
             },
         }
         if files_context:
             context["files"] = files_context
         return context
+
+    def _conversation_address(
+        self,
+        data: dict[str, Any],
+        *,
+        plaintext_userid: str | None = None,
+    ) -> ConversationAddress:
+        if str(data.get("chattype") or "single") == "group" and not str(data.get("chatid") or "").strip():
+            logger.warning("wecom.group_message missing chatid msgid={}", _extract_msgid(data))
+        return self._transport.address_for(data, plaintext_userid=plaintext_userid)
 
     async def _download_and_store_media(
         self,
@@ -1411,6 +1336,7 @@ class WeComChannel(Channel):
         resolved_userid: str | None,
         userid: str | None,
         leading_content: str,
+        address: ConversationAddress,
     ) -> None:
         task = asyncio.create_task(
             self._poll_pending_file_and_dispatch(
@@ -1423,6 +1349,7 @@ class WeComChannel(Channel):
                 resolved_userid=resolved_userid,
                 userid=userid,
                 leading_content=leading_content,
+                address=address,
             ),
             name=f"agentseek-wecom.file-poll.{stream_id}",
         )
@@ -1441,6 +1368,7 @@ class WeComChannel(Channel):
         resolved_userid: str | None,
         userid: str | None,
         leading_content: str,
+        address: ConversationAddress,
     ) -> None:
         file_service = self._get_file_service()
         if file_service is None:
@@ -1495,9 +1423,11 @@ class WeComChannel(Channel):
                 userid=userid,
                 chat_id=chat_id,
                 files_context=result.to_context(),
+                address=address,
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream_id)
+        setattr(message, _CONVERSATION_ADDRESS_ATTR, address)
         await self._run_receive(message)
 
 
@@ -1533,32 +1463,6 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
-
-
-def _conversation_scope(data: dict[str, Any], userid: str | None) -> ConversationScope:
-    chat_type = str(data.get("chattype") or "single")
-    if chat_type != "group":
-        session_id = f"wecom:{userid or 'unknown'}"
-        return ConversationScope(session_id=session_id, chat_id=userid or session_id, chat_type="single")
-
-    bot_id = str(data.get("aibotid") or "unknown-bot")
-    chat_id = str(data.get("chatid") or "").strip()
-    if chat_id:
-        return ConversationScope(
-            session_id=f"wecom:{bot_id}:group:{chat_id}",
-            chat_id=chat_id,
-            chat_type="group",
-        )
-
-    # A valid group callback includes chatid. Isolate malformed callbacks by
-    # message instead of falling back to the sender and sharing another chat's memory.
-    fallback_chat_id = f"missing-chatid:{_extract_msgid(data) or uuid4().hex}"
-    logger.warning("wecom.group_message missing chatid msgid={}", _extract_msgid(data))
-    return ConversationScope(
-        session_id=f"wecom:{bot_id}:group:{fallback_chat_id}",
-        chat_id=fallback_chat_id,
-        chat_type="group",
-    )
 
 
 def _extract_response_url(data: dict[str, Any]) -> str | None:
