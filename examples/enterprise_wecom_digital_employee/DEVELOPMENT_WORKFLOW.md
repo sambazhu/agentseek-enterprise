@@ -238,9 +238,11 @@ git commit -m "feat(enterprise-wecom): add department briefing playbook"
 
 不要把 `.env`、runtime、模型和验证下载文件加入暂存区。
 
-## 9. 推送研发分支
+## 9. 双端推送研发分支
 
-以实际远端名为准。公司 GitLab 示例：
+本项目要求所有发布分支、`production` 和正式 tag 同时推送到
+公司 GitLab 和 GitHub。GitHub 是家庭等公司网外环境的必备回退源，
+不再视为可选镜像。以实际远端名为准：
 
 ```bash title="not executed in this run"
 git push -u company-gitlab enterprise/v0.1.2-department-briefing
@@ -248,15 +250,14 @@ git ls-remote company-gitlab \
   refs/heads/enterprise/v0.1.2-department-briefing
 ```
 
-如果项目要求 GitHub 镜像且你有权限，再推送同名分支：
-
 ```bash title="not executed in this run"
 git push -u origin enterprise/v0.1.2-department-briefing
 git ls-remote origin \
   refs/heads/enterprise/v0.1.2-department-briefing
 ```
 
-这些命令需要真实远端权限，本次文档验证未执行网络 push。
+两次 `git ls-remote` 必须返回同一 commit。任一端推送失败时，
+交付状态必须标记为“双端未同步”，不得宣布发布完成。
 
 ## 10. 提交给维护者合并
 
@@ -328,7 +329,7 @@ git ls-remote origin \
 - 合并到 `production`；
 - 创建或移动正式 tag；
 - 发布 Release；
-- 决定 GitHub/GitLab 镜像顺序；
+- 确认 GitHub/GitLab 的发布 ref 已同步到同一 commit；
 - 更新生产部署；
 - 宣布 schema/Pack/Profile 冻结。
 

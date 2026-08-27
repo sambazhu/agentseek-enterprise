@@ -27,16 +27,18 @@ It points at the current Enterprise WeCom GA baseline. Use the GA tag when you
 need an immutable rollback or audit target.
 
 ```bash
-git clone -b production http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+git clone -b production http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 ```
 
 To pin the current verified v0.1.1 build:
 
 ```bash
-git clone --branch enterprise-wecom-v0.1.1-ga http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.1.1-ga http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 ```
 
-GitHub mirrors both refs at `https://github.com/sambazhu/agentseek-enterprise.git`.
+Every published development branch, production ref, and release tag must also be
+mirrored to `https://github.com/sambazhu/agentseek-enterprise.git`. GitHub is the
+required off-company-network fallback when the internal GitLab is unavailable.
 
 ### Historical v0.0.9 GA
 

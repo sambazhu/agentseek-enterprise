@@ -42,10 +42,14 @@ sources:
 
 ```bash title="not executed in this run"
 git clone -b production \
-  http://172.200.6.12:9091/zhuchunlin/agentseek-enterprise.git
+  http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 cd agentseek-enterprise
 git switch --detach enterprise-wecom-v0.1.1-ga
 ```
+
+公司网外使用必须同步的 GitHub 回退源：
+`https://github.com/sambazhu/agentseek-enterprise.git`。所有发布分支、
+`production` 和正式 tag 都必须在 GitLab/GitHub 保持同一 commit。
 
 开发环境可以留在 `production`，生产部署和回滚建议固定到 GA tag。
 
