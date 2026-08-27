@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain.chat_models import init_chat_model
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -24,6 +24,7 @@ class ProjectSettings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     model: str = Field(
@@ -34,15 +35,18 @@ class ProjectSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("AGENTSEEK_MODEL_PROVIDER", "DEEPAGENTS_MODEL_PROVIDER"),
     )
-    api_key: str = Field(
-        default="",
+    api_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
         validation_alias=AliasChoices("AGENTSEEK_API_KEY", "BUB_API_KEY"),
     )
     api_base: str = Field(
         default="",
         validation_alias=AliasChoices("AGENTSEEK_API_BASE", "BUB_API_BASE"),
     )
-    openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY"))
+    openai_api_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        validation_alias=AliasChoices("OPENAI_API_KEY"),
+    )
     openai_api_base: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_BASE"))
     openai_base_url: str = Field(default="", validation_alias=AliasChoices("OPENAI_BASE_URL"))
     openai_stream_chunk_timeout_s: float = Field(
@@ -73,6 +77,7 @@ class ProjectSettings(BaseSettings):
     )
     enterprise_store_sqlalchemy_url: str = Field(
         default="",
+        repr=False,
         validation_alias=AliasChoices(
             "AGENTSEEK_ENTERPRISE_STORE_SQLALCHEMY_URL",
             "AGENTSEEK_ENTERPRISE_LONG_TERM_MEMORY_SQLALCHEMY_URL",
@@ -81,6 +86,7 @@ class ProjectSettings(BaseSettings):
     work_enabled: bool = Field(default=False, validation_alias=AliasChoices("AGENTSEEK_WORK_ENABLED"))
     work_sqlalchemy_url: str = Field(
         default="",
+        repr=False,
         validation_alias=AliasChoices("AGENTSEEK_WORK_SQLALCHEMY_URL"),
     )
     work_auto_migrate: bool = Field(
@@ -150,8 +156,8 @@ class ProjectSettings(BaseSettings):
             )
 
         kwargs: dict[str, Any] = {"model_provider": "openai"}
-        api_key = _clean(self.openai_api_key) or _clean(self.api_key)
-        if api_key:
+        api_key = self.openai_api_key if _secret_is_set(self.openai_api_key) else self.api_key
+        if _secret_is_set(api_key):
             kwargs["api_key"] = api_key
         base_url = _clean(self.openai_api_base) or _clean(self.openai_base_url) or _clean(self.api_base)
         if base_url:
@@ -217,9 +223,8 @@ class ProjectSettings(BaseSettings):
         if not model.lower().startswith("openai:"):
             return
 
-        api_key = self.api_key.strip()
-        if api_key and not self.openai_api_key.strip():
-            os.environ["OPENAI_API_KEY"] = api_key
+        if _secret_is_set(self.api_key) and not _secret_is_set(self.openai_api_key):
+            os.environ["OPENAI_API_KEY"] = self.api_key.get_secret_value().strip()
 
         api_base = self.api_base.strip()
         if api_base and not self.openai_api_base.strip() and not self.openai_base_url.strip():
@@ -233,6 +238,10 @@ def get_settings() -> ProjectSettings:
 
 def _clean(value: str | None) -> str:
     return str(value or "").strip()
+
+
+def _secret_is_set(value: SecretStr) -> bool:
+    return bool(value.get_secret_value().strip())
 
 
 def _split_prefixed_model(model_name: str) -> tuple[str | None, str]:

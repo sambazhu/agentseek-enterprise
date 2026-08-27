@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
@@ -12,6 +13,8 @@ export PYTHONPATH="${REPO_ROOT}/examples/enterprise_wecom_digital_employee/src${
 
 GATEWAY_LOG="${AGENTSEEK_GATEWAY_LOG:-$HOME/Library/Logs/agentseek-wecom/gateway.log}"
 mkdir -p "$(dirname "$GATEWAY_LOG")"
+touch "$GATEWAY_LOG"
+chmod 600 "$GATEWAY_LOG"
 
 exec uv run --offline --env-file "$AGENTSEEK_ENV_FILE" --with jaydebeapi --with JPype1 \
   python -u examples/enterprise_wecom_digital_employee/scripts/bub_gateway.py gateway \
