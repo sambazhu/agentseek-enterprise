@@ -32,6 +32,7 @@ def test_long_connection_capabilities_are_documented_but_not_implemented() -> No
     assert capabilities.implemented is False
     assert capabilities.direct_file_delivery is True
     assert "file" in capabilities.reply_message_types
+    assert capabilities.proactive_message_types == ("template_card", "markdown")
     with pytest.raises(UnsupportedWeComOutbound, match="not implemented"):
         require_outbound_message_type("long_connection", "file")
 

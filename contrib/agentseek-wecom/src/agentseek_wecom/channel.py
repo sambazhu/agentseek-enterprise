@@ -116,6 +116,13 @@ class QueuedTurn:
     expiry_handle: asyncio.TimerHandle | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationScope:
+    session_id: str
+    chat_id: str
+    chat_type: str
+
+
 class WeComChannel(Channel):
     name = "wecom"
 
@@ -411,13 +418,14 @@ class WeComChannel(Channel):
         card_trigger = self.settings.response_url_template_card_probe_trigger
         if card_trigger and content == card_trigger:
             return await self._handle_response_url_template_card_probe(data)
-        return await self._dispatch_user_message(data, content)
+        return await self._dispatch_user_message(data, _append_quote_context(data, content))
 
     async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
         from_userid = _extract_from_userid(data)
+        conversation = _conversation_scope(data, from_userid)
         stream = await self._create_stream(
-            session_id=f"wecom:{from_userid or 'unknown'}",
-            chat_id=from_userid or "wecom:unknown",
+            session_id=conversation.session_id,
+            chat_id=conversation.chat_id,
             from_userid=from_userid,
         )
         response_url = _extract_response_url(data)
@@ -450,9 +458,10 @@ class WeComChannel(Channel):
 
     async def _handle_response_url_template_card_probe(self, data: dict[str, Any]) -> str:
         from_userid = _extract_from_userid(data)
+        conversation = _conversation_scope(data, from_userid)
         stream = await self._create_stream(
-            session_id=f"wecom:{from_userid or 'unknown'}",
-            chat_id=from_userid or "wecom:unknown",
+            session_id=conversation.session_id,
+            chat_id=conversation.chat_id,
             from_userid=from_userid,
         )
         response_url = _extract_response_url(data)
@@ -503,17 +512,18 @@ class WeComChannel(Channel):
         content = str((data.get("voice") or {}).get("content") or "")
         if not content:
             content = "用户发送了一条语音消息，但回调未包含转写内容。"
-        return await self._dispatch_user_message(data, content)
+        return await self._dispatch_user_message(data, _append_quote_context(data, content))
 
     async def _handle_mixed(self, data: dict[str, Any]) -> str:
         content = _mixed_text_content(data)
         if _extract_media_items(data):
             return await self._handle_media_message(data, fallback_content=content)
+        content = _append_quote_context(data, content)
         return await self._dispatch_user_message(data, content or "用户发送了一条图文混排消息。")
 
     async def _handle_media_message(self, data: dict[str, Any], *, fallback_content: str = "") -> str:
         media_items = _extract_media_items(data)
-        content = fallback_content.strip()
+        content = _append_quote_context(data, fallback_content.strip())
         if not media_items:
             content = content or f"用户发送了 {data.get('msgtype') or 'media'} 消息，但回调未包含可下载 URL。"
             return await self._dispatch_user_message(data, content)
@@ -521,8 +531,9 @@ class WeComChannel(Channel):
         from_userid = _extract_from_userid(data)
         resolved_userid = await self._resolve_userid(from_userid)
         userid = resolved_userid or from_userid
-        session_id = f"wecom:{userid or 'unknown'}"
-        chat_id = userid or session_id
+        conversation = _conversation_scope(data, userid)
+        session_id = conversation.session_id
+        chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
             msgid=_extract_msgid(data),
             session_id=session_id,
@@ -634,6 +645,7 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 resolved_userid=resolved_userid,
                 userid=userid,
+                chat_id=chat_id,
                 files_context=files_context,
             ),
         )
@@ -650,8 +662,9 @@ class WeComChannel(Channel):
         # plaintext userid before the message reaches the enterprise runtime.
         resolved_userid = None
         userid = from_userid
-        session_id = f"wecom:{userid or 'unknown'}"
-        chat_id = userid or session_id
+        conversation = _conversation_scope(data, userid)
+        session_id = conversation.session_id
+        chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
             msgid=_extract_msgid(data),
             session_id=session_id,
@@ -704,6 +717,7 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 resolved_userid=resolved_userid,
                 userid=userid,
+                chat_id=chat_id,
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
@@ -1174,28 +1188,36 @@ class WeComChannel(Channel):
             return
         resolved_userid = await self._resolve_userid(from_userid)
         userid = resolved_userid or from_userid
-        session_id = f"wecom:{userid}"
+        wecom = message.context.get("wecom")
+        raw = wecom.get("raw") if isinstance(wecom, dict) else None
+        is_group = isinstance(raw, dict) and raw.get("chattype") == "group"
+        if is_group:
+            session_id = self._queue_session_id(message)
+            chat_id = message.chat_id or session_id
+        else:
+            session_id = f"wecom:{userid}"
+            chat_id = userid
         message.session_id = session_id
-        message.chat_id = userid
+        message.chat_id = chat_id
         message.context.update({
             "from_userid": from_userid,
             "userid": userid,
             "oa_account": userid,
-            "chat_id": userid,
+            "chat_id": chat_id,
         })
-        wecom = message.context.get("wecom")
         if isinstance(wecom, dict):
             wecom.update({
                 "from_userid": from_userid,
                 "open_userid": from_userid if resolved_userid else None,
                 "resolved_userid": resolved_userid,
                 "userid": userid,
+                "chat_id": chat_id,
             })
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
         if stream is not None:
             stream.session_id = session_id
-            stream.chat_id = userid
+            stream.chat_id = chat_id
 
     async def _run_receive(self, message: ChannelMessage) -> None:
         if self._on_receive is None:
@@ -1282,18 +1304,22 @@ class WeComChannel(Channel):
         from_userid: str | None,
         resolved_userid: str | None,
         userid: str | None,
+        chat_id: str,
         files_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context = {
             "from_userid": from_userid,
             "userid": userid,
             "oa_account": userid,
+            "chat_id": chat_id,
             "msgtype": data.get("msgtype"),
             "wecom": {
                 "from_userid": from_userid,
                 "open_userid": from_userid if resolved_userid else None,
                 "resolved_userid": resolved_userid,
                 "userid": userid,
+                "chat_id": chat_id,
+                "chat_type": str(data.get("chattype") or "single"),
                 "msgtype": data.get("msgtype"),
                 "raw": _safe_wecom_payload(data),
             },
@@ -1467,6 +1493,7 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 resolved_userid=resolved_userid,
                 userid=userid,
+                chat_id=chat_id,
                 files_context=result.to_context(),
             ),
         )
@@ -1506,6 +1533,32 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _conversation_scope(data: dict[str, Any], userid: str | None) -> ConversationScope:
+    chat_type = str(data.get("chattype") or "single")
+    if chat_type != "group":
+        session_id = f"wecom:{userid or 'unknown'}"
+        return ConversationScope(session_id=session_id, chat_id=userid or session_id, chat_type="single")
+
+    bot_id = str(data.get("aibotid") or "unknown-bot")
+    chat_id = str(data.get("chatid") or "").strip()
+    if chat_id:
+        return ConversationScope(
+            session_id=f"wecom:{bot_id}:group:{chat_id}",
+            chat_id=chat_id,
+            chat_type="group",
+        )
+
+    # A valid group callback includes chatid. Isolate malformed callbacks by
+    # message instead of falling back to the sender and sharing another chat's memory.
+    fallback_chat_id = f"missing-chatid:{_extract_msgid(data) or uuid4().hex}"
+    logger.warning("wecom.group_message missing chatid msgid={}", _extract_msgid(data))
+    return ConversationScope(
+        session_id=f"wecom:{bot_id}:group:{fallback_chat_id}",
+        chat_id=fallback_chat_id,
+        chat_type="group",
+    )
 
 
 def _extract_response_url(data: dict[str, Any]) -> str | None:
@@ -1593,6 +1646,38 @@ def _mixed_text_content(data: dict[str, Any]) -> str:
         if isinstance(text, dict) and text.get("content") is not None:
             parts.append(str(text["content"]))
     return "\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _append_quote_context(data: dict[str, Any], content: str) -> str:
+    quote = data.get("quote")
+    if not isinstance(quote, dict):
+        return content
+
+    quote_type = str(quote.get("msgtype") or "unknown")
+    quoted_content = ""
+    if quote_type == "text":
+        text = quote.get("text")
+        if isinstance(text, dict):
+            quoted_content = str(text.get("content") or "").strip()
+    elif quote_type == "mixed":
+        quoted_content = _mixed_text_content(quote)
+    elif quote_type == "voice":
+        voice = quote.get("voice")
+        if isinstance(voice, dict):
+            quoted_content = str(voice.get("content") or "").strip()
+
+    label = {
+        "text": "文本",
+        "mixed": "图文混排",
+        "image": "图片",
+        "voice": "语音",
+        "file": "文件",
+        "video": "视频",
+    }.get(quote_type, "未知类型")
+    quote_block = f"引用消息（{label}）"
+    if quoted_content:
+        quote_block = f"{quote_block}：\n{quoted_content}"
+    return "\n\n".join(part for part in (content.strip(), quote_block) if part)
 
 
 def _mixed_media_items(data: dict[str, Any]) -> list[dict[str, str]]:
@@ -1693,7 +1778,7 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Return the prompt-safe subset of a WeCom callback payload."""
 
     safe: dict[str, Any] = {}
-    for key in ("msgid", "aibotid", "chattype", "msgtype"):
+    for key in ("msgid", "aibotid", "chatid", "chattype", "msgtype"):
         value = data.get(key)
         if value:
             safe[key] = value
@@ -1721,16 +1806,7 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
                 safe_media["content"] = str(payload["content"])
             safe[msgtype] = safe_media
     elif msgtype == "mixed":
-        items: list[dict[str, Any]] = []
-        for item in _mixed_items(data):
-            item_type = str(item.get("msgtype") or "")
-            if item_type == "text":
-                text = item.get("text")
-                if isinstance(text, dict) and text.get("content") is not None:
-                    items.append({"msgtype": "text", "text": {"content": str(text["content"])}})
-            elif item_type in {"image", "file", "video"}:
-                items.append({"msgtype": item_type, item_type: {"has_url": bool(_extract_ai_bot_media(item))}})
-        safe["mixed"] = {"msg_item": items}
+        safe["mixed"] = {"msg_item": _safe_mixed_items(data)}
     elif msgtype == "event":
         event = data.get("event")
         if isinstance(event, dict):
@@ -1738,7 +1814,55 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
             if safe_event:
                 safe["event"] = safe_event
 
+    quote = data.get("quote")
+    if isinstance(quote, dict):
+        safe_quote = _safe_quote_payload(quote)
+        if safe_quote:
+            safe["quote"] = safe_quote
+
     return safe
+
+
+def _safe_quote_payload(quote: dict[str, Any]) -> dict[str, Any]:
+    """Keep quoted semantics while excluding signed URLs and response capabilities."""
+
+    quote_type = str(quote.get("msgtype") or "")
+    if not quote_type:
+        return {}
+    safe: dict[str, Any] = {"msgtype": quote_type}
+    if quote_type == "text":
+        text = quote.get("text")
+        if isinstance(text, dict) and text.get("content") is not None:
+            safe["text"] = {"content": str(text["content"])}
+    elif quote_type == "mixed":
+        safe["mixed"] = {"msg_item": _safe_mixed_items(quote)}
+    elif quote_type in {"file", "image", "voice", "video"}:
+        payload = quote.get(quote_type)
+        if isinstance(payload, dict):
+            safe_media: dict[str, Any] = {
+                "has_url": bool(_extract_ai_bot_media(quote)),
+                "has_media_id": bool(_extract_media_id(quote)),
+            }
+            for key in ("filename", "file_name", "size", "filesize", "mime_type", "content_type"):
+                if key in payload:
+                    safe_media[key] = payload[key]
+            if quote_type == "voice" and payload.get("content") is not None:
+                safe_media["content"] = str(payload["content"])
+            safe[quote_type] = safe_media
+    return safe
+
+
+def _safe_mixed_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _mixed_items(data):
+        item_type = str(item.get("msgtype") or "")
+        if item_type == "text":
+            text = item.get("text")
+            if isinstance(text, dict) and text.get("content") is not None:
+                items.append({"msgtype": "text", "text": {"content": str(text["content"])}})
+        elif item_type in {"image", "file", "video"}:
+            items.append({"msgtype": item_type, item_type: {"has_url": bool(_extract_ai_bot_media(item))}})
+    return items
 
 
 def _emit_enterprise_event(event: str, **fields: Any) -> None:

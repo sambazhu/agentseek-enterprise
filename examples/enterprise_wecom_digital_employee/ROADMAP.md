@@ -979,6 +979,27 @@ M0 决策见 `V0.1.2_M0_PLATFORM_FREEZE.md`。首个交付物冻结为
 本文档与配套研发指南完成后，由 Mac mini 执行文档一致性和模板回归复核；
 复核通过即关闭 M0，再进入 M1，不在 M0 提前修改运行时代码或 schema。
 
+### M0.1：企微协议基线
+
+目标是在身份与组织授权平台化前，先固定企微会话边界和消息语义。
+
+范围：
+
+- 群聊按 `aibotid + chatid` 建立 session，单聊保持 `wecom:{userid}` 兼容；
+- userid 解密只更新成员身份，不覆盖群聊会话边界；
+- 将引用消息的安全语义传入 Agent，不暴露 `response_url` 或签名媒体 URL；
+- 厘清 callback、long connection 和自建应用的边界，修正现有
+  AI Bot 能力声明与协议测试。
+
+验收：
+
+- 同一成员的不同群聊不共享 session，不同机器人也不共享群 session；
+- 引用文本对 Agent 可见，敏感回调能力不进入 prompt 上下文；
+- 企微组件和企微数字员工样例回归通过。
+
+详细决策、官方协议基线和非目标见 `V0.1.2_M0_1_WECOM_PROTOCOL_BASELINE.md`。
+M0.1 是 M1 前置安全切片，不改变 M1–M5 原定范围。
+
 ### M1：组织授权与身份 Provider 抽象
 
 目标是先解决跨部门复用时最重要的授权边界。

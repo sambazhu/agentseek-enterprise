@@ -502,6 +502,97 @@ def test_text_message_resolves_open_userid_before_dispatch() -> None:
     assert received[0].context["wecom"]["resolved_userid"] == "zhuchunlin"
 
 
+def test_group_messages_are_isolated_by_bot_and_chat_after_userid_resolution() -> None:
+    received: list[ChannelMessage] = []
+    resolver = FakeUseridResolver("zhuchunlin")
+    channel = _channel(userid_resolver=resolver)
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="处理完成",
+            )
+        )
+
+    async def scenario() -> None:
+        channel.bind_receiver(on_receive)
+        for msgid, botid, chatid in (
+            ("group-1", "bot-1", "chat-alpha"),
+            ("group-2", "bot-1", "chat-beta"),
+            ("group-3", "bot-2", "chat-alpha"),
+        ):
+            await channel._handle_plain_message({
+                "msgid": msgid,
+                "aibotid": botid,
+                "chatid": chatid,
+                "chattype": "group",
+                "msgtype": "text",
+                "from": {"userid": "encrypted-open-userid"},
+                "text": {"content": "请帮我处理"},
+            })
+
+    asyncio.run(scenario())
+
+    assert [message.session_id for message in received] == [
+        "wecom:bot-1:group:chat-alpha",
+        "wecom:bot-1:group:chat-beta",
+        "wecom:bot-2:group:chat-alpha",
+    ]
+    assert [message.chat_id for message in received] == ["chat-alpha", "chat-beta", "chat-alpha"]
+    assert [message.context["userid"] for message in received] == [
+        "zhuchunlin",
+        "zhuchunlin",
+        "zhuchunlin",
+    ]
+    assert [message.context["wecom"]["chat_type"] for message in received] == [
+        "group",
+        "group",
+        "group",
+    ]
+
+
+def test_text_message_includes_quoted_text_without_response_capability() -> None:
+    received: list[ChannelMessage] = []
+    channel = _channel()
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="处理完成",
+            )
+        )
+
+    channel.bind_receiver(on_receive)
+    asyncio.run(
+        channel._handle_plain_message({
+            "msgid": "quoted-1",
+            "msgtype": "text",
+            "from": {"userid": "chenkang2"},
+            "text": {"content": "请按这条继续"},
+            "quote": {
+                "msgtype": "text",
+                "responseurl": "https://example.invalid/secret",
+                "text": {"content": "原始需求内容"},
+            },
+        })
+    )
+
+    assert received[0].content == "请按这条继续\n\n引用消息（文本）：\n原始需求内容"
+    assert received[0].context["wecom"]["raw"]["quote"] == {
+        "msgtype": "text",
+        "text": {"content": "原始需求内容"},
+    }
+    assert "responseurl" not in received[0].context["wecom"]["raw"]["quote"]
+
+
 def test_text_message_returns_placeholder_before_slow_receive_completes() -> None:
     channel = _channel()
 
