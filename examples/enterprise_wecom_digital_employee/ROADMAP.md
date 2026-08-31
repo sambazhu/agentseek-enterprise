@@ -1036,6 +1036,82 @@ M0.1 是 Transport Kernel 的前置安全切片，不改变 M1–M5 的业务范
 设计说明见 `V0.1.2_M0_2_WECOM_TRANSPORT_KERNEL.md`。M0.2 通过后再进入
 持久化消息基座；长连接和自建应用继续保持关闭，直到各自切片通过验收。
 
+### M0.3：企微持久化消息基座
+
+目标是在不迁移共享数据库的前提下，为所有企微 Transport 固定 inbox、
+`msgid` 去重、outbox、回复期限和处理 lease 合同。
+
+范围：
+
+- 定义 `DurableMessageStore`，先提供单机加密 SQLite 适配器；
+- 入站在执行 Agent 前持久化，并按 tenant、Bot/Agent、transport 和 `msgid` 去重；
+- `response_url` 终态回复在网络调用前进入 outbox；
+- 启动时先恢复 outbox，再恢复仍有回复能力的 inbox；
+- 优雅停止释放 owner lease，异常终止依靠 lease 到期接管；
+- 默认保持 memory 模式，Linux 活体复验显式启用 sqlite。
+
+非目标：
+
+- 不迁移或修改共享 PostgreSQL、Work、Memory、ContextSeek schema；
+- 不在本切片实现多主机共享存储；
+- 不自动恢复包含进程内业务回调的模板卡片；
+- 不启用长连接或自建应用。
+
+验收：
+
+- 重启后相同 `msgid` 不再次执行 Agent；
+- 仍在期限内的 Markdown outbox 和 inbox 可恢复；
+- 消息正文、回复能力和原始 `msgid` 不以明文落盘；
+- SQLite 文件为 `600`，错误密钥、符号链接和 schema 漂移 fail closed；
+- 默认 memory 模式和 M0.2 单聊、群聊、引用、流式行为零回归。
+
+设计与复验分别见 `V0.1.2_M0_3_WECOM_DURABLE_MESSAGING.md` 和
+`V0.1.2_M0_3_WECOM_DURABLE_VERIFICATION.md`。
+
+### M0.4：Callback 硬化与卡片交互
+
+目标是收口 Callback 剩余的耗时 I/O 和可恢复卡片状态机。
+
+范围：
+
+- 文件解析完成后统一回到 session 队列，不绕过串行执行边界；
+- 首包前不执行媒体下载、身份网络解析或其他不可控耗时 I/O；
+- 接入模板卡片按钮、投票和多选事件；
+- 将卡片业务成功/失败动作改为可持久化状态，不依赖进程内闭包；
+- 完成模板卡片 outbox 的重启恢复和人工对账入口。
+
+M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动推送。
+
+### M0.5：AI Bot 长连接 Transport
+
+目标是实现 `AiBotLongConnectionTransport`，并让长任务、定时提醒和
+已交互会话主动状态通知使用长连接主通道。
+
+范围：
+
+- WebSocket 建连、鉴权、心跳、断线重连和单实例所有权；
+- 24 小时会话回复期限和已交互会话主动推送资格；
+- `aibot_send_msg` Markdown/Card 主动发送；
+- 复用 `ConversationAddress`、持久化 inbox/outbox 和群/单聊隔离合同；
+- 与 Callback 配置互斥，并保留 Callback 作为回退通道。
+
+验收通过前，`transport_mode` 不接受长连接生产启用。
+
+### M0.6：企微自建应用 Transport
+
+目标是实现 `WeComAppTransport`，承担真正的指定成员、部门和标签主动通知。
+
+范围：
+
+- 独立的应用消息与事件回调；
+- access token 缓存、刷新、错误码处理和应用可见范围检查；
+- 指定成员、部门、标签的文本、图片、视频、文件、图文和卡片推送；
+- 应用 Agent ID 纳入统一会话地址和审计；
+- 复用持久化 outbox，并对主动推送建立幂等和重试边界。
+
+自建应用不提供 AI Bot 流式回复。它是长连接的企业主动通知补充通道，
+不是 Callback 的透明替代。
+
 ### M1：组织授权与身份 Provider 抽象
 
 目标是先解决跨部门复用时最重要的授权边界。

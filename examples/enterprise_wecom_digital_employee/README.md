@@ -501,6 +501,24 @@ AGENTSEEK_WECOM_QUEUE_WAIT_TIMEOUT_SECONDS=240
 AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS=10
 ```
 
+M0.3 adds an opt-in, encrypted local inbox/outbox for Callback restarts. The
+default remains process-local memory compatibility. A single-host deployment
+can enable SQLite with a dedicated secret that is stable across restarts:
+
+```env
+AGENTSEEK_WECOM_DURABLE_MODE=sqlite
+AGENTSEEK_WECOM_DURABLE_SQLITE_PATH=runtime/wecom-messages.sqlite3
+AGENTSEEK_WECOM_DURABLE_SECRET=<dedicated-random-value-of-at-least-32-characters>
+AGENTSEEK_WECOM_DURABLE_RECOVERY_LIMIT=100
+AGENTSEEK_WECOM_DURABLE_LEASE_SECONDS=600
+```
+
+The placeholder above is intentionally invalid and must be replaced locally.
+Do not reuse a model key, WeCom credential, or enterprise namespace secret.
+The SQLite adapter does not migrate shared PostgreSQL. It restores Markdown
+outbox records before recoverable inbox records; template-card recovery remains
+fail-closed until M0.4.
+
 AI Bot turns use an explicit two-stage delivery contract when the callback
 contains `response_url`. Queue admission synchronously commits a terminal
 acknowledgement (or queue position) before the background Agent worker can run;
