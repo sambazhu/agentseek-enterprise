@@ -510,6 +510,7 @@ AGENTSEEK_WECOM_DURABLE_MODE=sqlite
 AGENTSEEK_WECOM_DURABLE_SQLITE_PATH=runtime/wecom-messages.sqlite3
 AGENTSEEK_WECOM_DURABLE_SECRET=<dedicated-random-value-of-at-least-32-characters>
 AGENTSEEK_WECOM_DURABLE_RECOVERY_LIMIT=100
+AGENTSEEK_WECOM_DURABLE_RECOVERY_INTERVAL_SECONDS=30
 AGENTSEEK_WECOM_DURABLE_LEASE_SECONDS=600
 ```
 
@@ -517,7 +518,10 @@ The placeholder above is intentionally invalid and must be replaced locally.
 Do not reuse a model key, WeCom credential, or enterprise namespace secret.
 The SQLite adapter does not migrate shared PostgreSQL. It restores Markdown
 outbox records before recoverable inbox records; template-card recovery remains
-fail-closed until M0.4.
+fail-closed until M0.4. SIGTERM is routed through the outer Bub channel manager,
+so graceful shutdown drains terminal commits and releases leases. A periodic
+recovery scan claims leases that expire after an abnormal restart without a
+second process restart.
 
 AI Bot turns use an explicit two-stage delivery contract when the callback
 contains `response_url`. Queue admission synchronously commits a terminal

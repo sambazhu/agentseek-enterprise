@@ -1047,7 +1047,8 @@ M0.1 是 Transport Kernel 的前置安全切片，不改变 M1–M5 的业务范
 - 入站在执行 Agent 前持久化，并按 tenant、Bot/Agent、transport 和 `msgid` 去重；
 - `response_url` 终态回复在网络调用前进入 outbox；
 - 启动时先恢复 outbox，再恢复仍有回复能力的 inbox；
-- 优雅停止释放 owner lease，异常终止依靠 lease 到期接管；
+- SIGTERM 由 Bub manager 统一编排，优雅停止排空终态提交并释放 owner lease；
+- 异常终止依靠 lease 到期，并由周期恢复任务自动接管；
 - 默认保持 memory 模式，Linux 活体复验显式启用 sqlite。
 
 非目标：
