@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,7 @@ class WeComSettings(BaseSettings):
         extra="ignore",
         case_sensitive=True,
         populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     enabled: bool = Field(
@@ -92,6 +93,46 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_SHUTDOWN_TIMEOUT_SECONDS",
         ),
     )
+    durable_mode: Literal["memory", "sqlite"] = Field(
+        default="memory",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_MODE",
+            "AGENTSEEK_WECOM_DURABLE_MODE",
+        ),
+    )
+    durable_sqlite_path: str = Field(
+        default="runtime/wecom-messages.sqlite3",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_SQLITE_PATH",
+            "AGENTSEEK_WECOM_DURABLE_SQLITE_PATH",
+        ),
+    )
+    durable_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_SECRET",
+            "AGENTSEEK_WECOM_DURABLE_SECRET",
+        ),
+    )
+    durable_recovery_limit: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_RECOVERY_LIMIT",
+            "AGENTSEEK_WECOM_DURABLE_RECOVERY_LIMIT",
+        ),
+    )
+    durable_lease_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        le=3600,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_LEASE_SECONDS",
+            "AGENTSEEK_WECOM_DURABLE_LEASE_SECONDS",
+        ),
+    )
     corp_id: str = Field(
         default="",
         validation_alias=AliasChoices("BUB_WECOM_CORP_ID", "AGENTSEEK_WECOM_CORP_ID"),
@@ -158,6 +199,16 @@ class WeComSettings(BaseSettings):
         default="你好，我是你的企业数字员工。",
         validation_alias=AliasChoices("BUB_WECOM_WELCOME_TEXT", "AGENTSEEK_WECOM_WELCOME_TEXT"),
     )
+
+    @model_validator(mode="after")
+    def validate_durable_settings(self) -> WeComSettings:
+        if self.durable_mode != "sqlite":
+            return self
+        if not self.durable_sqlite_path.strip():
+            raise ValueError("durable_sqlite_path is required when durable_mode='sqlite'")
+        if len(self.durable_secret.get_secret_value()) < 32:
+            raise ValueError("durable_secret must contain at least 32 characters when durable_mode='sqlite'")
+        return self
 
 
 def load_settings() -> WeComSettings:

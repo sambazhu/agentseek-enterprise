@@ -21,6 +21,48 @@ def _check(env: dict[str, str]) -> tuple[list[str], list[str]]:
     return report.failures, report.warnings
 
 
+def _check_durable(env: dict[str, str], project_root: Path) -> tuple[list[str], list[str]]:
+    module = _load_prod_check()
+    report = module.CheckReport()
+    module.check_wecom_durable(env, project_root, report)
+    return report.failures, report.warnings
+
+
+def test_durable_preflight_accepts_default_memory_mode(tmp_path: Path) -> None:
+    failures, warnings = _check_durable({}, tmp_path)
+
+    assert failures == []
+    assert warnings == []
+
+
+def test_durable_preflight_accepts_encrypted_sqlite_mode(tmp_path: Path) -> None:
+    failures, warnings = _check_durable(
+        {
+            "AGENTSEEK_WECOM_DURABLE_MODE": "sqlite",
+            "AGENTSEEK_WECOM_DURABLE_SQLITE_PATH": "runtime/wecom.sqlite3",
+            "AGENTSEEK_WECOM_DURABLE_SECRET": "dedicated-test-key-material-with-32-characters",
+        },
+        tmp_path,
+    )
+
+    assert failures == []
+    assert warnings == []
+
+
+def test_durable_preflight_rejects_missing_sqlite_secret(tmp_path: Path) -> None:
+    failures, _ = _check_durable(
+        {
+            "AGENTSEEK_WECOM_DURABLE_MODE": "sqlite",
+            "AGENTSEEK_WECOM_DURABLE_SQLITE_PATH": "runtime/wecom.sqlite3",
+        },
+        tmp_path,
+    )
+
+    assert failures == [
+        "AGENTSEEK_WECOM_DURABLE_SECRET must be a dedicated high-entropy value in sqlite mode"
+    ]
+
+
 def test_outbound_preflight_accepts_disabled_callback_delivery() -> None:
     failures, warnings = _check({
         "AGENTSEEK_WECOM_TRANSPORT_MODE": "callback",

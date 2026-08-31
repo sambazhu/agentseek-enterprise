@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
     check_model(env, report)
     check_wecom(env, report)
+    check_wecom_durable(env, project_root, report)
     check_wecom_outbound(env, report)
     check_identity(env, project_root, report)
     check_memory(env, project_root, report)
@@ -123,6 +124,37 @@ def check_wecom(env: dict[str, str], report: CheckReport) -> None:
         require(env, report, key)
     if env.get("AGENTSEEK_WECOM_USERID_RESOLVE_MODE") != "openuserid_to_userid":
         report.warn("AGENTSEEK_WECOM_USERID_RESOLVE_MODE should usually be openuserid_to_userid")
+
+
+def check_wecom_durable(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
+    mode = env.get("AGENTSEEK_WECOM_DURABLE_MODE", "memory").strip()
+    if mode == "memory":
+        report.ok("WeCom durable messaging uses compatibility memory mode")
+        return
+    if mode != "sqlite":
+        report.fail("AGENTSEEK_WECOM_DURABLE_MODE must be memory or sqlite")
+        return
+    path = env.get("AGENTSEEK_WECOM_DURABLE_SQLITE_PATH", "").strip()
+    if not path:
+        report.fail("AGENTSEEK_WECOM_DURABLE_SQLITE_PATH is required in sqlite mode")
+    else:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        if candidate.is_symlink():
+            report.fail("WeCom durable SQLite path must not be a symlink")
+        else:
+            ensure_parent_writable(
+                env,
+                project_root,
+                report,
+                "AGENTSEEK_WECOM_DURABLE_SQLITE_PATH",
+            )
+    secret = env.get("AGENTSEEK_WECOM_DURABLE_SECRET", "").strip()
+    if len(secret) >= 32 and not contains_placeholder(secret):
+        report.ok("WeCom durable encryption secret is set")
+    else:
+        report.fail("AGENTSEEK_WECOM_DURABLE_SECRET must be a dedicated high-entropy value in sqlite mode")
 
 
 def check_wecom_outbound(env: dict[str, str], report: CheckReport) -> None:

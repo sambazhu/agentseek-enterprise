@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 from uuid import uuid4
@@ -21,6 +22,14 @@ from republic import StreamEvent
 
 from agentseek_wecom.addressing import ConversationAddress
 from agentseek_wecom.config import WeComSettings
+from agentseek_wecom.durable import (
+    DurableMessageStore,
+    InboxRecord,
+    InboxStatus,
+    OutboxRecord,
+    OutboxStatus,
+    SqliteDurableMessageStore,
+)
 from agentseek_wecom.media import MediaDownload, WeComMediaClient, decode_encoding_aes_key
 from agentseek_wecom.messages import make_text, make_text_stream
 from agentseek_wecom.outbound import (
@@ -41,6 +50,10 @@ _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
 _QUEUE_SESSION_ID_ATTR = "_agentseek_wecom_queue_session_id"
 _FROM_USERID_ATTR = "_agentseek_wecom_from_userid"
 _CONVERSATION_ADDRESS_ATTR = "_agentseek_wecom_conversation_address"
+_DURABLE_INBOX_ID_ATTR = "_agentseek_wecom_durable_inbox_id"
+_DURABLE_RECOVERY_ATTR = "_agentseek_wecom_durable_recovery"
+_DURABLE_REPLY_DEADLINE_ATTR = "_agentseek_wecom_durable_reply_deadline"
+_DURABLE_STREAM_ID_ATTR = "_agentseek_wecom_durable_stream_id"
 _QUEUE_STATUS_COMMANDS = frozenset({"查看消息队列", "查看排队状态"})
 
 
@@ -86,6 +99,8 @@ class StreamReply:
     session_id: str
     chat_id: str
     from_userid: str | None
+    inbox_id: str | None = None
+    reply_deadline: datetime | None = None
     response_url: str | None = None
     initial_response_sent: bool = False
     initial_response_content: str | None = None
@@ -130,6 +145,7 @@ class WeComChannel(Channel):
         file_service: InboundFileServiceProtocol | None = None,
         response_url_sender: ResponseUrlSenderProtocol | None = None,
         transport: WeComTransport | None = None,
+        durable_store: DurableMessageStore | None = None,
     ) -> None:
         self._on_receive = on_receive
         self.settings = settings
@@ -142,6 +158,10 @@ class WeComChannel(Channel):
             timeout_seconds=settings.api_timeout_seconds,
         )
         self._lock = asyncio.Lock()
+        self._durable_init_lock = asyncio.Lock()
+        self._durable_store = durable_store
+        self._durable_store_initialized = durable_store is not None or settings.durable_mode == "memory"
+        self._durable_owner = f"{os.getpid()}-{uuid4().hex}"
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
@@ -174,6 +194,8 @@ class WeComChannel(Channel):
         self._on_receive = on_receive
 
     async def start(self, stop_event: asyncio.Event) -> None:
+        await self._ensure_durable_store()
+        await self._recover_durable_messages()
         await self._transport.start(stop_event)
 
     async def stop(self) -> None:
@@ -205,6 +227,8 @@ class WeComChannel(Channel):
         delivery_status = "succeeded"
         if stream.deferred_response_url:
             delivery_status = await self._deliver_response_url_once(stream, stream.content)
+        elif stream.inbox_id:
+            await self._mark_inbox(stream.inbox_id, "completed")
         _emit_enterprise_event(
             "wecom_stream_finished",
             status=delivery_status,
@@ -233,6 +257,8 @@ class WeComChannel(Channel):
                         reply.update(append=str(event.data.get("delta", "")), finish=False)
                     elif event.kind == "error":
                         reply.update(content=str(event.data.get("message", "模型处理失败")), finish=True)
+                        if reply.inbox_id:
+                            await self._mark_inbox(reply.inbox_id, "failed", error_type="stream_error")
                         _emit_enterprise_event(
                             "wecom_stream_finished",
                             status="error",
@@ -445,6 +471,8 @@ class WeComChannel(Channel):
         chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
             msgid=_extract_msgid(data),
+            data=data,
+            address=conversation,
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
@@ -542,7 +570,7 @@ class WeComChannel(Channel):
                 address=conversation,
             )
             if stream.response_url:
-                return self._commit_stream_response(stream, force_deferred=True)
+                return await self._commit_stream_response(stream, force_deferred=True)
             return await self._stream_response(stream.stream_id)
         message = ChannelMessage(
             session_id=session_id,
@@ -564,7 +592,10 @@ class WeComChannel(Channel):
         setattr(message, _CONVERSATION_ADDRESS_ATTR, conversation)
         self._schedule_receive(message)
         if stream.response_url:
-            return self._commit_stream_response(stream)
+            return await self._commit_stream_response(
+                stream,
+                force_deferred=_is_durable_recovery(data),
+            )
         return await self._stream_response(stream.stream_id)
 
     async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
@@ -579,6 +610,8 @@ class WeComChannel(Channel):
         chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
             msgid=_extract_msgid(data),
+            data=data,
+            address=conversation,
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
@@ -617,7 +650,7 @@ class WeComChannel(Channel):
                 active=self._session_worker_running(session_id),
                 pending_count=self._pending_turn_counts.get(session_id, 0),
             )
-            return self._commit_stream_response(stream)
+            return await self._commit_stream_response(stream)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -642,7 +675,10 @@ class WeComChannel(Channel):
         # callback's one-shot response_url.
         self._schedule_receive(message)
         if stream.response_url:
-            return self._commit_stream_response(stream)
+            return await self._commit_stream_response(
+                stream,
+                force_deferred=_is_durable_recovery(data),
+            )
         return await self._stream_response(stream.stream_id)
 
     async def _resolve_userid(self, from_userid: str | None) -> str | None:
@@ -691,16 +727,21 @@ class WeComChannel(Channel):
         self,
         *,
         msgid: str | None,
+        data: dict[str, Any],
+        address: ConversationAddress,
         session_id: str,
         chat_id: str,
         from_userid: str | None,
         response_url: str | None,
     ) -> tuple[StreamReply, bool]:
+        recovery_stream_id = data.get(_DURABLE_STREAM_ID_ATTR)
         stream = StreamReply(
-            stream_id=uuid4().hex,
+            stream_id=str(recovery_stream_id) if recovery_stream_id else uuid4().hex,
             session_id=session_id,
             chat_id=chat_id,
             from_userid=from_userid,
+            inbox_id=str(data.get(_DURABLE_INBOX_ID_ATTR) or "") or None,
+            reply_deadline=_durable_reply_deadline(data) or address.reply_deadline,
             response_url=response_url,
             content="已收到，正在处理...",
             finish=False,
@@ -713,6 +754,44 @@ class WeComChannel(Channel):
                 if existing is not None:
                     return existing, True
                 self._stream_ids_by_msgid.pop(msgid, None)
+
+            if msgid and not _is_durable_recovery(data):
+                store = await self._ensure_durable_store()
+                if store is not None:
+                    admission = await asyncio.to_thread(
+                        store.admit_inbound,
+                        message_id=msgid,
+                        address=address,
+                        stream_id=stream.stream_id,
+                        payload=data,
+                        now=datetime.now(UTC),
+                    )
+                    stream.inbox_id = admission.record.inbox_id
+                    stream.reply_deadline = admission.record.reply_deadline
+                    if not admission.admitted:
+                        stream.stream_id = admission.record.stream_id
+                        stream.content = (
+                            "该消息已接收，正在恢复处理，请勿重复发送。"
+                            if admission.record.status in {"pending", "processing", "failed"}
+                            else "该消息已经处理，请勿重复发送。"
+                        )
+                        stream.finish = True
+                        self._streams[stream.stream_id] = stream
+                        self._stream_ids_by_msgid[msgid] = stream.stream_id
+                        return stream, True
+                    claimed = await asyncio.to_thread(
+                        store.claim_inbox,
+                        admission.record.inbox_id,
+                        now=datetime.now(UTC),
+                        owner=self._durable_owner,
+                        lease_duration=self._durable_lease_duration(),
+                    )
+                    if claimed is None:
+                        stream.content = "该消息已由另一实例接收，正在处理，请勿重复发送。"
+                        stream.finish = True
+                        self._streams[stream.stream_id] = stream
+                        self._stream_ids_by_msgid[msgid] = stream.stream_id
+                        return stream, True
 
             self._streams[stream.stream_id] = stream
             if msgid:
@@ -759,9 +838,9 @@ class WeComChannel(Channel):
                 bool(current.initial_response_finish),
             )
 
-        return self._commit_stream_response(current)
+        return await self._commit_stream_response(current)
 
-    def _commit_stream_response(self, current: StreamReply, *, force_deferred: bool = False) -> str:
+    async def _commit_stream_response(self, current: StreamReply, *, force_deferred: bool = False) -> str:
         if current.initial_response_sent:
             return make_text_stream(
                 current.stream_id,
@@ -797,7 +876,156 @@ class WeComChannel(Channel):
         # available terminal result now.
         if current.deferred_response_url and current.finish:
             self._schedule_response_url_delivery(current, current.content)
+        elif current.finish and current.inbox_id:
+            await self._mark_inbox(current.inbox_id, "completed")
         return make_text_stream(current.stream_id, initial_content, initial_finish)
+
+    async def _ensure_durable_store(self) -> DurableMessageStore | None:
+        if self._durable_store_initialized:
+            return self._durable_store
+        async with self._durable_init_lock:
+            if self._durable_store_initialized:
+                return self._durable_store
+            self._durable_store = await asyncio.to_thread(
+                SqliteDurableMessageStore,
+                path=self.settings.durable_sqlite_path,
+                secret=self.settings.durable_secret,
+            )
+            self._durable_store_initialized = True
+            logger.info("wecom.durable_store initialized mode=sqlite")
+        return self._durable_store
+
+    async def _recover_durable_messages(self) -> None:
+        store = await self._ensure_durable_store()
+        if store is None:
+            return
+        now = datetime.now(UTC)
+        lease = self._durable_lease_duration()
+        limit = self.settings.durable_recovery_limit
+        outbox_records = await asyncio.to_thread(
+            store.claim_recoverable_outbox,
+            now=now,
+            owner=self._durable_owner,
+            lease_duration=lease,
+            limit=limit,
+        )
+        for record in outbox_records:
+            await self._recover_outbox(record)
+        inbox_records = await asyncio.to_thread(
+            store.claim_recoverable_inbox,
+            now=datetime.now(UTC),
+            owner=self._durable_owner,
+            lease_duration=lease,
+            limit=limit,
+        )
+        for record in inbox_records:
+            await self._recover_inbox(record)
+        if outbox_records or inbox_records:
+            _emit_enterprise_event(
+                "wecom_durable_recovery",
+                status="scheduled",
+                outbox_count=len(outbox_records),
+                inbox_count=len(inbox_records),
+            )
+
+    async def _recover_inbox(self, record: InboxRecord) -> None:
+        response_url = _extract_response_url(record.payload)
+        if not response_url:
+            await self._mark_inbox(record.inbox_id, "blocked", error_type="reply_capability_missing")
+            return
+        data = dict(record.payload)
+        data[_DURABLE_RECOVERY_ATTR] = True
+        data[_DURABLE_INBOX_ID_ATTR] = record.inbox_id
+        data[_DURABLE_STREAM_ID_ATTR] = record.stream_id
+        if record.reply_deadline is not None:
+            data[_DURABLE_REPLY_DEADLINE_ATTR] = record.reply_deadline.isoformat()
+        try:
+            await self._handle_plain_message(data)
+        except Exception as exc:
+            await self._mark_inbox(record.inbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning("wecom.durable inbox recovery failed error_type={}", type(exc).__name__)
+
+    async def _recover_outbox(self, record: OutboxRecord) -> None:
+        if record.message_type != "markdown":
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="manual_reconciliation_required")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="manual_reconciliation_required")
+            return
+        response_url = record.envelope.get("response_url")
+        content = record.envelope.get("content")
+        if not isinstance(response_url, str) or not response_url or not isinstance(content, str):
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="invalid_envelope")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="invalid_envelope")
+            return
+        try:
+            await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning("wecom.durable outbox recovery failed error_type={}", type(exc).__name__)
+            return
+        await self._mark_outbox(record.outbox_id, "delivered")
+        if record.inbox_id:
+            await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _mark_inbox(
+        self,
+        inbox_id: str,
+        status: InboxStatus,
+        *,
+        error_type: str = "",
+    ) -> None:
+        store = await self._ensure_durable_store()
+        if store is None:
+            return
+        await asyncio.to_thread(
+            store.mark_inbox,
+            inbox_id,
+            status,
+            now=datetime.now(UTC),
+            error_type=error_type,
+        )
+
+    async def _mark_outbox(
+        self,
+        outbox_id: str,
+        status: OutboxStatus,
+        *,
+        error_type: str = "",
+    ) -> None:
+        store = await self._ensure_durable_store()
+        if store is None:
+            return
+        await asyncio.to_thread(
+            store.mark_outbox,
+            outbox_id,
+            status,
+            now=datetime.now(UTC),
+            error_type=error_type,
+        )
+
+    def _schedule_inbox_status(
+        self,
+        inbox_id: str,
+        status: InboxStatus,
+        *,
+        error_type: str = "",
+    ) -> None:
+        task = asyncio.create_task(
+            self._mark_inbox(inbox_id, status, error_type=error_type),
+            name=f"agentseek-wecom.inbox-status.{inbox_id[-12:]}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    def _durable_lease_duration(self) -> timedelta:
+        processing_window = (
+            self.settings.queue_wait_timeout_seconds
+            + self.settings.turn_timeout_seconds
+            + self.settings.shutdown_timeout_seconds
+            + 30.0
+        )
+        return timedelta(seconds=max(self.settings.durable_lease_seconds, processing_window))
 
     def _schedule_receive(self, message: ChannelMessage) -> None:
         session_id = self._queue_session_id(message)
@@ -1020,6 +1248,8 @@ class WeComChannel(Channel):
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
             should_deliver = stream.deferred_response_url
+            if stream.inbox_id:
+                self._schedule_inbox_status(stream.inbox_id, "failed", error_type=error_type or status)
         _emit_enterprise_event(
             event,
             status=status,
@@ -1054,6 +1284,33 @@ class WeComChannel(Channel):
             content = "交付意图已失效，请重新发送精确交付命令。"
         elif intent is None and has_template_card_control_instruction(content):
             content = "内部交付指令已被安全拦截，未发送任何文件。请重新发送精确交付命令。"
+        durable_outbox: OutboxRecord | None = None
+        store = await self._ensure_durable_store()
+        if store is not None:
+            message_type = "markdown" if intent is None else "template_card"
+            envelope: dict[str, Any] = {"response_url": response_url}
+            if intent is None:
+                envelope["content"] = content
+            else:
+                envelope["template_card"] = dict(intent.template_card)
+            durable_outbox = await asyncio.to_thread(
+                store.enqueue_outbox,
+                inbox_id=stream.inbox_id,
+                stream_id=stream.stream_id,
+                message_type=message_type,
+                envelope=envelope,
+                reply_deadline=stream.reply_deadline,
+                now=datetime.now(UTC),
+            )
+            durable_outbox = await asyncio.to_thread(
+                store.claim_outbox,
+                durable_outbox.outbox_id,
+                now=datetime.now(UTC),
+                owner=self._durable_owner,
+                lease_duration=self._durable_lease_duration(),
+            )
+            if durable_outbox is None:
+                return "skipped"
         try:
             if intent is None:
                 await asyncio.to_thread(self._response_url_sender.send_markdown, response_url, content)
@@ -1080,7 +1337,13 @@ class WeComChannel(Channel):
                 content_chars=len(content),
                 error_type=type(exc).__name__,
             )
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
             return "delivery_error"
+        if durable_outbox is not None:
+            await self._mark_outbox(durable_outbox.outbox_id, "delivered")
+        if stream.inbox_id:
+            await self._mark_inbox(stream.inbox_id, "completed")
         _emit_enterprise_event(
             "wecom_template_card_delivery" if intent is not None else "wecom_response_url_delivery",
             status="succeeded",
@@ -1393,6 +1656,10 @@ class WeComChannel(Channel):
                 stream = await self._get_stream(stream_id)
                 if stream is not None:
                     stream.update(content="文件解析失败，请稍后重试。", finish=True)
+                    if stream.inbox_id:
+                        self._schedule_inbox_status(stream.inbox_id, "failed", error_type=type(exc).__name__)
+                    if stream.deferred_response_url:
+                        self._schedule_response_url_delivery(stream, stream.content)
                 return
             current_record = result.record
             if result.record.extract_status not in {"pending", "running"} or time.monotonic() >= deadline:
@@ -1468,6 +1735,23 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
 def _extract_response_url(data: dict[str, Any]) -> str | None:
     value = data.get("responseurl") or data.get("response_url")
     return str(value).strip() if value else None
+
+
+def _is_durable_recovery(data: dict[str, Any]) -> bool:
+    return data.get(_DURABLE_RECOVERY_ATTR) is True
+
+
+def _durable_reply_deadline(data: dict[str, Any]) -> datetime | None:
+    value = data.get(_DURABLE_REPLY_DEADLINE_ATTR)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _file_error_user_notice(exc: Exception) -> str | None:
