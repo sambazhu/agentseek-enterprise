@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -8,7 +9,7 @@ from typing import Any, Literal
 from agentseek_wecom.addressing import callback_conversation_address
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
-from agentseek_wecom.durable import SqliteDurableMessageStore
+from agentseek_wecom.durable import InboxStatus, SqliteDurableMessageStore
 from agentseek_wecom.transport import InboundMessageHandler
 from bub.channels.message import ChannelMessage
 from pydantic import SecretStr
@@ -59,6 +60,26 @@ class RecordingSender:
         self.card_calls.append((response_url, dict(template_card)))
 
 
+class DelayedCompletionStore(SqliteDurableMessageStore):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.completion_started = threading.Event()
+        self.allow_completion = threading.Event()
+
+    def mark_inbox(
+        self,
+        inbox_id: str,
+        status: InboxStatus,
+        *,
+        now: datetime,
+        error_type: str = "",
+    ) -> None:
+        if status == "completed":
+            self.completion_started.set()
+            self.allow_completion.wait(timeout=2.0)
+        super().mark_inbox(inbox_id, status, now=now, error_type=error_type)
+
+
 def _settings(path) -> WeComSettings:
     return WeComSettings(
         enabled=False,
@@ -98,11 +119,13 @@ def test_completed_message_is_not_dispatched_again_after_restart(tmp_path) -> No
         settings = _settings(path)
         first_calls: list[str] = []
         first_sender = RecordingSender()
+        first_store = DelayedCompletionStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
         first = WeComChannel(
             on_receive=None,
             settings=settings,
             transport=HeadlessCallbackTransport(),
             response_url_sender=first_sender,
+            durable_store=first_store,
         )
 
         async def first_receive(message: ChannelMessage) -> None:
@@ -118,8 +141,12 @@ def test_completed_message_is_not_dispatched_again_after_restart(tmp_path) -> No
 
         first.bind_receiver(first_receive)
         await first._handle_plain_message(_payload())
-        await _wait_until(lambda: len(first_sender.calls) == 1)
-        await first.stop()
+        completion_started = await asyncio.to_thread(first_store.completion_started.wait, 1.0)
+        stop_task = asyncio.create_task(first.stop())
+        await asyncio.sleep(0.05)
+        stop_waited_for_completion = not stop_task.done()
+        first_store.allow_completion.set()
+        await stop_task
 
         second_calls: list[str] = []
         second = WeComChannel(
@@ -133,6 +160,11 @@ def test_completed_message_is_not_dispatched_again_after_restart(tmp_path) -> No
         await second.stop()
 
         assert first_calls == ["请回复持久化正常"]
+        assert completion_started is True
+        assert first_sender.calls == [
+            ("https://qyapi.weixin.qq.com/durable-response-capability", "持久化正常")
+        ]
+        assert stop_waited_for_completion is True
         assert second_calls == []
         assert duplicate_reply is not None
         assert "已经处理" in duplicate_reply

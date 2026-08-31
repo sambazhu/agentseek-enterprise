@@ -200,16 +200,7 @@ class WeComChannel(Channel):
 
     async def stop(self) -> None:
         await self._transport.stop()
-        dispatch_tasks = list(self._dispatch_tasks)
-        for dispatch_task in dispatch_tasks:
-            dispatch_task.cancel()
-        if dispatch_tasks:
-            _, pending = await asyncio.wait(
-                dispatch_tasks,
-                timeout=max(0.1, self.settings.shutdown_timeout_seconds),
-            )
-            if pending:
-                logger.warning("wecom.dispatch graceful shutdown timed out after cancellation")
+        await self._drain_dispatch_tasks()
         self._dispatch_tasks.clear()
         for handle in self._queue_expiry_handles:
             handle.cancel()
@@ -223,6 +214,32 @@ class WeComChannel(Channel):
                 self._durable_store.release_owner,
                 self._durable_owner,
                 now=datetime.now(UTC),
+            )
+
+    async def _drain_dispatch_tasks(self) -> None:
+        timeout = max(0.1, self.settings.shutdown_timeout_seconds)
+        deadline = asyncio.get_running_loop().time() + timeout
+        current = asyncio.current_task()
+        while True:
+            dispatch_tasks = [task for task in self._dispatch_tasks if task is not current and not task.done()]
+            if not dispatch_tasks:
+                return
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            _, pending = await asyncio.wait(dispatch_tasks, timeout=remaining)
+            if pending:
+                break
+
+        pending = [task for task in self._dispatch_tasks if task is not current and not task.done()]
+        for dispatch_task in pending:
+            dispatch_task.cancel()
+        if pending:
+            _, still_pending = await asyncio.wait(pending, timeout=min(1.0, timeout))
+            logger.warning(
+                "wecom.dispatch graceful shutdown timed out; cancelled={} still_pending={}",
+                len(pending),
+                len(still_pending),
             )
 
     async def send(self, message: ChannelMessage) -> None:
