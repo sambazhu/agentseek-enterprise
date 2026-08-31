@@ -80,15 +80,17 @@ class DelayedCompletionStore(SqliteDurableMessageStore):
         super().mark_inbox(inbox_id, status, now=now, error_type=error_type)
 
 
-def _settings(path) -> WeComSettings:
-    return WeComSettings(
-        enabled=False,
-        durable_mode="sqlite",
-        durable_sqlite_path=str(path),
-        durable_secret=SecretStr(TEST_KEY_MATERIAL),
-        initial_wait_seconds=0.01,
-        userid_resolve_mode="",
-    )
+def _settings(path, **overrides: Any) -> WeComSettings:
+    values: dict[str, Any] = {
+        "enabled": False,
+        "durable_mode": "sqlite",
+        "durable_sqlite_path": str(path),
+        "durable_secret": SecretStr(TEST_KEY_MATERIAL),
+        "initial_wait_seconds": 0.01,
+        "userid_resolve_mode": "",
+    }
+    values.update(overrides)
+    return WeComSettings(**values)
 
 
 def _payload(*, msgid: str = "durable-message-1", response_url: bool = True) -> dict[str, Any]:
@@ -343,5 +345,60 @@ def test_inbox_without_response_capability_is_blocked_on_restart(tmp_path) -> No
             lease_duration=timedelta(seconds=60),
             limit=10,
         ) == []
+
+    asyncio.run(scenario())
+
+
+def test_periodic_recovery_claims_a_lease_that_expires_after_startup(tmp_path) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "wecom.sqlite3"
+        settings = _settings(path, durable_recovery_interval_seconds=0.05)
+        store = SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+        payload = _payload(msgid="expired-after-startup")
+        now = datetime.now(UTC)
+        address = callback_conversation_address(payload, tenant_id="tenant-1", interacted_at=now)
+        inbox = store.admit_inbound(
+            message_id="expired-after-startup",
+            address=address,
+            stream_id="expired-after-startup-stream",
+            payload=payload,
+            now=now,
+        ).record
+        claimed = store.claim_inbox(
+            inbox.inbox_id,
+            now=now,
+            owner="dead-process",
+            lease_duration=timedelta(seconds=0.12),
+        )
+        sender = RecordingSender()
+        received: list[str] = []
+        channel = WeComChannel(
+            on_receive=None,
+            settings=settings,
+            transport=HeadlessCallbackTransport(),
+            response_url_sender=sender,
+            durable_store=store,
+        )
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="周期恢复正常",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        await channel.start(asyncio.Event())
+        assert sender.calls == []
+        await _wait_until(lambda: len(sender.calls) == 1)
+        await channel.stop()
+
+        assert claimed is not None
+        assert received == ["请回复持久化正常"]
+        assert sender.calls[0][1] == "周期恢复正常"
 
     asyncio.run(scenario())

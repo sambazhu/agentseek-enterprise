@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import signal
+import threading
+from collections.abc import Generator
 from typing import Any, Literal
 
 import uvicorn
@@ -15,6 +19,14 @@ from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.transport import InboundMessageHandler
 
 
+class _SignalNeutralUvicornServer(uvicorn.Server):
+    """Let the outer channel manager own process termination signals."""
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Generator[None, None, None]:
+        yield
+
+
 class AiBotCallbackTransport:
     """HTTP callback transport for a WeCom AI Bot."""
 
@@ -25,6 +37,8 @@ class AiBotCallbackTransport:
         self._crypto: WeComJsonCrypto | None = None
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task[None] | None = None
+        self._signal_loop: asyncio.AbstractEventLoop | None = None
+        self._previous_sigterm_handler: Any = None
         self.app: FastAPI | None = self._build_app()
 
     @property
@@ -47,7 +61,6 @@ class AiBotCallbackTransport:
         )
 
     async def start(self, stop_event: asyncio.Event) -> None:
-        del stop_event
         if not self.settings.enabled:
             return
         self._crypto = self._build_crypto()
@@ -63,12 +76,17 @@ class AiBotCallbackTransport:
             loop="asyncio",
             log_level="info",
         )
-        self._server = uvicorn.Server(config)
-        self._server_task = asyncio.create_task(
-            self._server.serve(),
-            name="agentseek-wecom.callback-server",
-        )
-        await self._wait_until_started()
+        self._install_sigterm_bridge(stop_event)
+        try:
+            self._server = _SignalNeutralUvicornServer(config)
+            self._server_task = asyncio.create_task(
+                self._server.serve(),
+                name="agentseek-wecom.callback-server",
+            )
+            await self._wait_until_started()
+        except BaseException:
+            self._remove_sigterm_bridge()
+            raise
 
     async def stop(self) -> None:
         server = self._server
@@ -77,20 +95,47 @@ class AiBotCallbackTransport:
         self._server_task = None
         if server is not None:
             server.should_exit = True
-        if task is None or task.done():
-            return
         try:
-            async with asyncio.timeout(max(0.1, self.settings.shutdown_timeout_seconds)):
-                await task
-        except TimeoutError:
-            logger.warning("wecom.callback-server graceful shutdown timed out; cancelling server task")
-            task.cancel()
-            _, pending = await asyncio.wait(
-                {task},
-                timeout=max(0.1, self.settings.shutdown_timeout_seconds),
-            )
-            if pending:
-                logger.error("wecom.callback-server task did not stop after cancellation")
+            if task is None or task.done():
+                return
+            try:
+                async with asyncio.timeout(max(0.1, self.settings.shutdown_timeout_seconds)):
+                    await task
+            except TimeoutError:
+                logger.warning("wecom.callback-server graceful shutdown timed out; cancelling server task")
+                task.cancel()
+                _, pending = await asyncio.wait(
+                    {task},
+                    timeout=max(0.1, self.settings.shutdown_timeout_seconds),
+                )
+                if pending:
+                    logger.error("wecom.callback-server task did not stop after cancellation")
+        finally:
+            self._remove_sigterm_bridge()
+
+    def _install_sigterm_bridge(self, stop_event: asyncio.Event) -> None:
+        if threading.current_thread() is not threading.main_thread() or self._signal_loop is not None:
+            return
+        loop = asyncio.get_running_loop()
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        try:
+            loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+        except (NotImplementedError, RuntimeError, ValueError):
+            logger.warning("wecom.callback-server could not install SIGTERM bridge")
+            return
+        self._signal_loop = loop
+        self._previous_sigterm_handler = previous_handler
+
+    def _remove_sigterm_bridge(self) -> None:
+        loop = self._signal_loop
+        previous_handler = self._previous_sigterm_handler
+        self._signal_loop = None
+        self._previous_sigterm_handler = None
+        if loop is None or loop.is_closed():
+            return
+        loop.remove_signal_handler(signal.SIGTERM)
+        if threading.current_thread() is threading.main_thread() and previous_handler is not None:
+            signal.signal(signal.SIGTERM, previous_handler)
 
     def _build_app(self) -> FastAPI:
         app = FastAPI()

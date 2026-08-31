@@ -124,6 +124,15 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_DURABLE_RECOVERY_LIMIT",
         ),
     )
+    durable_recovery_interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=3600,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_DURABLE_RECOVERY_INTERVAL_SECONDS",
+            "AGENTSEEK_WECOM_DURABLE_RECOVERY_INTERVAL_SECONDS",
+        ),
+    )
     durable_lease_seconds: float = Field(
         default=600.0,
         gt=0,

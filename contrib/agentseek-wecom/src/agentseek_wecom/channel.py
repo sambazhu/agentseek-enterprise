@@ -162,6 +162,7 @@ class WeComChannel(Channel):
         self._durable_store = durable_store
         self._durable_store_initialized = durable_store is not None or settings.durable_mode == "memory"
         self._durable_owner = f"{os.getpid()}-{uuid4().hex}"
+        self._durable_recovery_task: asyncio.Task[None] | None = None
         self._streams: dict[str, StreamReply] = {}
         self._stream_ids_by_msgid: dict[str, str] = {}
         self._dispatch_tasks: set[asyncio.Task[None]] = set()
@@ -194,11 +195,21 @@ class WeComChannel(Channel):
         self._on_receive = on_receive
 
     async def start(self, stop_event: asyncio.Event) -> None:
-        await self._ensure_durable_store()
+        store = await self._ensure_durable_store()
         await self._recover_durable_messages()
-        await self._transport.start(stop_event)
+        if store is not None:
+            self._durable_recovery_task = asyncio.create_task(
+                self._run_durable_recovery_loop(stop_event),
+                name="agentseek-wecom.durable-recovery",
+            )
+        try:
+            await self._transport.start(stop_event)
+        except BaseException:
+            await self._stop_durable_recovery_loop()
+            raise
 
     async def stop(self) -> None:
+        await self._stop_durable_recovery_loop()
         await self._transport.stop()
         await self._drain_dispatch_tasks()
         self._dispatch_tasks.clear()
@@ -950,6 +961,29 @@ class WeComChannel(Channel):
                 outbox_count=len(outbox_records),
                 inbox_count=len(inbox_records),
             )
+
+    async def _run_durable_recovery_loop(self, stop_event: asyncio.Event) -> None:
+        interval = self.settings.durable_recovery_interval_seconds
+        while not stop_event.is_set():
+            try:
+                async with asyncio.timeout(interval):
+                    await stop_event.wait()
+            except TimeoutError:
+                try:
+                    await self._recover_durable_messages()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("wecom.durable periodic recovery failed error_type={}", type(exc).__name__)
+
+    async def _stop_durable_recovery_loop(self) -> None:
+        task = self._durable_recovery_task
+        self._durable_recovery_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     async def _recover_inbox(self, record: InboxRecord) -> None:
         response_url = _extract_response_url(record.payload)

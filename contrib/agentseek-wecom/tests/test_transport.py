@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import subprocess
+import sys
+import textwrap
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import pytest
 from agentseek_wecom.addressing import callback_conversation_address
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
@@ -145,3 +151,83 @@ def test_channel_kernel_accepts_a_headless_transport() -> None:
     assert channel.transport is transport
     assert channel.app is None
     assert transport.handler is not None
+
+
+@pytest.mark.skipif(os.name == "nt" or not hasattr(signal, "SIGTERM"), reason="requires POSIX SIGTERM")
+def test_sigterm_reaches_channel_manager_shutdown() -> None:
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import contextlib
+        import os
+        import signal
+
+        from agentseek_wecom.channel import WeComChannel
+        from agentseek_wecom.config import WeComSettings
+        from bub.channels.manager import ChannelManager
+
+
+        class TrackingChannel(WeComChannel):
+            async def stop(self):
+                await super().stop()
+                print("TRACKING_CHANNEL_STOPPED", flush=True)
+
+
+        class Framework:
+            def __init__(self, channel):
+                self.channel = channel
+
+            def get_channels(self, handler):
+                self.channel.bind_receiver(handler)
+                return {"wecom": self.channel}
+
+            def bind_outbound_router(self, router):
+                self.router = router
+
+            @contextlib.asynccontextmanager
+            async def running(self):
+                yield
+
+
+        async def main():
+            channel = TrackingChannel(
+                on_receive=None,
+                settings=WeComSettings(
+                    enabled=True,
+                    host="127.0.0.1",
+                    port=0,
+                    token="token",
+                    encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+                    shutdown_timeout_seconds=2.0,
+                    userid_resolve_mode="",
+                ),
+            )
+            manager = ChannelManager(Framework(channel), enabled_channels=["wecom"])
+            manager_task = asyncio.create_task(manager.listen_and_run())
+            for _ in range(200):
+                server = channel.transport._server
+                if server is not None and server.started:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise RuntimeError("callback server did not start")
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.wait_for(manager_task, timeout=5.0)
+            print("CHANNEL_MANAGER_EXITED", flush=True)
+
+
+        asyncio.run(main())
+        """
+    )
+
+    result = subprocess.run(  # noqa: S603 - static interpreter and test script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TRACKING_CHANNEL_STOPPED" in result.stdout
+    assert "CHANNEL_MANAGER_EXITED" in result.stdout
