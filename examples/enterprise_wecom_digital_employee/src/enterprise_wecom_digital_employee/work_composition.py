@@ -17,6 +17,7 @@ from agentseek_wecom.outbound import (
     ArtifactDownloadGone,
     ArtifactDownloadNotFound,
     register_artifact_download_resolver,
+    register_template_card_action_handler,
 )
 from agentseek_work import (
     LATEST_SCHEMA_VERSION,
@@ -93,8 +94,10 @@ from enterprise_wecom_digital_employee.report_brief import (
     validate_report_brief_scope,
 )
 from enterprise_wecom_digital_employee.report_delivery import (
+    REPORT_DELIVERY_CARD_ACTION_KIND,
     PreparedReportDelivery,
     delivery_id,
+    delivery_record_from_action_payload,
     explicitly_requests_report_delivery,
     grant_digest,
     grant_is_active,
@@ -1135,14 +1138,19 @@ class IndustryReportWorkComposition:
         )
 
     def commit_report_delivery(self, prepared: PreparedReportDelivery) -> DeliveryRecord:
+        return self.commit_report_delivery_record(self.report_delivery_commit_record(prepared))
+
+    def report_delivery_commit_record(self, prepared: PreparedReportDelivery) -> DeliveryRecord:
         if prepared.already_delivered:
             return prepared.record
         delivered_at = self._factory.clock()
-        record = replace(
+        return replace(
             prepared.record,
             delivered_at=delivered_at,
             grant_expires_at=delivered_at + timedelta(seconds=self.artifact_grant_ttl_seconds),
         )
+
+    def commit_report_delivery_record(self, record: DeliveryRecord) -> DeliveryRecord:
         return self.repository.put_delivery_record(record)
 
     def redeem_report_delivery(self, delivery_id_value: str, grant_token: str) -> ArtifactDownload:
@@ -1730,6 +1738,14 @@ def get_work_composition() -> IndustryReportWorkComposition:
         artifact_grant_ttl_seconds=settings.work_artifact_grant_ttl_seconds,
     )
     register_artifact_download_resolver(composition.redeem_report_delivery)
+
+    def commit_delivery_card_action(payload: Mapping[str, Any]) -> None:
+        composition.commit_report_delivery_record(delivery_record_from_action_payload(payload))
+
+    register_template_card_action_handler(
+        REPORT_DELIVERY_CARD_ACTION_KIND,
+        commit_delivery_card_action,
+    )
     return composition
 
 

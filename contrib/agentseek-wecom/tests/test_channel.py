@@ -165,6 +165,18 @@ class LegacyOfficeRejectingFileService(FakeFileService):
         )
 
 
+class BlockingFileService(FakeFileService):
+    def __init__(self, started: asyncio.Event, release: asyncio.Event) -> None:
+        super().__init__()
+        self.started = started
+        self.release = release
+
+    async def handle_bytes(self, **kwargs: Any) -> InboundFileResult:
+        self.started.set()
+        await self.release.wait()
+        return await super().handle_bytes(**kwargs)
+
+
 def _channel(userid_resolver: FakeUseridResolver | None = None) -> WeComChannel:
     return WeComChannel(
         on_receive=None,
@@ -253,6 +265,63 @@ def test_file_message_downloads_media_and_injects_file_context() -> None:
     ]
 
 
+def test_media_io_starts_only_after_first_callback_and_reserves_session_order() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        received: list[str] = []
+        channel = WeComChannel(
+            on_receive=None,
+            settings=WeComSettings(
+                enabled=False,
+                encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+                initial_wait_seconds=0.01,
+                userid_resolve_mode="",
+            ),
+            media_client=FakeMediaClient(),
+            file_service=BlockingFileService(started, release),
+            response_url_sender=FakeResponseUrlSender(),
+        )
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+            await channel.send(ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="done",
+            ))
+
+        channel.bind_receiver(on_receive)
+        first = await channel._handle_plain_message({
+            "msgid": "ordered-file",
+            "msgtype": "file",
+            "from": {"userid": "employee-1"},
+            "responseurl": "https://qyapi.weixin.qq.com/file-response",
+            "file": {"url": "https://ww-aibot-img.example.com/file?sign=secret"},
+        })
+        assert json.loads(first or "{}")["stream"]["finish"] is True
+        assert started.is_set() is False
+
+        await started.wait()
+        second = await channel._handle_plain_message({
+            "msgid": "ordered-text",
+            "msgtype": "text",
+            "from": {"userid": "employee-1"},
+            "responseurl": "https://qyapi.weixin.qq.com/text-response",
+            "text": {"content": "第二条消息"},
+        })
+        assert json.loads(second or "{}")["stream"]["finish"] is True
+        assert received == []
+
+        release.set()
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        assert "已收到并解析文件" in received[0]
+        assert received[1] == "第二条消息"
+
+    asyncio.run(scenario())
+
+
 def test_image_message_routes_with_its_original_msgtype(monkeypatch) -> None:
     channel = _channel()
     routed_msgtypes: list[str] = []
@@ -302,9 +371,9 @@ def test_legacy_office_file_returns_conversion_notice() -> None:
             )
         )
 
-    channel.bind_receiver(on_receive)
-    plain = asyncio.run(
-        channel._handle_plain_message({
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        channel.bind_receiver(on_receive)
+        plain = await channel._handle_plain_message({
             "msgid": "legacy-doc-1",
             "msgtype": "file",
             "from": {"userid": "chenkang2"},
@@ -314,10 +383,15 @@ def test_legacy_office_file_returns_conversion_notice() -> None:
                 "mime_type": "application/msword",
             },
         })
-    )
-    payload = json.loads(plain or "{}")
+        initial = json.loads(plain or "{}")
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        final = json.loads(await channel._handle_stream_poll({"stream": {"id": initial["stream"]["id"]}}))
+        return initial, final
+
+    initial, payload = asyncio.run(scenario())
 
     assert received[0].content == LEGACY_DOC_NOTICE
+    assert initial["stream"]["finish"] is False
     assert payload["stream"]["content"] == LEGACY_DOC_NOTICE
 
 
@@ -349,9 +423,9 @@ def test_pending_file_waits_for_extract_before_dispatching_model() -> None:
             )
         )
 
-    channel.bind_receiver(on_receive)
-    plain = asyncio.run(
-        channel._handle_plain_message({
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        channel.bind_receiver(on_receive)
+        plain = await channel._handle_plain_message({
             "msgid": "pending-pdf-1",
             "msgtype": "file",
             "from": {"userid": "chenkang2"},
@@ -361,9 +435,14 @@ def test_pending_file_waits_for_extract_before_dispatching_model() -> None:
                 "mime_type": "application/pdf",
             },
         })
-    )
-    payload = json.loads(plain or "{}")
+        initial = json.loads(plain or "{}")
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        final = json.loads(await channel._handle_stream_poll({"stream": {"id": initial["stream"]["id"]}}))
+        return initial, final
 
+    initial, payload = asyncio.run(scenario())
+
+    assert initial["stream"]["finish"] is False
     assert payload["stream"]["finish"] is True
     assert payload["stream"]["content"] == "PDF核心内容"
     assert file_service.poll_calls == 1
@@ -1022,6 +1101,39 @@ def test_template_card_probe_fails_closed_when_callback_has_no_url() -> None:
     assert payload["stream"]["finish"] is True
     assert "未包含 response_url" in payload["stream"]["content"]
     assert sender.card_calls == []
+
+
+def test_template_card_event_probe_sends_interactive_card() -> None:
+    sender = FakeResponseUrlSender()
+    channel = WeComChannel(
+        on_receive=None,
+        settings=WeComSettings(
+            enabled=False,
+            template_card_event_probe_trigger="probe-card-event",
+        ),
+        response_url_sender=sender,
+    )
+
+    async def scenario() -> dict[str, Any]:
+        response = await channel._handle_plain_message({
+            "msgid": "probe-card-event-message",
+            "msgtype": "text",
+            "from": {"userid": "probe-user"},
+            "response_url": "https://qyapi.weixin.qq.com/card-event-capability",
+            "text": {"content": "probe-card-event"},
+        })
+        await asyncio.gather(*list(channel._dispatch_tasks))
+        return json.loads(response or "{}")
+
+    payload = asyncio.run(scenario())
+
+    assert payload["stream"]["finish"] is True
+    assert "点击随后卡片" in payload["stream"]["content"]
+    assert len(sender.card_calls) == 1
+    _, card = sender.card_calls[0]
+    assert card["card_type"] == "button_interaction"
+    assert card["button_list"] == [{"text": "确认交互", "style": 1, "key": "M04_CONFIRM"}]
+    assert str(card["task_id"]).startswith("agentseek_m04_")
 
 
 def test_registered_template_card_intent_sends_once_then_commits() -> None:
@@ -1854,6 +1966,71 @@ def test_enter_chat_event_returns_welcome_text() -> None:
 
     assert payload["msgtype"] == "text"
     assert "企业数字员工" in payload["text"]["content"]
+
+
+def test_template_card_event_is_deduplicated_and_dispatched_through_session_queue() -> None:
+    async def scenario() -> None:
+        received: list[ChannelMessage] = []
+        sender = FakeResponseUrlSender()
+        channel = WeComChannel(
+            on_receive=None,
+            settings=WeComSettings(enabled=False, initial_wait_seconds=0.01, userid_resolve_mode=""),
+            response_url_sender=sender,
+        )
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message)
+            await channel.send(ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="卡片操作已记录",
+            ))
+
+        channel.bind_receiver(on_receive)
+        payload = {
+            "msgid": "card-event-1",
+            "msgtype": "event",
+            "aibotid": "bot-1",
+            "from": {"userid": "employee-1"},
+            "chatid": "group-1",
+            "chattype": "group",
+            "response_url": "https://qyapi.weixin.qq.com/card-event-response",
+            "event": {
+                "eventtype": "template_card_event",
+                "template_card_event": {
+                    "card_type": "vote_interaction",
+                    "event_key": "submit_vote",
+                    "task_id": "task-1",
+                    "selected_items": {
+                        "selected_item": [{
+                            "question_key": "risk_level",
+                            "option_ids": {"option_id": ["medium", "high"]},
+                        }],
+                    },
+                },
+            },
+        }
+        first = await channel._handle_plain_message(payload)
+        duplicate = await channel._handle_plain_message(payload)
+        await asyncio.gather(*list(channel._dispatch_tasks))
+
+        first_payload = json.loads(first or "{}")
+        duplicate_payload = json.loads(duplicate or "{}")
+        assert first_payload["stream"]["finish"] is True
+        assert duplicate_payload["stream"]["id"] == first_payload["stream"]["id"]
+        assert len(received) == 1
+        assert "submit_vote" in received[0].content
+        assert "medium、high" in received[0].content
+        assert received[0].context["wecom"]["raw"]["event"]["template_card_event"] == {
+            "card_type": "vote_interaction",
+            "event_key": "submit_vote",
+            "task_id": "task-1",
+            "selected_items": [{"question_key": "risk_level", "option_ids": ["medium", "high"]}],
+        }
+        assert sender.calls == [("https://qyapi.weixin.qq.com/card-event-response", "卡片操作已记录")]
+
+    asyncio.run(scenario())
 
 
 def test_http_callback_decrypts_dispatches_and_encrypts_stream_response() -> None:

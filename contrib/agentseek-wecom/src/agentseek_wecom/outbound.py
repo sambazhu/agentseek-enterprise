@@ -38,9 +38,18 @@ class ArtifactDownload:
 @dataclass(frozen=True)
 class TemplateCardIntent:
     template_card: Mapping[str, Any]
-    on_succeeded: Callable[[], None]
-    on_failed: Callable[[str], None]
     expires_at_monotonic: float
+    on_succeeded: Callable[[], None] | None = None
+    on_failed: Callable[[str], None] | None = None
+    success_action: TemplateCardAction | None = None
+
+
+@dataclass(frozen=True)
+class TemplateCardAction:
+    """Serializable business action finalized after a card is accepted by WeCom."""
+
+    kind: str
+    payload: Mapping[str, Any]
 
 
 _INTENT_MARKER_RE = re.compile(r"\[\[agentseek-wecom-template-card:([A-Za-z0-9_-]{32,128})\]\]")
@@ -52,6 +61,7 @@ _TEMPLATE_CARD_CONTROL_PHRASES = (
 _INTENT_LOCK = threading.RLock()
 _INTENTS: dict[str, TemplateCardIntent] = {}
 _DOWNLOAD_RESOLVER: Callable[[str, str], ArtifactDownload] | None = None
+_CARD_ACTION_HANDLERS: dict[str, Callable[[Mapping[str, Any]], None]] = {}
 
 
 @dataclass(frozen=True)
@@ -176,6 +186,32 @@ def register_artifact_download_resolver(
 ) -> None:
     global _DOWNLOAD_RESOLVER
     _DOWNLOAD_RESOLVER = resolver
+
+
+def register_template_card_action_handler(
+    kind: str,
+    handler: Callable[[Mapping[str, Any]], None],
+) -> None:
+    """Register one idempotent handler for durable card-delivery finalization."""
+
+    normalized = kind.strip()
+    if not normalized or len(normalized) > 128:
+        raise ValueError("template-card action kind must contain 1 to 128 characters")
+    with _INTENT_LOCK:
+        _CARD_ACTION_HANDLERS[normalized] = handler
+
+
+def run_template_card_action(action: TemplateCardAction) -> None:
+    with _INTENT_LOCK:
+        handler = _CARD_ACTION_HANDLERS.get(action.kind)
+    if handler is None:
+        raise LookupError(f"template-card action handler is unavailable: {action.kind}")
+    handler(dict(action.payload))
+
+
+def has_template_card_action_handler(kind: str) -> bool:
+    with _INTENT_LOCK:
+        return kind in _CARD_ACTION_HANDLERS
 
 
 def resolve_artifact_download(delivery_id: str, grant_token: str) -> ArtifactDownload:

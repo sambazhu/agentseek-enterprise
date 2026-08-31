@@ -5,7 +5,7 @@ import contextlib
 import os
 import re
 import time
-from collections.abc import AsyncGenerator, AsyncIterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -35,9 +35,12 @@ from agentseek_wecom.messages import make_text, make_text_stream
 from agentseek_wecom.outbound import (
     ArtifactDownloadGone,
     ArtifactDownloadNotFound,
+    TemplateCardAction,
+    has_template_card_action_handler,
     has_template_card_control_instruction,
     has_template_card_intent_marker,
     resolve_artifact_download,
+    run_template_card_action,
     take_template_card_intent,
     validate_artifact_download_base_url,
 )
@@ -126,6 +129,7 @@ class StreamReply:
 class QueuedTurn:
     message: ChannelMessage
     enqueued_at: float
+    prepare: Callable[[ChannelMessage], Awaitable[bool]] | None = None
     pending_counted: bool = False
     started: bool = False
     expired: bool = False
@@ -375,7 +379,7 @@ class WeComChannel(Channel):
         if msgtype == "stream":
             return await self._handle_stream_poll(data)
         if msgtype == "event":
-            return self._handle_event(data)
+            return await self._handle_event(data)
         logger.info("wecom.unsupported_msgtype msgtype={}", msgtype)
         return None
 
@@ -387,6 +391,9 @@ class WeComChannel(Channel):
         card_trigger = self.settings.response_url_template_card_probe_trigger
         if card_trigger and content == card_trigger:
             return await self._handle_response_url_template_card_probe(data)
+        interaction_trigger = self.settings.template_card_event_probe_trigger
+        if interaction_trigger and content == interaction_trigger:
+            return await self._handle_template_card_event_probe(data)
         return await self._dispatch_user_message(data, _append_quote_context(data, content))
 
     async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
@@ -477,6 +484,50 @@ class WeComChannel(Channel):
         else:
             _emit_enterprise_event("wecom_response_url_template_card_probe", status="succeeded")
 
+    async def _handle_template_card_event_probe(self, data: dict[str, Any]) -> str:
+        from_userid = _extract_from_userid(data)
+        conversation = self._conversation_address(data)
+        stream = await self._create_stream(
+            session_id=conversation.session_id,
+            chat_id=conversation.chat_id,
+            from_userid=from_userid,
+        )
+        response_url = _extract_response_url(data)
+        if not response_url:
+            stream.update(content="卡片交互探针失败：回调未包含 response_url。", finish=True)
+            return await self._stream_response(stream.stream_id)
+        stream.update(content="卡片交互探针已启动，请点击随后卡片中的确认按钮。", finish=True)
+        task = asyncio.create_task(
+            self._run_template_card_event_probe(response_url),
+            name=f"agentseek-wecom.template-card-event-probe.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+        return await self._stream_response(stream.stream_id)
+
+    async def _run_template_card_event_probe(self, response_url: str) -> None:
+        card = {
+            "card_type": "button_interaction",
+            "main_title": {
+                "title": "AgentSeek M0.4 卡片交互探针",
+                "desc": "点击按钮后应收到卡片事件确认",
+            },
+            "sub_title_text": "该探针只验证 Callback 模板卡片事件，不执行外部业务操作。",
+            "button_list": [{"text": "确认交互", "style": 1, "key": "M04_CONFIRM"}],
+            "task_id": f"agentseek_m04_{uuid4().hex}",
+        }
+        try:
+            await asyncio.to_thread(self._response_url_sender.send_template_card, response_url, card)
+        except Exception as exc:
+            logger.warning("wecom.template_card_event_probe failed error_type={}", type(exc).__name__)
+            _emit_enterprise_event(
+                "wecom_template_card_event_probe",
+                status="error",
+                error_type=type(exc).__name__,
+            )
+        else:
+            _emit_enterprise_event("wecom_template_card_event_probe", status="succeeded")
+
     async def _handle_voice(self, data: dict[str, Any]) -> str:
         content = str((data.get("voice") or {}).get("content") or "")
         if not content:
@@ -498,9 +549,9 @@ class WeComChannel(Channel):
             return await self._dispatch_user_message(data, content)
 
         from_userid = _extract_from_userid(data)
-        resolved_userid = await self._resolve_userid(from_userid)
-        userid = resolved_userid or from_userid
-        conversation = self._conversation_address(data, plaintext_userid=resolved_userid)
+        resolved_userid = None
+        userid = from_userid
+        conversation = self._conversation_address(data)
         session_id = conversation.session_id
         chat_id = conversation.chat_id
         stream, is_duplicate = await self._get_or_create_stream_for_message(
@@ -524,61 +575,6 @@ class WeComChannel(Channel):
             )
             return await self._stream_response(stream.stream_id)
 
-        files_context: dict[str, Any] = {}
-        pending_record: Any | None = None
-        leading_content = content
-        try:
-            result = await self._download_and_store_media(
-                data=data,
-                media=media_items[0],
-                session_id=session_id,
-                chat_id=chat_id,
-                userid=userid,
-                from_userid=from_userid,
-            )
-        except Exception as exc:
-            logger.warning("wecom.media_intake failed msgtype={} error={}", data.get("msgtype"), exc)
-            _emit_enterprise_event(
-                "wecom_media_intake",
-                status="error",
-                session_id=session_id,
-                chat_id=chat_id,
-                from_userid=from_userid,
-                msgtype=data.get("msgtype"),
-                media_kind=media_items[0].get("kind"),
-                error_type=type(exc).__name__,
-            )
-            user_notice = _file_error_user_notice(exc)
-            if user_notice:
-                content = "\n".join(part for part in (content, user_notice) if part).strip()
-            else:
-                content = (
-                    content
-                    or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。"
-                )
-        else:
-            files_context = result.to_context()
-            content_parts = [content] if content else []
-            content_parts.append(result.user_notice)
-            if result.context_block:
-                content_parts.append("请结合当前文件上下文回答用户。")
-            content = "\n".join(part for part in content_parts if part).strip()
-            if result.pending:
-                pending_record = result.record
-            _emit_enterprise_event(
-                "wecom_media_intake",
-                status="succeeded",
-                stream_id=stream.stream_id,
-                session_id=session_id,
-                chat_id=chat_id,
-                from_userid=from_userid,
-                msgtype=data.get("msgtype"),
-                file_id=result.record.file_id,
-                mime_type=result.record.mime_type,
-                size_bytes=result.record.size_bytes,
-                extract_status=result.record.extract_status,
-            )
-
         _emit_enterprise_event(
             "wecom_message_received",
             stream_id=stream.stream_id,
@@ -590,22 +586,6 @@ class WeComChannel(Channel):
             msgtype=data.get("msgtype"),
             content_chars=len(content),
         )
-        if pending_record is not None:
-            self._schedule_pending_file_dispatch(
-                stream_id=stream.stream_id,
-                record=pending_record,
-                data=data,
-                session_id=session_id,
-                chat_id=chat_id,
-                from_userid=from_userid,
-                resolved_userid=resolved_userid,
-                userid=userid,
-                leading_content=leading_content,
-                address=conversation,
-            )
-            if stream.response_url:
-                return await self._commit_stream_response(stream, force_deferred=True)
-            return await self._stream_response(stream.stream_id)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -618,19 +598,27 @@ class WeComChannel(Channel):
                 resolved_userid=resolved_userid,
                 userid=userid,
                 chat_id=chat_id,
-                files_context=files_context,
                 address=conversation,
             ),
         )
         setattr(message, _STREAM_ID_ATTR, stream.stream_id)
+        setattr(message, _QUEUE_SESSION_ID_ATTR, session_id)
+        setattr(message, _FROM_USERID_ATTR, from_userid)
         setattr(message, _CONVERSATION_ADDRESS_ATTR, conversation)
-        self._schedule_receive(message)
-        if stream.response_url:
-            return await self._commit_stream_response(
-                stream,
-                force_deferred=_is_durable_recovery(data),
-            )
-        return await self._stream_response(stream.stream_id)
+        first_response = await self._commit_stream_response(
+            stream,
+            force_deferred=bool(stream.response_url),
+        )
+        self._schedule_receive(
+            message,
+            prepare=lambda pending: self._prepare_media_turn(
+                pending,
+                data=data,
+                media=media_items[0],
+                leading_content=content,
+            ),
+        )
+        return first_response
 
     async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
         from_userid = _extract_from_userid(data)
@@ -735,11 +723,17 @@ class WeComChannel(Channel):
             return make_text_stream(stream_id or uuid4().hex, "任务不存在或已过期", True)
         return make_text_stream(stream.stream_id, stream.content or "处理中，请稍候...", stream.finish)
 
-    def _handle_event(self, data: dict[str, Any]) -> str | None:
+    async def _handle_event(self, data: dict[str, Any]) -> str | None:
         raw_event = data.get("event")
         event = raw_event if isinstance(raw_event, dict) else {}
         if event.get("eventtype") == "enter_chat":
             return make_text(self.settings.welcome_text)
+        if event.get("eventtype") == "template_card_event":
+            content = _template_card_event_content(event.get("template_card_event"))
+            if content is None:
+                logger.warning("wecom.template_card_event invalid msgid={}", _extract_msgid(data))
+                return make_text("卡片操作数据无效，请重新打开卡片后再试。")
+            return await self._dispatch_user_message(data, content)
         return None
 
     async def _create_stream(self, *, session_id: str, chat_id: str, from_userid: str | None) -> StreamReply:
@@ -1003,6 +997,9 @@ class WeComChannel(Channel):
             logger.warning("wecom.durable inbox recovery failed error_type={}", type(exc).__name__)
 
     async def _recover_outbox(self, record: OutboxRecord) -> None:
+        if record.message_type == "template_card":
+            await self._recover_template_card_outbox(record)
+            return
         if record.message_type != "markdown":
             await self._mark_outbox(record.outbox_id, "blocked", error_type="manual_reconciliation_required")
             if record.inbox_id:
@@ -1020,6 +1017,48 @@ class WeComChannel(Channel):
         except Exception as exc:
             await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
             logger.warning("wecom.durable outbox recovery failed error_type={}", type(exc).__name__)
+            return
+        await self._mark_outbox(record.outbox_id, "delivered")
+        if record.inbox_id:
+            await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _recover_template_card_outbox(self, record: OutboxRecord) -> None:
+        response_url = record.envelope.get("response_url")
+        template_card = record.envelope.get("template_card")
+        action = _template_card_action_from_envelope(record.envelope.get("success_action"))
+        if (
+            not isinstance(response_url, str)
+            or not response_url
+            or not isinstance(template_card, dict)
+            or action is None
+            or not has_template_card_action_handler(action.kind)
+        ):
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="manual_reconciliation_required")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="manual_reconciliation_required")
+            return
+        if record.status == "sending" and record.attempts > 1:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            return
+        if record.status != "sent":
+            try:
+                await asyncio.to_thread(
+                    self._response_url_sender.send_template_card,
+                    response_url,
+                    template_card,
+                )
+            except Exception as exc:
+                await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
+                logger.warning("wecom.durable card recovery failed error_type={}", type(exc).__name__)
+                return
+            await self._mark_outbox(record.outbox_id, "sent")
+        try:
+            await asyncio.to_thread(run_template_card_action, action)
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "sent", error_type=type(exc).__name__)
+            logger.warning("wecom.durable card finalization failed error_type={}", type(exc).__name__)
             return
         await self._mark_outbox(record.outbox_id, "delivered")
         if record.inbox_id:
@@ -1084,7 +1123,12 @@ class WeComChannel(Channel):
         )
         return timedelta(seconds=max(self.settings.durable_lease_seconds, processing_window))
 
-    def _schedule_receive(self, message: ChannelMessage) -> None:
+    def _schedule_receive(
+        self,
+        message: ChannelMessage,
+        *,
+        prepare: Callable[[ChannelMessage], Awaitable[bool]] | None = None,
+    ) -> None:
         session_id = self._queue_session_id(message)
         queue = self._session_queues.get(session_id)
         if queue is None:
@@ -1108,6 +1152,7 @@ class WeComChannel(Channel):
             queued = QueuedTurn(
                 message=message,
                 enqueued_at=time.monotonic(),
+                prepare=prepare,
                 pending_counted=True,
             )
             self._pending_turn_counts[session_id] = pending_count + 1
@@ -1129,7 +1174,7 @@ class WeComChannel(Channel):
             )
             return
 
-        queued = QueuedTurn(message=message, enqueued_at=time.monotonic())
+        queued = QueuedTurn(message=message, enqueued_at=time.monotonic(), prepare=prepare)
         queue.put_nowait(queued)
         task = asyncio.create_task(
             self._run_session_queue(session_id),
@@ -1233,7 +1278,7 @@ class WeComChannel(Channel):
                     pending_count=self._pending_turn_counts.get(session_id, 0),
                 )
                 try:
-                    await self._dispatch_one(queued.message)
+                    await self._dispatch_one(queued.message, prepare=queued.prepare)
                 finally:
                     self._active_turn_started_at.pop(session_id, None)
                     queue.task_done()
@@ -1244,12 +1289,20 @@ class WeComChannel(Channel):
                 self._session_queues.pop(session_id, None)
                 self._pending_turn_counts.pop(session_id, None)
 
-    async def _dispatch_one(self, message: ChannelMessage) -> None:
-        started_at = time.monotonic()
+    async def _dispatch_one(
+        self,
+        message: ChannelMessage,
+        *,
+        prepare: Callable[[ChannelMessage], Awaitable[bool]] | None = None,
+    ) -> None:
         enqueue_timeout = min(max(0.05, self.settings.turn_timeout_seconds), 10.0)
         try:
             async with asyncio.timeout(enqueue_timeout):
                 await self._hydrate_message_identity(message)
+            if prepare is not None and not await prepare(message):
+                return
+            started_at = time.monotonic()
+            async with asyncio.timeout(enqueue_timeout):
                 await self._run_receive(message)
         except TimeoutError:
             self._finish_message_stream(
@@ -1272,6 +1325,112 @@ class WeComChannel(Channel):
             )
             return
         await self._wait_for_message_stream(message, started_at=started_at)
+
+    async def _prepare_media_turn(
+        self,
+        message: ChannelMessage,
+        *,
+        data: dict[str, Any],
+        media: dict[str, str],
+        leading_content: str,
+    ) -> bool:
+        """Perform media I/O inside the reserved per-session queue position."""
+
+        from_userid = getattr(message, _FROM_USERID_ATTR, None)
+        userid = message.context.get("userid")
+        wecom_context = message.context.get("wecom")
+        resolved_userid = wecom_context.get("resolved_userid") if isinstance(wecom_context, dict) else None
+        address = getattr(message, _CONVERSATION_ADDRESS_ATTR, None)
+        if not isinstance(address, ConversationAddress):
+            address = self._conversation_address(
+                data,
+                plaintext_userid=resolved_userid if isinstance(resolved_userid, str) else None,
+            )
+        try:
+            result = await self._download_and_store_media(
+                data=data,
+                media=media,
+                session_id=message.session_id,
+                chat_id=message.chat_id,
+                userid=userid if isinstance(userid, str) else None,
+                from_userid=from_userid if isinstance(from_userid, str) else None,
+            )
+            if result.pending:
+                result = await self._poll_pending_file(
+                    stream_id=getattr(message, _STREAM_ID_ATTR, ""),
+                    record=result.record,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("wecom.media_intake failed msgtype={} error_type={}", data.get("msgtype"), type(exc).__name__)
+            _emit_enterprise_event(
+                "wecom_media_intake",
+                status="error",
+                stream_id=getattr(message, _STREAM_ID_ATTR, ""),
+                session_id=message.session_id,
+                chat_id=message.chat_id,
+                from_userid=from_userid,
+                msgtype=data.get("msgtype"),
+                media_kind=media.get("kind"),
+                error_type=type(exc).__name__,
+            )
+            user_notice = _file_error_user_notice(exc)
+            message.content = "\n".join(
+                part
+                for part in (
+                    leading_content,
+                    user_notice
+                    or f"已收到{_msgtype_label(data.get('msgtype'))}，但文件下载或解析失败：{type(exc).__name__}。",
+                )
+                if part
+            ).strip()
+            return True
+
+        content_parts = [leading_content] if leading_content else []
+        content_parts.append(result.user_notice)
+        if result.context_block:
+            content_parts.append("请结合当前文件上下文回答用户。")
+        message.content = "\n".join(part for part in content_parts if part).strip()
+        message.context["files"] = result.to_context()
+        _emit_enterprise_event(
+            "wecom_media_intake",
+            status="succeeded",
+            stream_id=getattr(message, _STREAM_ID_ATTR, ""),
+            session_id=message.session_id,
+            chat_id=message.chat_id,
+            from_userid=from_userid,
+            msgtype=data.get("msgtype"),
+            file_id=result.record.file_id,
+            mime_type=result.record.mime_type,
+            size_bytes=result.record.size_bytes,
+            extract_status=result.record.extract_status,
+        )
+        return True
+
+    async def _poll_pending_file(self, *, stream_id: str, record: Any) -> Any:
+        file_service = self._get_file_service()
+        if file_service is None:
+            raise RuntimeError("agentseek-files became unavailable while a file was pending")
+        settings = getattr(file_service, "settings", None)
+        timeout_s = float(getattr(settings, "mineru_poll_timeout_s", 300.0) or 300.0)
+        interval_s = max(0.5, float(getattr(settings, "mineru_poll_interval_s", 2.0) or 2.0))
+        deadline = time.monotonic() + max(timeout_s, interval_s)
+        current_record = record
+        while True:
+            result = await file_service.poll_pending(current_record)
+            current_record = result.record
+            if result.record.extract_status not in {"pending", "running"} or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(interval_s)
+        _emit_enterprise_event(
+            "wecom_file_extract_finished",
+            status=result.record.extract_status,
+            stream_id=stream_id,
+            file_id=result.record.file_id,
+            extract_chars=result.record.extract_chars,
+        )
+        return result
 
     async def _wait_for_message_stream(self, message: ChannelMessage, *, started_at: float) -> None:
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
@@ -1350,6 +1509,11 @@ class WeComChannel(Channel):
                 envelope["content"] = content
             else:
                 envelope["template_card"] = dict(intent.template_card)
+                if intent.success_action is not None:
+                    envelope["success_action"] = {
+                        "kind": intent.success_action.kind,
+                        "payload": dict(intent.success_action.payload),
+                    }
             durable_outbox = await asyncio.to_thread(
                 store.enqueue_outbox,
                 inbox_id=stream.inbox_id,
@@ -1377,9 +1541,8 @@ class WeComChannel(Channel):
                     response_url,
                     intent.template_card,
                 )
-                await asyncio.to_thread(intent.on_succeeded)
         except Exception as exc:
-            if intent is not None:
+            if intent is not None and intent.on_failed is not None:
                 await asyncio.to_thread(intent.on_failed, type(exc).__name__)
             logger.warning(
                 "wecom.response_url delivery failed stream_id={} error_type={}",
@@ -1397,6 +1560,25 @@ class WeComChannel(Channel):
             if durable_outbox is not None:
                 await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
             return "delivery_error"
+        if intent is not None:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "sent")
+            try:
+                if intent.success_action is not None:
+                    await asyncio.to_thread(run_template_card_action, intent.success_action)
+                elif intent.on_succeeded is not None:
+                    await asyncio.to_thread(intent.on_succeeded)
+            except Exception as exc:
+                if intent.on_failed is not None:
+                    await asyncio.to_thread(intent.on_failed, type(exc).__name__)
+                if durable_outbox is not None:
+                    await self._mark_outbox(durable_outbox.outbox_id, "sent", error_type=type(exc).__name__)
+                logger.warning(
+                    "wecom.template_card finalization failed stream_id={} error_type={}",
+                    stream.stream_id,
+                    type(exc).__name__,
+                )
+                return "finalization_error"
         if durable_outbox is not None:
             await self._mark_outbox(durable_outbox.outbox_id, "delivered")
         if stream.inbox_id:
@@ -1644,117 +1826,6 @@ class WeComChannel(Channel):
         self._file_service = InboundFileService(settings)
         return self._file_service
 
-    def _schedule_pending_file_dispatch(
-        self,
-        *,
-        stream_id: str,
-        record: Any,
-        data: dict[str, Any],
-        session_id: str,
-        chat_id: str,
-        from_userid: str | None,
-        resolved_userid: str | None,
-        userid: str | None,
-        leading_content: str,
-        address: ConversationAddress,
-    ) -> None:
-        task = asyncio.create_task(
-            self._poll_pending_file_and_dispatch(
-                stream_id=stream_id,
-                record=record,
-                data=data,
-                session_id=session_id,
-                chat_id=chat_id,
-                from_userid=from_userid,
-                resolved_userid=resolved_userid,
-                userid=userid,
-                leading_content=leading_content,
-                address=address,
-            ),
-            name=f"agentseek-wecom.file-poll.{stream_id}",
-        )
-        self._dispatch_tasks.add(task)
-        task.add_done_callback(self._on_dispatch_done)
-
-    async def _poll_pending_file_and_dispatch(
-        self,
-        *,
-        stream_id: str,
-        record: Any,
-        data: dict[str, Any],
-        session_id: str,
-        chat_id: str,
-        from_userid: str | None,
-        resolved_userid: str | None,
-        userid: str | None,
-        leading_content: str,
-        address: ConversationAddress,
-    ) -> None:
-        file_service = self._get_file_service()
-        if file_service is None:
-            return
-        settings = getattr(file_service, "settings", None)
-        timeout_s = float(getattr(settings, "mineru_poll_timeout_s", 300.0) or 300.0)
-        interval_s = max(0.5, float(getattr(settings, "mineru_poll_interval_s", 2.0) or 2.0))
-        deadline = time.monotonic() + max(timeout_s, interval_s)
-        current_record = record
-        while True:
-            try:
-                result = await file_service.poll_pending(current_record)
-            except Exception as exc:
-                logger.warning("wecom.file_poll failed file_id={} error={}", getattr(record, "file_id", ""), exc)
-                _emit_enterprise_event(
-                    "wecom_file_extract_finished",
-                    status="error",
-                    stream_id=stream_id,
-                    file_id=getattr(record, "file_id", ""),
-                    error_type=type(exc).__name__,
-                )
-                stream = await self._get_stream(stream_id)
-                if stream is not None:
-                    stream.update(content="文件解析失败，请稍后重试。", finish=True)
-                    if stream.inbox_id:
-                        self._schedule_inbox_status(stream.inbox_id, "failed", error_type=type(exc).__name__)
-                    if stream.deferred_response_url:
-                        self._schedule_response_url_delivery(stream, stream.content)
-                return
-            current_record = result.record
-            if result.record.extract_status not in {"pending", "running"} or time.monotonic() >= deadline:
-                break
-            await asyncio.sleep(interval_s)
-
-        _emit_enterprise_event(
-            "wecom_file_extract_finished",
-            status=result.record.extract_status,
-            stream_id=stream_id,
-            file_id=result.record.file_id,
-            extract_chars=result.record.extract_chars,
-        )
-        content_parts = [leading_content] if leading_content else []
-        content_parts.append(result.user_notice)
-        if result.context_block:
-            content_parts.append("请结合当前文件上下文回答用户。")
-        message = ChannelMessage(
-            session_id=session_id,
-            channel=self.name,
-            chat_id=chat_id,
-            content="\n".join(part for part in content_parts if part).strip(),
-            is_active=True,
-            context=self._message_context(
-                data=data,
-                from_userid=from_userid,
-                resolved_userid=resolved_userid,
-                userid=userid,
-                chat_id=chat_id,
-                files_context=result.to_context(),
-                address=address,
-            ),
-        )
-        setattr(message, _STREAM_ID_ATTR, stream_id)
-        setattr(message, _CONVERSATION_ADDRESS_ATTR, address)
-        await self._run_receive(message)
-
-
 def _artifact_redemption_page(*, nonce: str) -> str:
     return (
         "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
@@ -1824,6 +1895,80 @@ def _extract_msgid(data: dict[str, Any]) -> str | None:
     if value:
         return str(value)
     return None
+
+
+def _template_card_event_content(value: Any) -> str | None:
+    event = _safe_template_card_event(value)
+    if event is None:
+        return None
+    lines = [
+        "用户提交了企业微信模板卡片交互。",
+        f"卡片类型：{event['card_type']}",
+        f"操作标识：{event['event_key']}",
+        f"任务标识：{event['task_id']}",
+    ]
+    selected_items = event.get("selected_items")
+    if isinstance(selected_items, list):
+        lines.append("选择结果：")
+        for item in selected_items:
+            option_ids = "、".join(item["option_ids"]) or "（未选择）"
+            lines.append(f"- {item['question_key']}：{option_ids}")
+    return "\n".join(lines)
+
+
+def _safe_template_card_event(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    card_type = _bounded_event_value(value.get("card_type"), 64)
+    event_key = _bounded_event_value(value.get("event_key"), 128)
+    task_id = _bounded_event_value(value.get("task_id"), 128)
+    if not card_type or not event_key or not task_id:
+        return None
+    if card_type not in {"button_interaction", "vote_interaction", "multiple_interaction", "text_notice", "news_notice"}:
+        return None
+    safe: dict[str, Any] = {
+        "card_type": card_type,
+        "event_key": event_key,
+        "task_id": task_id,
+    }
+    selected_items = value.get("selected_items")
+    raw_items = selected_items.get("selected_item") if isinstance(selected_items, dict) else None
+    if isinstance(raw_items, list):
+        normalized_items: list[dict[str, Any]] = []
+        for raw_item in raw_items[:32]:
+            if not isinstance(raw_item, dict):
+                continue
+            question_key = _bounded_event_value(raw_item.get("question_key"), 128)
+            option_ids = raw_item.get("option_ids")
+            raw_options = option_ids.get("option_id") if isinstance(option_ids, dict) else None
+            if not question_key or not isinstance(raw_options, list):
+                continue
+            normalized_options = [
+                option
+                for raw_option in raw_options[:64]
+                if (option := _bounded_event_value(raw_option, 128))
+            ]
+            normalized_items.append({"question_key": question_key, "option_ids": normalized_options})
+        if normalized_items:
+            safe["selected_items"] = normalized_items
+    return safe
+
+
+def _bounded_event_value(value: Any, limit: int) -> str:
+    if not isinstance(value, (str, int)):
+        return ""
+    normalized = " ".join(str(value).split())
+    return normalized[:limit]
+
+
+def _template_card_action_from_envelope(value: Any) -> TemplateCardAction | None:
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    payload = value.get("payload")
+    if not isinstance(kind, str) or not kind.strip() or not isinstance(payload, dict):
+        return None
+    return TemplateCardAction(kind=kind.strip(), payload=payload)
 
 
 def _extract_media_id(data: dict[str, Any]) -> str | None:
@@ -2056,6 +2201,9 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
         event = data.get("event")
         if isinstance(event, dict):
             safe_event = {key: event[key] for key in ("eventtype",) if key in event}
+            card_event = _safe_template_card_event(event.get("template_card_event"))
+            if card_event is not None:
+                safe_event["template_card_event"] = card_event
             if safe_event:
                 safe["event"] = safe_event
 

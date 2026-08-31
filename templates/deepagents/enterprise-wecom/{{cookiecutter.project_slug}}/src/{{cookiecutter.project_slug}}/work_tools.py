@@ -5,7 +5,11 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from agentseek_wecom.outbound import TemplateCardIntent, register_template_card_intent
+from agentseek_wecom.outbound import (
+    TemplateCardAction,
+    TemplateCardIntent,
+    register_template_card_intent,
+)
 from agentseek_work import (
     ActiveWorkConflictError,
     SourceRecord,
@@ -51,6 +55,10 @@ from {{ cookiecutter.project_slug }}.report_outline import (
     OutlineSection,
     ReportOutline,
     source_set_digest,
+)
+from {{ cookiecutter.project_slug }}.report_delivery import (
+    REPORT_DELIVERY_CARD_ACTION_KIND,
+    delivery_record_action_payload,
 )
 from {{ cookiecutter.project_slug }}.report_research import (
     InternalResearchResult,
@@ -789,14 +797,15 @@ def deliver_report_artifact_action(
         "card_action": {"type": 1, "url": prepared.download_url},
     }
 
-    def commit_delivery() -> None:
-        composition.commit_report_delivery(prepared)
+    commit_record = composition.report_delivery_commit_record(prepared)
 
     return register_template_card_intent(TemplateCardIntent(
         template_card=card,
-        on_succeeded=commit_delivery,
-        on_failed=lambda _error_type: None,
         expires_at_monotonic=time.monotonic() + 300.0,
+        success_action=TemplateCardAction(
+            kind=REPORT_DELIVERY_CARD_ACTION_KIND,
+            payload=delivery_record_action_payload(commit_record),
+        ),
     ))
 
 

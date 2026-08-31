@@ -455,6 +455,16 @@ deliver exactly one visible `text_notice` card without entering the Agent. Clear
 the trigger and restart the gateway immediately after the check. This probe does
 not publish or deliver an Artifact.
 
+For the M0.4 inbound interaction check, use a separate trigger:
+
+```env
+AGENTSEEK_WECOM_TEMPLATE_CARD_EVENT_PROBE_TRIGGER=M0.4卡片交互探针
+```
+
+The bot sends one `button_interaction` card. Clicking `确认交互` must create one
+deduplicated `template_card_event` turn in the same conversation. Clear the
+trigger and restart after verification.
+
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 
 ```bash

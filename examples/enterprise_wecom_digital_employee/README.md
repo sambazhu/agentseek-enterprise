@@ -516,9 +516,11 @@ AGENTSEEK_WECOM_DURABLE_LEASE_SECONDS=600
 
 The placeholder above is intentionally invalid and must be replaced locally.
 Do not reuse a model key, WeCom credential, or enterprise namespace secret.
-The SQLite adapter does not migrate shared PostgreSQL. It restores Markdown
-outbox records before recoverable inbox records; template-card recovery remains
-fail-closed until M0.4. SIGTERM is routed through the outer Bub channel manager,
+The SQLite adapter does not migrate shared PostgreSQL. It restores outbox
+records before recoverable inbox records. M0.4 restores template cards only
+when they carry a serializable idempotent action: `sent` cards finalize without
+being resent, while legacy or ambiguous `sending` cards become `blocked`.
+SIGTERM is routed through the outer Bub channel manager,
 so graceful shutdown drains terminal commits and releases leases. A periodic
 recovery scan claims leases that expire after an abnormal restart without a
 second process restart.
@@ -529,8 +531,8 @@ acknowledgement (or queue position) before the background Agent worker can run;
 the final answer or timeout then consumes that message's URL exactly once.
 Queue status and rejection finish in the callback only. Callbacks without
 `response_url` wait up to `AGENTSEEK_WECOM_INITIAL_WAIT_SECONDS` and retain the
-legacy stream-polling path, while pending file extraction always uses the
-deferred path.
+legacy stream-polling path. Media download and pending extraction run after the
+first callback inside the reserved per-session queue position.
 
 The callback transport is intentionally explicit:
 
@@ -571,6 +573,16 @@ The callback must acknowledge the probe and the one-shot `response_url` must
 deliver exactly one visible `text_notice` card without entering the Agent. Clear
 the trigger and restart the gateway immediately after the check. This probe does
 not publish or deliver an Artifact.
+
+For the M0.4 inbound interaction check, use a separate trigger:
+
+```env
+AGENTSEEK_WECOM_TEMPLATE_CARD_EVENT_PROBE_TRIGGER=M0.4卡片交互探针
+```
+
+The bot sends one `button_interaction` card. Clicking `确认交互` must create one
+deduplicated `template_card_event` turn in the same conversation. Clear the
+trigger and restart after verification.
 
 When DM identity runs in long-lived sidecar mode, keep both deadlines enabled:
 

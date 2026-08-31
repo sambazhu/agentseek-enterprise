@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from agentseek_wecom.outbound import take_template_card_intent
+from agentseek_wecom.outbound import (
+    register_template_card_action_handler,
+    run_template_card_action,
+    take_template_card_intent,
+)
 from agentseek_work import WorkConflictError
 from enterprise_wecom_digital_employee.report_delivery import (
+    REPORT_DELIVERY_CARD_ACTION_KIND,
     explicitly_requests_report_delivery,
     match_report_delivery_version,
 )
@@ -119,6 +125,25 @@ def test_delivery_card_explains_one_time_grant_and_reissue() -> None:
 
 def test_delivery_action_returns_only_opaque_marker_and_commits_after_card_send() -> None:
     committed: list[str] = []
+    delivered_at = datetime(2026, 8, 31, tzinfo=UTC)
+    commit_record = SimpleNamespace(
+        delivery_id="delivery-1",
+        delivery_version=1,
+        work_id="work-1",
+        tenant_id="tenant-1",
+        artifact_id="artifact-1",
+        publication_id="publication-1",
+        content_sha256="sha256:" + "a" * 64,
+        size_bytes=10,
+        recipient_key="employee-1",
+        grant_hash="sha256:" + "b" * 64,
+        grant_expires_at=delivered_at + timedelta(hours=1),
+        status=SimpleNamespace(value="delivered"),
+        delivered_by="employee-1",
+        delivered_at=delivered_at,
+        grant_consumed_at=None,
+        metadata={},
+    )
     prepared = SimpleNamespace(
         already_delivered=False,
         filename="report-v4.docx",
@@ -127,7 +152,11 @@ def test_delivery_action_returns_only_opaque_marker_and_commits_after_card_send(
     )
     composition = SimpleNamespace(
         prepare_report_delivery=lambda *_args, **_kwargs: prepared,
-        commit_report_delivery=lambda value: committed.append(value.filename),
+        report_delivery_commit_record=lambda _value: commit_record,
+    )
+    register_template_card_action_handler(
+        REPORT_DELIVERY_CARD_ACTION_KIND,
+        lambda payload: committed.append(str(payload["delivery_id"])),
     )
 
     marker = deliver_report_artifact_action(
@@ -142,5 +171,6 @@ def test_delivery_action_returns_only_opaque_marker_and_commits_after_card_send(
     assert "受信" not in marker
     intent = take_template_card_intent(marker)
     assert intent is not None
-    intent.on_succeeded()
-    assert committed == ["report-v4.docx"]
+    assert intent.success_action is not None
+    run_template_card_action(intent.success_action)
+    assert committed == ["delivery-1"]

@@ -1073,15 +1073,20 @@ M0.1 是 Transport Kernel 的前置安全切片，不改变 M1–M5 的业务范
 
 目标是收口 Callback 剩余的耗时 I/O 和可恢复卡片状态机。
 
+当前状态：代码与确定性门禁已完成，等待 Linux Callback 活体复验后进入合并评估。
+
 范围：
 
 - 文件解析完成后统一回到 session 队列，不绕过串行执行边界；
 - 首包前不执行媒体下载、身份网络解析或其他不可控耗时 I/O；
 - 接入模板卡片按钮、投票和多选事件；
-- 将卡片业务成功/失败动作改为可持久化状态，不依赖进程内闭包；
-- 完成模板卡片 outbox 的重启恢复和人工对账入口。
+- 将卡片投递成功后的业务提交改为可持久化幂等动作，不依赖进程内闭包；
+- 完成模板卡片 outbox 的 `sending`、`sent`、`delivered` 重启恢复和
+  `blocked` 人工对账状态。
 
 M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动推送。
+设计与复验分别见 `V0.1.2_M0_4_WECOM_CALLBACK_HARDENING.md` 和
+`V0.1.2_M0_4_WECOM_CALLBACK_VERIFICATION.md`。
 
 ### M0.5：AI Bot 长连接 Transport
 

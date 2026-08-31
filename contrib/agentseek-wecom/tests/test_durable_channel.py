@@ -10,6 +10,7 @@ from agentseek_wecom.addressing import callback_conversation_address
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.durable import InboxStatus, SqliteDurableMessageStore
+from agentseek_wecom.outbound import register_template_card_action_handler
 from agentseek_wecom.transport import InboundMessageHandler
 from bub.channels.message import ChannelMessage
 from pydantic import SecretStr
@@ -303,6 +304,154 @@ def test_template_card_outbox_requires_manual_reconciliation_after_restart(tmp_p
         assert sender.card_calls == []
         assert store.claim_recoverable_outbox(
             now=now + timedelta(minutes=2),
+            owner="verification",
+            lease_duration=timedelta(seconds=60),
+            limit=10,
+        ) == []
+
+    asyncio.run(scenario())
+
+
+def test_sent_template_card_recovers_business_action_without_resending(tmp_path) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "wecom.sqlite3"
+        settings = _settings(path)
+        store = SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+        now = datetime.now(UTC)
+        outbox = store.enqueue_outbox(
+            inbox_id=None,
+            stream_id="recoverable-card-stream",
+            message_type="template_card",
+            envelope={
+                "response_url": "https://qyapi.weixin.qq.com/card-capability",
+                "template_card": {"card_type": "text_notice"},
+                "success_action": {"kind": "tests.card.commit.v1", "payload": {"delivery_id": "d-1"}},
+            },
+            reply_deadline=now + timedelta(hours=1),
+            now=now,
+        )
+        claimed = store.claim_outbox(
+            outbox.outbox_id,
+            now=now,
+            owner="old-process",
+            lease_duration=timedelta(minutes=10),
+        )
+        assert claimed is not None
+        store.mark_outbox(outbox.outbox_id, "sent", now=now + timedelta(seconds=1))
+        store.release_owner("old-process", now=now + timedelta(seconds=2))
+
+        committed: list[dict[str, Any]] = []
+        register_template_card_action_handler("tests.card.commit.v1", lambda payload: committed.append(dict(payload)))
+        sender = RecordingSender()
+        channel = WeComChannel(
+            on_receive=None,
+            settings=settings,
+            transport=HeadlessCallbackTransport(),
+            response_url_sender=sender,
+            durable_store=store,
+        )
+
+        await channel.start(asyncio.Event())
+        await channel.stop()
+
+        assert sender.card_calls == []
+        assert committed == [{"delivery_id": "d-1"}]
+        assert store.claim_recoverable_outbox(
+            now=now + timedelta(minutes=20),
+            owner="verification",
+            lease_duration=timedelta(seconds=60),
+            limit=10,
+        ) == []
+
+    asyncio.run(scenario())
+
+
+def test_pending_template_card_is_sent_and_finalized_after_restart(tmp_path) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "wecom.sqlite3"
+        settings = _settings(path)
+        store = SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+        now = datetime.now(UTC)
+        store.enqueue_outbox(
+            inbox_id=None,
+            stream_id="pending-card-stream",
+            message_type="template_card",
+            envelope={
+                "response_url": "https://qyapi.weixin.qq.com/card-capability",
+                "template_card": {"card_type": "text_notice"},
+                "success_action": {"kind": "tests.card.pending.v1", "payload": {"delivery_id": "d-2"}},
+            },
+            reply_deadline=now + timedelta(hours=1),
+            now=now,
+        )
+        committed: list[dict[str, Any]] = []
+        register_template_card_action_handler("tests.card.pending.v1", lambda payload: committed.append(dict(payload)))
+        sender = RecordingSender()
+        channel = WeComChannel(
+            on_receive=None,
+            settings=settings,
+            transport=HeadlessCallbackTransport(),
+            response_url_sender=sender,
+            durable_store=store,
+        )
+
+        await channel.start(asyncio.Event())
+        await channel.stop()
+
+        assert sender.card_calls == [
+            ("https://qyapi.weixin.qq.com/card-capability", {"card_type": "text_notice"})
+        ]
+        assert committed == [{"delivery_id": "d-2"}]
+
+    asyncio.run(scenario())
+
+
+def test_ambiguous_sending_template_card_is_blocked_without_resending(tmp_path) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "wecom.sqlite3"
+        settings = _settings(path)
+        store = SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+        now = datetime.now(UTC)
+        outbox = store.enqueue_outbox(
+            inbox_id=None,
+            stream_id="ambiguous-card-stream",
+            message_type="template_card",
+            envelope={
+                "response_url": "https://qyapi.weixin.qq.com/card-capability",
+                "template_card": {"card_type": "text_notice"},
+                "success_action": {"kind": "tests.card.ambiguous.v1", "payload": {"delivery_id": "d-3"}},
+            },
+            reply_deadline=now + timedelta(hours=1),
+            now=now,
+        )
+        assert store.claim_outbox(
+            outbox.outbox_id,
+            now=now,
+            owner="old-process",
+            lease_duration=timedelta(minutes=10),
+        ) is not None
+        store.release_owner("old-process", now=now + timedelta(seconds=1))
+        committed: list[dict[str, Any]] = []
+        register_template_card_action_handler(
+            "tests.card.ambiguous.v1",
+            lambda payload: committed.append(dict(payload)),
+        )
+        sender = RecordingSender()
+        channel = WeComChannel(
+            on_receive=None,
+            settings=settings,
+            transport=HeadlessCallbackTransport(),
+            response_url_sender=sender,
+            durable_store=store,
+        )
+
+        await channel.start(asyncio.Event())
+        await channel.stop()
+
+        assert sender.card_calls == []
+        assert committed == []
+        assert store.claim_recoverable_outbox(
+            now=now + timedelta(minutes=20),
             owner="verification",
             lease_duration=timedelta(seconds=60),
             limit=10,

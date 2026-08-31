@@ -17,11 +17,11 @@ from pydantic import SecretStr
 from agentseek_wecom.addressing import ConversationAddress
 
 InboxStatus = Literal["pending", "processing", "completed", "failed", "blocked"]
-OutboxStatus = Literal["pending", "sending", "delivered", "failed", "blocked"]
+OutboxStatus = Literal["pending", "sending", "sent", "delivered", "failed", "blocked"]
 
 _SCHEMA_VERSION = "1"
 _INBOX_STATUSES: frozenset[str] = frozenset({"pending", "processing", "completed", "failed", "blocked"})
-_OUTBOX_STATUSES: frozenset[str] = frozenset({"pending", "sending", "delivered", "failed", "blocked"})
+_OUTBOX_STATUSES: frozenset[str] = frozenset({"pending", "sending", "sent", "delivered", "failed", "blocked"})
 
 
 class DurableStoreError(RuntimeError):
@@ -340,17 +340,26 @@ class SqliteDurableMessageStore:
     ) -> OutboxRecord | None:
         now = _aware_utc(now)
         with self._transaction() as connection:
+            current = connection.execute(
+                "SELECT status FROM wecom_outbox WHERE outbox_id = ?",
+                (outbox_id,),
+            ).fetchone()
+            if current is None:
+                return None
+            current_status = str(current["status"])
+            claimed_status = "sent" if current_status == "sent" else "sending"
             cursor = connection.execute(
                 """
                 UPDATE wecom_outbox
-                SET status = 'sending', attempts = attempts + 1,
+                SET status = ?, attempts = attempts + 1,
                     lease_owner = ?, lease_expires_at = ?, updated_at = ?
                 WHERE outbox_id = ?
-                  AND status IN ('pending', 'failed', 'sending')
+                  AND status IN ('pending', 'failed', 'sending', 'sent')
                   AND (reply_deadline IS NULL OR reply_deadline > ?)
                   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
                 """,
                 (
+                    claimed_status,
                     owner,
                     _dump_datetime(now + lease_duration),
                     _dump_datetime(now),
@@ -378,7 +387,7 @@ class SqliteDurableMessageStore:
             rows = connection.execute(
                 """
                 SELECT outbox_id FROM wecom_outbox
-                WHERE status IN ('pending', 'failed', 'sending')
+                WHERE status IN ('pending', 'failed', 'sending', 'sent')
                   AND (reply_deadline IS NULL OR reply_deadline > ?)
                   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
                 ORDER BY created_at
@@ -411,15 +420,25 @@ class SqliteDurableMessageStore:
         if status not in _OUTBOX_STATUSES:
             raise ValueError(f"unsupported outbox status: {status}")
         with self._transaction() as connection:
-            connection.execute(
-                """
-                UPDATE wecom_outbox
-                SET status = ?, lease_owner = NULL, lease_expires_at = NULL,
-                    last_error_type = ?, updated_at = ?
-                WHERE outbox_id = ?
-                """,
-                (status, _safe_error_type(error_type), _dump_datetime(_aware_utc(now)), outbox_id),
-            )
+            if status == "sent":
+                connection.execute(
+                    """
+                    UPDATE wecom_outbox
+                    SET status = 'sent', last_error_type = ?, updated_at = ?
+                    WHERE outbox_id = ?
+                    """,
+                    (_safe_error_type(error_type), _dump_datetime(_aware_utc(now)), outbox_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE wecom_outbox
+                    SET status = ?, lease_owner = NULL, lease_expires_at = NULL,
+                        last_error_type = ?, updated_at = ?
+                    WHERE outbox_id = ?
+                    """,
+                    (status, _safe_error_type(error_type), _dump_datetime(_aware_utc(now)), outbox_id),
+                )
 
     def release_owner(self, owner: str, *, now: datetime) -> None:
         updated_at = _dump_datetime(_aware_utc(now))
@@ -436,7 +455,7 @@ class SqliteDurableMessageStore:
                 """
                 UPDATE wecom_outbox
                 SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-                WHERE lease_owner = ? AND status = 'sending'
+                WHERE lease_owner = ? AND status IN ('sending', 'sent')
                 """,
                 (updated_at, owner),
             )
