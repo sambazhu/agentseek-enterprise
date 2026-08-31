@@ -218,6 +218,12 @@ class WeComChannel(Channel):
         self._session_queues.clear()
         self._active_turn_started_at.clear()
         self._pending_turn_counts.clear()
+        if self._durable_store is not None:
+            await asyncio.to_thread(
+                self._durable_store.release_owner,
+                self._durable_owner,
+                now=datetime.now(UTC),
+            )
 
     async def send(self, message: ChannelMessage) -> None:
         stream = await self._stream_for_outbound(message)

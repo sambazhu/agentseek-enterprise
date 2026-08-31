@@ -171,6 +171,37 @@ def test_outbox_recovery_uses_a_lease_and_stops_after_delivery(tmp_path) -> None
     assert after_delivery == []
 
 
+def test_graceful_owner_release_makes_inbox_immediately_recoverable(tmp_path) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    payload = _payload()
+    address = callback_conversation_address(payload, tenant_id="tenant-1", interacted_at=now)
+    store = _store(tmp_path)
+    inbox = store.admit_inbound(
+        message_id="message-1",
+        address=address,
+        stream_id="stream-1",
+        payload=payload,
+        now=now,
+    ).record
+    claimed = store.claim_inbox(
+        inbox.inbox_id,
+        now=now,
+        owner="old-process",
+        lease_duration=timedelta(minutes=10),
+    )
+
+    store.release_owner("old-process", now=now + timedelta(seconds=1))
+    recovered = store.claim_recoverable_inbox(
+        now=now + timedelta(seconds=1),
+        owner="new-process",
+        lease_duration=timedelta(minutes=10),
+        limit=10,
+    )
+
+    assert claimed is not None
+    assert [record.inbox_id for record in recovered] == [inbox.inbox_id]
+
+
 def test_expired_reply_windows_are_not_recovered(tmp_path) -> None:
     now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
     payload = _payload()

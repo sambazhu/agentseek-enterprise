@@ -133,6 +133,8 @@ class DurableMessageStore(Protocol):
         error_type: str = "",
     ) -> None: ...
 
+    def release_owner(self, owner: str, *, now: datetime) -> None: ...
+
 
 class SqliteDurableMessageStore:
     """Encrypted, process-restart-safe inbox and outbox for one host."""
@@ -417,6 +419,26 @@ class SqliteDurableMessageStore:
                 WHERE outbox_id = ?
                 """,
                 (status, _safe_error_type(error_type), _dump_datetime(_aware_utc(now)), outbox_id),
+            )
+
+    def release_owner(self, owner: str, *, now: datetime) -> None:
+        updated_at = _dump_datetime(_aware_utc(now))
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE wecom_inbox
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE lease_owner = ? AND status = 'processing'
+                """,
+                (updated_at, owner),
+            )
+            connection.execute(
+                """
+                UPDATE wecom_outbox
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE lease_owner = ? AND status = 'sending'
+                """,
+                (updated_at, owner),
             )
 
     def _prepare_path(self) -> None:
