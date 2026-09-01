@@ -117,6 +117,22 @@ media handling, deduplication, and idempotency. The model-visible context is a
 separate semantic projection. It excludes `msgid`, BotID, raw chatid, userid,
 reply capabilities, and signed media data.
 
+An inbox already marked `failed` is never picked up by automatic recovery. It may
+have executed external business side effects before failing, so automatically
+rerunning every failed turn could duplicate those effects. Operators can inspect
+and explicitly requeue one record only when it has no outbox, its reply deadline
+has not expired, and its attempt count is below the chosen limit:
+
+```bash
+cd examples/enterprise_wecom_digital_employee
+PYTHONPATH=../../contrib/agentseek-wecom/src uv run python scripts/reconcile_wecom_inbox.py \
+  --env-file .env --list-failed --max-attempts 3
+```
+
+Stop the owning gateway before using `--requeue INBOX_ID --gateway-stopped`.
+The command fails closed for expired, over-limit, non-failed, or outbox-backed
+records. It prints metadata only and does not expose the encrypted payload.
+
 ## Verify
 
 ```bash
@@ -131,3 +147,4 @@ make typecheck-wecom
 - Proactive AI Bot delivery targets only conversations that already interacted with the robot. It cannot target an arbitrary employee.
 - The encrypted SQLite store is single-host. Multi-host active/active deployment needs a shared durable adapter.
 - Self-built application transport is planned separately; it is required for arbitrary member, department, or tag notifications.
+- Failed inbox reconciliation is an explicit single-record operator action; broad or automatic failed-turn replay is intentionally unsupported.

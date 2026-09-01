@@ -15,15 +15,17 @@ sources:
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.5 — pending Linux native-exit recovery re-verification
+## v0.1.2 M0.5 — pending Linux reconciliation and clean-group verification
 
 Status — Feature branch only. Transport live Oracles passed, and ContextSeek group
 isolation is zero-crossing in fresh groups. Linux evidence showed that the apparent
 hexadecimal hallucinations were inbound `msgid` values exposed to the model.
-Prompt-projection fix `5668e2f` passed its static contract and produced a correct
-model-side answer, but a native SeekDB exit blocked delivery. Recovery fixes
-`a216db8` and `13c4b85` require the targeted Linux group C/D Oracle. Do not merge
-to `production` before that Oracle passes.
+Prompt-projection fix `5668e2f` passed its static and live contracts. Linux also
+validated SeekDB serialization `a216db8` and native-exit recovery `13c4b85`,
+including exactly-once proactive delivery of the recoverable historical result.
+The remaining gates are an explicit reconciliation of one failed inbox without an
+outbox and a literal-recall Oracle in fresh groups E/F. Do not merge to
+`production` before both pass.
 
 ### Added
 
@@ -51,6 +53,7 @@ to `production` before that Oracle passes.
 | Concurrent SeekDB calls could enter the embedded native stack from several worker threads | Keep bootstrap, retrieval, and writes on one dedicated worker thread per plugin instance. |
 | A recovered inbox reused a stale stream callback before dispatching the Agent | Skip the stale stream and route its terminal result through durable proactive Markdown. |
 | A recovered terminal stream was repeatedly rejected after connection loss | Fall back to idempotent proactive Markdown only after an explicit WeCom command rejection. |
+| A failed inbox without an outbox had no controlled reconciliation path | Add a metadata-only operator command that can requeue one unexpired, under-limit record while the gateway is stopped; automatic failed replay remains disabled. |
 
 ### Boundaries
 

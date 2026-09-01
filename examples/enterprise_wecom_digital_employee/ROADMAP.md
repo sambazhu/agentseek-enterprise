@@ -1098,7 +1098,9 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 所谓“编造的技术 ID”其实是模型回显当前入站 `msgid`。`5668e2f` 已将
 内部路由上下文与模型可见语义投影分离，Linux 静态合同和模型侧旁证均已
 通过。该轮又暴露 SeekDB 原生并发和旧连接 stream 恢复缺口；`a216db8`、
-`13c4b85` 已修复，待 Linux 在原群 C/D 终验。现有 Callback 机器人不切换模式。
+`13c4b85` 已修复并通过 Linux 活体验证。剩余收口为：用 `7c29f6c` 提供的
+人工、精确、受限重排入口处理一条 failed 且无 outbox 的孤儿 inbox，并在
+无历史污染的新群 E/F 完成字面量召回终验。现有 Callback 机器人不切换模式。
 
 范围：
 
@@ -1116,6 +1118,8 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 - SeekDB 初始化、检索和写入在同一插件实例内保持单线程及线程亲和。
 - 非优雅退出后的 inbox 终态直接走持久化主动 Markdown；旧 stream outbox
   仅在企微明确拒绝原命令后降级，不对超时等不确定结果盲目补发。
+- `failed` inbox 不进入自动恢复；仅允许网关停止时，由操作员对无 outbox、
+  未过期且未超过尝试上限的单条记录显式重排，避免重复业务副作用。
 
 Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
 设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和
