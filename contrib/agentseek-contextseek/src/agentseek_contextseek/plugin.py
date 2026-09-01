@@ -4,7 +4,10 @@ import asyncio
 import importlib
 import os
 import re
+import weakref
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from bub import hookimpl
@@ -31,8 +34,24 @@ class ContextSeekPlugin:
         del framework
         self._client = None
         self._client_initialized = False
+        self._seekdb_executor: ThreadPoolExecutor | None = None
         apply_contextseek_env_aliases()
         self._settings = ContextSeekPluginSettings()
+
+    async def _call_client(self, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        """Run SeekDB calls serially on one native-thread-affine worker."""
+
+        if _contextseek_storage_backend() != "seekdb":
+            return await asyncio.to_thread(function, *args, **kwargs)
+        executor = self._seekdb_executor
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agentseek-contextseek")
+            self._seekdb_executor = executor
+            weakref.finalize(self, executor.shutdown, True, cancel_futures=True)
+        return await asyncio.get_running_loop().run_in_executor(
+            executor,
+            partial(function, *args, **kwargs),
+        )
 
     def _get_client(self):
         if self._client_initialized:
@@ -96,7 +115,7 @@ class ContextSeekPlugin:
             return None
         state["_contextseek_scope"] = scope
 
-        client = self._get_client()
+        client = await self._call_client(self._get_client)
         if client is None:
             return None
 
@@ -105,7 +124,12 @@ class ContextSeekPlugin:
             return None
 
         try:
-            hits = await asyncio.to_thread(client.retrieve, query, scope=scope, k=self._settings.RETRIEVAL_DEFAULT_K)
+            hits = await self._call_client(
+                client.retrieve,
+                query,
+                scope=scope,
+                k=self._settings.RETRIEVAL_DEFAULT_K,
+            )
         except Exception as exc:
             logger.debug(f"ContextSeek retrieve skipped: {exc}")
             return None
@@ -128,7 +152,7 @@ class ContextSeekPlugin:
         model_output: str,
     ) -> None:
         """Write model output into the contextseek evolution pipeline."""
-        client = self._get_client()
+        client = await self._call_client(self._get_client)
         if client is None or not model_output:
             return
 
@@ -150,7 +174,7 @@ class ContextSeekPlugin:
             logger.debug("ContextSeek save skipped because the final turn contains sensitive-looking content.")
             return
         try:
-            await asyncio.to_thread(
+            await self._call_client(
                 client.add,
                 content,
                 scope=scope,

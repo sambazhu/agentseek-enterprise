@@ -14,15 +14,18 @@ import pytest
 from agentseek_wecom.addressing import long_connection_conversation_address
 from agentseek_wecom.channel import WeComChannel
 from agentseek_wecom.config import WeComSettings
+from agentseek_wecom.durable import SqliteDurableMessageStore
 from agentseek_wecom.messages import make_text_stream
 from agentseek_wecom.transports.long_connection import (
     LONG_CONNECTION_REQUEST_ID_KEY,
     AiBotLongConnectionTransport,
     WeComLongConnectionAuthError,
+    WeComLongConnectionCommandRejected,
     WeComLongConnectionError,
     WeComProactiveNotEligible,
 )
 from bub.channels.message import ChannelMessage
+from pydantic import SecretStr
 
 _WAIT_TIMEOUT_MESSAGE = "condition was not met before timeout"
 
@@ -499,6 +502,78 @@ async def test_long_connection_terminal_outbox_recovers_after_restart(tmp_path: 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT status FROM wecom_inbox").fetchone() == ("completed",)
         assert connection.execute("SELECT status FROM wecom_outbox").fetchone() == ("delivered",)
+
+
+@sync_async_test
+async def test_rejected_recovered_stream_falls_back_to_durable_proactive_markdown(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy-stream.sqlite3"
+    key_material = "0123456789abcdef0123456789abcdef"
+    settings = long_settings(
+        tmp_path,
+        enabled=False,
+        durable_mode="sqlite",
+        durable_sqlite_path=str(database_path),
+        durable_secret=key_material,
+    )
+    payload = {
+        "msgid": "legacy-message-1",
+        "aibotid": "bot-1",
+        "chattype": "group",
+        "chatid": "group-alpha",
+        "from": {"userid": "user-1"},
+        "msgtype": "text",
+        "text": {"content": "恢复旧终态"},
+        LONG_CONNECTION_REQUEST_ID_KEY: "expired-callback-request",
+    }
+    transport = AiBotLongConnectionTransport(settings=settings, tenant_id="tenant-1")
+    address = transport.address_for(payload)
+    store = SqliteDurableMessageStore(path=database_path, secret=SecretStr(key_material))
+    now = datetime.now(UTC)
+    store.remember_interaction(address, now=now)
+    inbox = store.admit_inbound(
+        message_id="legacy-message-1",
+        address=address,
+        stream_id="legacy-stream-1",
+        payload=payload,
+        now=now,
+    ).record
+    store.mark_inbox(inbox.inbox_id, "processing", now=now)
+    store.enqueue_outbox(
+        inbox_id=inbox.inbox_id,
+        stream_id=inbox.stream_id,
+        message_type="long_connection_stream",
+        envelope={
+            "request_id": "expired-callback-request",
+            "content": "恢复后主动送达",
+            "finish": True,
+        },
+        reply_deadline=address.reply_deadline,
+        now=now,
+    )
+    rejected_stream = AsyncMock(side_effect=WeComLongConnectionCommandRejected("stream request rejected"))
+    proactive = AsyncMock()
+    cast(Any, transport).deliver_stream = rejected_stream
+    cast(Any, transport).send_proactive = proactive
+    channel = WeComChannel(
+        on_receive=None,
+        settings=settings,
+        transport=transport,
+        durable_store=store,
+    )
+
+    await channel.start(asyncio.Event())
+    await channel.stop()
+
+    assert rejected_stream.await_count == 1
+    assert proactive.await_count == 1
+    assert proactive.await_args is not None
+    assert proactive.await_args.kwargs["message_type"] == "markdown"
+    assert proactive.await_args.kwargs["payload"] == {"content": "恢复后主动送达"}
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status FROM wecom_inbox").fetchone() == ("completed",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wecom_outbox WHERE status = 'delivered'"
+        ).fetchone() == (2,)
 
 
 @sync_async_test

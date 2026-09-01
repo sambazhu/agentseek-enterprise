@@ -52,6 +52,7 @@ from agentseek_wecom.transports.callback import AiBotCallbackTransport
 from agentseek_wecom.transports.long_connection import (
     LONG_CONNECTION_REQUEST_ID_KEY,
     AiBotLongConnectionTransport,
+    WeComLongConnectionCommandRejected,
 )
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
@@ -122,6 +123,7 @@ class StreamReply:
     response_url: str | None = None
     long_connection_request_id: str | None = None
     long_connection_proactive_address: ConversationAddress | None = None
+    conversation_address: ConversationAddress | None = None
     initial_response_sent: bool = False
     initial_response_content: str | None = None
     initial_response_finish: bool | None = None
@@ -989,6 +991,7 @@ class WeComChannel(Channel):
             reply_deadline=_durable_reply_deadline(data) or address.reply_deadline,
             response_url=response_url,
             long_connection_request_id=str(data.get(LONG_CONNECTION_REQUEST_ID_KEY) or "") or None,
+            conversation_address=address,
             content="已收到，正在处理...",
             finish=False,
         )
@@ -1319,6 +1322,9 @@ class WeComChannel(Channel):
                 content=content,
                 finish=True,
             )
+        except WeComLongConnectionCommandRejected as exc:
+            await self._recover_long_connection_stream_proactively(record, content, exc)
+            return
         except Exception as exc:
             await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
             logger.warning("wecom.long_connection outbox recovery failed error_type={}", type(exc).__name__)
@@ -1326,6 +1332,54 @@ class WeComChannel(Channel):
         await self._mark_outbox(record.outbox_id, "delivered")
         if record.inbox_id:
             await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _recover_long_connection_stream_proactively(
+        self,
+        record: OutboxRecord,
+        content: str,
+        stream_error: WeComLongConnectionCommandRejected,
+    ) -> None:
+        """Fall back after WeCom rejects a stream tied to a previous connection."""
+
+        address = _address_from_envelope(record.envelope.get("address"))
+        if address is None and record.inbox_id:
+            store = await self._ensure_durable_store()
+            inbox = await asyncio.to_thread(store.get_inbox, record.inbox_id) if store is not None else None
+            if inbox is not None:
+                address = self._conversation_address(inbox.payload)
+        if address is None:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="conversation_address_missing")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="conversation_address_missing")
+            return
+        try:
+            status = await self._send_long_connection_proactive(
+                address,
+                message_type="markdown",
+                payload={"content": content},
+                idempotency_key=f"recovered-stream:{record.outbox_id}",
+                inbox_id=record.inbox_id,
+            )
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning(
+                "wecom.long_connection proactive stream recovery failed stream_error_type={} error_type={}",
+                type(stream_error).__name__,
+                type(exc).__name__,
+            )
+            return
+        if status in {"succeeded", "skipped"}:
+            await self._mark_outbox(record.outbox_id, "delivered")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "completed")
+            _emit_enterprise_event(
+                "wecom_long_connection_stream_recovery",
+                status="proactive_fallback",
+                stream_id=record.stream_id,
+                chat_type=address.chat_type,
+                content_chars=len(content),
+                stream_error_type=type(stream_error).__name__,
+            )
 
     async def _recover_long_connection_proactive_outbox(self, record: OutboxRecord) -> None:
         if not self._is_long_connection():
@@ -1935,6 +1989,11 @@ class WeComChannel(Channel):
                     "request_id": request_id,
                     "content": content,
                     "finish": True,
+                    "address": (
+                        _address_envelope(stream.conversation_address)
+                        if stream.conversation_address is not None
+                        else None
+                    ),
                 },
                 reply_deadline=stream.reply_deadline,
                 now=now,

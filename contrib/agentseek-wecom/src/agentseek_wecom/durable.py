@@ -90,6 +90,8 @@ class DurableMessageStore(Protocol):
         lease_duration: timedelta,
     ) -> InboxRecord | None: ...
 
+    def get_inbox(self, inbox_id: str) -> InboxRecord | None: ...
+
     def claim_recoverable_inbox(
         self,
         *,
@@ -342,6 +344,14 @@ class SqliteDurableMessageStore:
                 return None
             row = connection.execute("SELECT * FROM wecom_inbox WHERE inbox_id = ?", (inbox_id,)).fetchone()
             return self._inbox_record(row) if row is not None else None
+
+    def get_inbox(self, inbox_id: str) -> InboxRecord | None:
+        connection = self._connection()
+        try:
+            row = connection.execute("SELECT * FROM wecom_inbox WHERE inbox_id = ?", (inbox_id,)).fetchone()
+        finally:
+            connection.close()
+        return self._inbox_record(row) if row is not None else None
 
     def enqueue_outbox(
         self,

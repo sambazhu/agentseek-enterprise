@@ -38,6 +38,10 @@ class WeComLongConnectionNotReady(WeComLongConnectionError):
     """Raised when a command is attempted without an authenticated connection."""
 
 
+class WeComLongConnectionCommandRejected(WeComLongConnectionError):
+    """Raised when WeCom explicitly rejects an authenticated command."""
+
+
 class WeComProactiveNotEligible(WeComLongConnectionError):
     """Raised when the target conversation has no observed interaction qualification."""
 
@@ -491,7 +495,9 @@ class AiBotLongConnectionTransport:
             if not isinstance(errcode, int):
                 raise WeComLongConnectionError("WeCom command response has no integer errcode")
             if errcode != 0 and command != "aibot_subscribe":
-                raise WeComLongConnectionError(f"WeCom command {command} failed with errcode {errcode}")
+                raise WeComLongConnectionCommandRejected(
+                    f"WeCom command {command} failed with errcode {errcode}"
+                )
             return response
 
     async def _wait_until_ready(self) -> None:

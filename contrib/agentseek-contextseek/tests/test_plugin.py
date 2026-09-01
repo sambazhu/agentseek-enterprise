@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,6 +73,61 @@ def test_get_client_returns_none_on_failure():
     with patch("importlib.import_module", side_effect=Exception("no contextseek")):
         client = plugin._get_client()
     assert client is None
+
+
+@pytest.mark.anyio
+async def test_seekdb_bootstrap_retrieve_and_add_share_one_serial_worker(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_STORAGE_BACKEND", "seekdb")
+    plugin = ContextSeekPlugin()
+    client = MagicMock()
+    active = 0
+    maximum_active = 0
+    thread_ids: list[int] = []
+    guard = threading.Lock()
+
+    def observe_call(result):
+        def call(*args, **kwargs):
+            del args, kwargs
+            nonlocal active, maximum_active
+            with guard:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                thread_ids.append(threading.get_ident())
+            time.sleep(0.02)
+            with guard:
+                active -= 1
+            return result
+
+        return call
+
+    client.retrieve.side_effect = observe_call([])
+    client.add.side_effect = observe_call(None)
+    with patch("importlib.import_module") as mock_import:
+        mock_module = MagicMock()
+        mock_module.ContextSeek.from_settings.side_effect = observe_call(client)
+        mock_import.return_value = mock_module
+        await asyncio.gather(
+            plugin.build_prompt(message={"content": "alpha"}, session_id="a", state={}),
+            plugin.build_prompt(message={"content": "beta"}, session_id="b", state={}),
+        )
+        await asyncio.gather(
+            plugin.save_state(
+                session_id="a",
+                state={"_contextseek_scope": "default/local/a"},
+                message={"content": "alpha"},
+                model_output="A",
+            ),
+            plugin.save_state(
+                session_id="b",
+                state={"_contextseek_scope": "default/local/b"},
+                message={"content": "beta"},
+                model_output="B",
+            ),
+        )
+
+    assert maximum_active == 1
+    assert len(set(thread_ids)) == 1
+    mock_module.ContextSeek.from_settings.assert_called_once()
 
 
 def test_scope_from_message_uses_session_by_default():
