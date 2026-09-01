@@ -64,6 +64,17 @@ class OutboxRecord:
     updated_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class FailedInboxRecord:
+    inbox_id: str
+    stream_id: str
+    attempts: int
+    reply_deadline: datetime | None
+    last_error_type: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class DurableMessageStore(Protocol):
     def remember_interaction(self, address: ConversationAddress, *, now: datetime) -> None: ...
 
@@ -91,6 +102,16 @@ class DurableMessageStore(Protocol):
     ) -> InboxRecord | None: ...
 
     def get_inbox(self, inbox_id: str) -> InboxRecord | None: ...
+
+    def list_failed_inbox_without_outbox(self, *, limit: int) -> list[FailedInboxRecord]: ...
+
+    def requeue_failed_inbox(
+        self,
+        inbox_id: str,
+        *,
+        now: datetime,
+        max_attempts: int,
+    ) -> InboxRecord: ...
 
     def claim_recoverable_inbox(
         self,
@@ -352,6 +373,78 @@ class SqliteDurableMessageStore:
         finally:
             connection.close()
         return self._inbox_record(row) if row is not None else None
+
+    def list_failed_inbox_without_outbox(self, *, limit: int) -> list[FailedInboxRecord]:
+        connection = self._connection()
+        try:
+            rows = connection.execute(
+                """
+                SELECT inbox.* FROM wecom_inbox AS inbox
+                WHERE inbox.status = 'failed'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM wecom_outbox AS outbox
+                    WHERE outbox.inbox_id = inbox.inbox_id
+                  )
+                ORDER BY inbox.created_at
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [self._failed_inbox_record(row) for row in rows]
+
+    def requeue_failed_inbox(
+        self,
+        inbox_id: str,
+        *,
+        now: datetime,
+        max_attempts: int,
+    ) -> InboxRecord:
+        now = _aware_utc(now)
+        normalized_id = inbox_id.strip()
+        if not normalized_id:
+            raise ValueError("inbox_id must not be empty")
+        if max_attempts < 1 or max_attempts > 10:
+            raise ValueError("max_attempts must be between 1 and 10")
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM wecom_inbox WHERE inbox_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                raise DurableStoreError("failed inbox not found")
+            if str(row["status"]) != "failed":
+                raise DurableStoreError("manual requeue requires status=failed")
+            outbox = connection.execute(
+                "SELECT 1 FROM wecom_outbox WHERE inbox_id = ? LIMIT 1",
+                (normalized_id,),
+            ).fetchone()
+            if outbox is not None:
+                raise DurableStoreError("manual requeue requires an inbox without outbox")
+            reply_deadline = _load_datetime(row["reply_deadline"])
+            if reply_deadline is None or reply_deadline <= now:
+                raise DurableStoreError("manual requeue requires an unexpired reply deadline")
+            if int(row["attempts"]) >= max_attempts:
+                raise DurableStoreError("manual requeue attempt limit reached")
+            cursor = connection.execute(
+                """
+                UPDATE wecom_inbox
+                SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+                    last_error_type = 'manual_requeue', updated_at = ?
+                WHERE inbox_id = ? AND status = 'failed'
+                """,
+                (_dump_datetime(now), normalized_id),
+            )
+            if cursor.rowcount != 1:
+                raise DurableStoreError("failed inbox changed during manual requeue")
+            current = connection.execute(
+                "SELECT * FROM wecom_inbox WHERE inbox_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if current is None:
+                raise DurableStoreError("manual requeue did not return an inbox")
+            return self._inbox_record(current)
 
     def enqueue_outbox(
         self,
@@ -647,6 +740,18 @@ class SqliteDurableMessageStore:
             status=cast(OutboxStatus, status),
             reply_deadline=_load_datetime(row["reply_deadline"]),
             attempts=int(row["attempts"]),
+            created_at=_required_datetime(row["created_at"]),
+            updated_at=_required_datetime(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _failed_inbox_record(row: sqlite3.Row) -> FailedInboxRecord:
+        return FailedInboxRecord(
+            inbox_id=str(row["inbox_id"]),
+            stream_id=str(row["stream_id"]),
+            attempts=int(row["attempts"]),
+            reply_deadline=_load_datetime(row["reply_deadline"]),
+            last_error_type=str(row["last_error_type"]),
             created_at=_required_datetime(row["created_at"]),
             updated_at=_required_datetime(row["updated_at"]),
         )

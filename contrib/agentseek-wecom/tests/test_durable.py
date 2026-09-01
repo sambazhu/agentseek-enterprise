@@ -237,6 +237,91 @@ def test_graceful_owner_release_makes_inbox_immediately_recoverable(tmp_path) ->
     assert [record.inbox_id for record in recovered] == [inbox.inbox_id]
 
 
+def test_operator_can_requeue_unexpired_failed_inbox_without_outbox(tmp_path) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    payload = _payload()
+    address = callback_conversation_address(payload, tenant_id="tenant-1", interacted_at=now)
+    store = _store(tmp_path)
+    inbox = store.admit_inbound(
+        message_id="message-1",
+        address=address,
+        stream_id="stream-1",
+        payload=payload,
+        now=now,
+    ).record
+    claimed = store.claim_inbox(
+        inbox.inbox_id,
+        now=now,
+        owner="failed-process",
+        lease_duration=timedelta(seconds=60),
+    )
+    assert claimed is not None
+    store.mark_inbox(inbox.inbox_id, "failed", now=now + timedelta(seconds=1), error_type="NativeExit")
+
+    candidates = store.list_failed_inbox_without_outbox(limit=10)
+    requeued = store.requeue_failed_inbox(
+        inbox.inbox_id,
+        now=now + timedelta(seconds=2),
+        max_attempts=3,
+    )
+    recovered = store.claim_recoverable_inbox(
+        now=now + timedelta(seconds=3),
+        owner="recovery-process",
+        lease_duration=timedelta(seconds=60),
+        limit=10,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].inbox_id == inbox.inbox_id
+    assert candidates[0].last_error_type == "NativeExit"
+    assert requeued.status == "pending"
+    assert [record.inbox_id for record in recovered] == [inbox.inbox_id]
+
+
+def test_manual_requeue_fails_closed_for_outbox_expiry_and_attempt_limit(tmp_path) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    store = _store(tmp_path)
+
+    def failed_inbox(message_id: str, *, interacted_at: datetime):
+        payload = _payload(msgid=message_id)
+        address = callback_conversation_address(payload, tenant_id="tenant-1", interacted_at=interacted_at)
+        inbox = store.admit_inbound(
+            message_id=message_id,
+            address=address,
+            stream_id=f"stream-{message_id}",
+            payload=payload,
+            now=interacted_at,
+        ).record
+        claimed = store.claim_inbox(
+            inbox.inbox_id,
+            now=interacted_at,
+            owner="failed-process",
+            lease_duration=timedelta(seconds=60),
+        )
+        assert claimed is not None
+        store.mark_inbox(inbox.inbox_id, "failed", now=interacted_at, error_type="NativeExit")
+        return inbox, address
+
+    with_outbox, address = failed_inbox("with-outbox", interacted_at=now)
+    store.enqueue_outbox(
+        inbox_id=with_outbox.inbox_id,
+        stream_id=with_outbox.stream_id,
+        message_type="markdown",
+        envelope={"response_url": "https://example.invalid", "content": "done"},
+        reply_deadline=address.reply_deadline,
+        now=now,
+    )
+    expired, _ = failed_inbox("expired", interacted_at=now - timedelta(hours=2))
+    limited, _ = failed_inbox("limited", interacted_at=now)
+
+    with pytest.raises(DurableStoreError, match="without outbox"):
+        store.requeue_failed_inbox(with_outbox.inbox_id, now=now, max_attempts=3)
+    with pytest.raises(DurableStoreError, match="unexpired"):
+        store.requeue_failed_inbox(expired.inbox_id, now=now, max_attempts=3)
+    with pytest.raises(DurableStoreError, match="attempt limit"):
+        store.requeue_failed_inbox(limited.inbox_id, now=now, max_attempts=1)
+
+
 def test_expired_reply_windows_are_not_recovered(tmp_path) -> None:
     now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
     payload = _payload()
