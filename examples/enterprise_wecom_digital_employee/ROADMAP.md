@@ -1093,7 +1093,8 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 目标是实现 `AiBotLongConnectionTransport`，并让长任务、定时提醒和
 已交互会话主动状态通知使用长连接主通道。
 
-当前状态：代码与确定性门禁已完成，等待 Linux 独占切换窗口活体复验。
+当前状态：代码与确定性门禁已完成，等待使用新长连接机器人和隔离 Linux
+canary 的并行活体复验；现有 Callback 机器人不切换模式。
 
 范围：
 
@@ -1106,6 +1107,14 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
 设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和
 `V0.1.2_M0_5_WECOM_LONG_CONNECTION_VERIFICATION.md`。
+
+渠道身份和业务身份保持分离：BotID/AgentID 表示企微入口，
+`digital_employee_id` 表示员工正在对话的数字员工。当前
+`wecom:<userid>` 适用于“一实例一数字员工”，可以隔离同一数字员工服务的
+不同员工。未来多个数字员工共享 gateway 或短期记忆数据库时，允许共用
+物理数据库，但逻辑键必须包含 `tenant_id + digital_employee_id +
+conversation_id`。不能用 BotID 代替 `digital_employee_id`，否则同一数字员工
+更换机器人或迁移 Transport 会失去业务会话连续性。
 
 ### M0.6：企微自建应用 Transport
 
@@ -1121,6 +1130,13 @@ Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
 
 自建应用不提供 AI Bot 流式回复。它是长连接的企业主动通知补充通道，
 不是 Callback 的透明替代。
+
+目标部署允许一个部门配置一名或多名数字员工。每名数字员工独立绑定一个
+Profile 和一个 AI Bot；每个 Bot 在 Callback 与长连接中二选一。一个企业级
+自建应用可以作为这些数字员工共享的主动通知出口，但每条 outbox 必须携带
+来源 `digital_employee_id`，并校验应用可见范围、目标成员/部门/标签和幂等键。
+当前 `CORP_ID/APP_SECRET` 只服务 userid 转换等辅助 API，不代表该公共应用
+Transport 已实现。
 
 ### M1：组织授权与身份 Provider 抽象
 

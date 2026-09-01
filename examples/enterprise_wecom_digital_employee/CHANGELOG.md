@@ -40,6 +40,9 @@ Status — Feature branch only. Do not switch the production robot or merge to
 | Direct file | Disabled. Official chunked media upload is not implemented in M0.5. |
 | Arbitrary recipient | Not supported by AI Bot. M0.6 self-built application transport owns this capability. |
 | Shared PostgreSQL | No schema or data change. The revision 1→2 migration applies only to the dedicated local durable SQLite. |
+| Digital-employee binding | M0.5 remains one deployment, one Profile, and one digital employee; the new long bot is a Transport canary for `industry-report`. |
+| Short-term memory | `wecom:<userid>` remains compatible for one digital employee. A future shared multi-employee keyspace must add `digital_employee_id`. |
+| Common application | `CORP_ID`/`APP_SECRET` do not constitute `WeComAppTransport`; shared member/department/tag delivery remains M0.6. |
 
 ## enterprise-wecom-v0.0.9-ga — 2026-07-12
 
