@@ -7,6 +7,7 @@ verified_on: 2026-09-01
 sources:
   - contrib/agentseek-files/src/agentseek_files
   - contrib/agentseek-wecom/src/agentseek_wecom
+  - contrib/agentseek-contextseek/src/agentseek_contextseek/plugin.py
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_5_WECOM_LONG_CONNECTION.md
@@ -14,10 +15,11 @@ sources:
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.5 — pending Linux live verification
+## v0.1.2 M0.5 — pending Linux group-isolation re-verification
 
-Status — Feature branch only. Do not switch the production robot or merge to
-`production` before the exclusive Linux switching Oracle passes.
+Status — Feature branch only. Transport live Oracles passed. ContextSeek group
+isolation fix `fb6e851` still requires the targeted Linux group A/B Oracle. Do not
+merge to `production` before that Oracle passes.
 
 ### Added
 
@@ -32,6 +34,13 @@ Status — Feature branch only. Do not switch the production robot or merge to
 | Operations | Preserve `:12000/health`; report selected transport and subscription readiness. |
 | Live Oracle | Default-off trigger sends proactive Markdown and a button card for end-to-end verification. |
 
+### Fixed
+
+| Problem | Resolution |
+| --- | --- |
+| One employee's semantic recall could cross WeCom groups | Keep direct chat at employee scope; append the anonymous enterprise session key for group retrieval and storage. |
+| Group runtime missing a trusted conversation key | Fail closed instead of falling back to the broader employee scope. |
+
 ### Boundaries
 
 | Boundary | Behavior |
@@ -42,6 +51,7 @@ Status — Feature branch only. Do not switch the production robot or merge to
 | Shared PostgreSQL | No schema or data change. The revision 1→2 migration applies only to the dedicated local durable SQLite. |
 | Digital-employee binding | M0.5 remains one deployment, one Profile, and one digital employee; the new long bot is a Transport canary for `industry-report`. |
 | Short-term memory | `wecom:<userid>` remains compatible for one digital employee. A future shared multi-employee keyspace must add `digital_employee_id`. |
+| Semantic memory | Direct chat remains employee-scoped. Group chat adds an anonymous conversation scope and cannot retrieve another group's turns. |
 | Common application | `CORP_ID`/`APP_SECRET` do not constitute `WeComAppTransport`; shared member/department/tag delivery remains M0.6. |
 
 ## enterprise-wecom-v0.0.9-ga — 2026-07-12
