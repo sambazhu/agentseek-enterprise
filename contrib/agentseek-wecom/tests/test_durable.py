@@ -5,7 +5,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from agentseek_wecom.addressing import callback_conversation_address
+from agentseek_wecom.addressing import callback_conversation_address, long_connection_conversation_address
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.durable import DurableSchemaError, DurableStoreError, SqliteDurableMessageStore
 from pydantic import SecretStr, ValidationError
@@ -120,6 +120,41 @@ def test_payload_and_response_capability_are_encrypted_at_rest(tmp_path) -> None
     assert b"CONFIDENTIAL-OUTBOUND-CONTENT" not in database_bytes
     assert b"secret-response-capability" not in database_bytes
     assert b"message-1" not in database_bytes
+
+
+def test_long_connection_interaction_qualification_is_encrypted_and_persistent(tmp_path) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    address = long_connection_conversation_address(
+        {
+            "msgid": "long-message-1",
+            "aibotid": "bot-1",
+            "chattype": "group",
+            "chatid": "sensitive-group-alpha",
+            "from": {"userid": "sensitive-user"},
+        },
+        tenant_id="tenant-1",
+        interacted_at=now,
+    )
+    other = long_connection_conversation_address(
+        {
+            "msgid": "long-message-2",
+            "aibotid": "bot-1",
+            "chattype": "group",
+            "chatid": "group-beta",
+            "from": {"userid": "sensitive-user"},
+        },
+        tenant_id="tenant-1",
+        interacted_at=now,
+    )
+    store = _store(tmp_path)
+
+    store.remember_interaction(address, now=now)
+
+    assert _store(tmp_path).has_interaction(address) is True
+    assert store.has_interaction(other) is False
+    database_bytes = store.path.read_bytes()
+    assert b"sensitive-group-alpha" not in database_bytes
+    assert b"sensitive-user" not in database_bytes
 
 
 def test_wrong_secret_fails_closed_when_record_is_read(tmp_path) -> None:
@@ -245,6 +280,29 @@ def test_schema_version_mismatch_fails_closed(tmp_path) -> None:
 
     with pytest.raises(DurableSchemaError, match="revision 999"):
         SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+
+
+def test_schema_version_one_migrates_to_two(tmp_path) -> None:
+    path = tmp_path / "runtime" / "wecom.sqlite3"
+    path.parent.mkdir()
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE wecom_durable_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute("INSERT INTO wecom_durable_meta(key, value) VALUES ('schema_version', '1')")
+    connection.commit()
+    connection.close()
+
+    SqliteDurableMessageStore(path=path, secret=SecretStr(TEST_KEY_MATERIAL))
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            "SELECT value FROM wecom_durable_meta WHERE key = 'schema_version'"
+        ).fetchone() == ("2",)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wecom_conversations'"
+        ).fetchone() == ("wecom_conversations",)
+    finally:
+        connection.close()
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")

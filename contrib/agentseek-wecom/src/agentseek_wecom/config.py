@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,11 +24,85 @@ class WeComSettings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("BUB_WECOM_ENABLED", "AGENTSEEK_WECOM_ENABLED"),
     )
-    transport_mode: Literal["callback"] = Field(
+    transport_mode: Literal["callback", "long_connection"] = Field(
         default="callback",
         validation_alias=AliasChoices(
             "BUB_WECOM_TRANSPORT_MODE",
             "AGENTSEEK_WECOM_TRANSPORT_MODE",
+        ),
+    )
+    long_connection_bot_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_BOT_ID",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_BOT_ID",
+        ),
+    )
+    long_connection_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_SECRET",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_SECRET",
+        ),
+    )
+    long_connection_url: str = Field(
+        default="wss://openws.work.weixin.qq.com",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_URL",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_URL",
+        ),
+    )
+    long_connection_heartbeat_seconds: float = Field(
+        default=30.0,
+        ge=10.0,
+        le=60.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_HEARTBEAT_SECONDS",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_HEARTBEAT_SECONDS",
+        ),
+    )
+    long_connection_command_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=60.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_COMMAND_TIMEOUT_SECONDS",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_COMMAND_TIMEOUT_SECONDS",
+        ),
+    )
+    long_connection_reconnect_min_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=60.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_RECONNECT_MIN_SECONDS",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_RECONNECT_MIN_SECONDS",
+        ),
+    )
+    long_connection_reconnect_max_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_RECONNECT_MAX_SECONDS",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_RECONNECT_MAX_SECONDS",
+        ),
+    )
+    long_connection_stream_interval_seconds: float = Field(
+        default=3.0,
+        ge=3.0,
+        le=30.0,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_STREAM_INTERVAL_SECONDS",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_STREAM_INTERVAL_SECONDS",
+        ),
+    )
+    long_connection_lock_path: str = Field(
+        default="runtime/wecom-long-connection.lock",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_LOCK_PATH",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_LOCK_PATH",
         ),
     )
     host: str = Field(
@@ -217,13 +293,32 @@ class WeComSettings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def validate_durable_settings(self) -> WeComSettings:
-        if self.durable_mode != "sqlite":
-            return self
-        if not self.durable_sqlite_path.strip():
-            raise ValueError("durable_sqlite_path is required when durable_mode='sqlite'")
-        if len(self.durable_secret.get_secret_value()) < 32:
-            raise ValueError("durable_secret must contain at least 32 characters when durable_mode='sqlite'")
+    def validate_runtime_settings(self) -> WeComSettings:
+        if self.durable_mode == "sqlite":
+            if not self.durable_sqlite_path.strip():
+                raise ValueError("durable_sqlite_path is required when durable_mode='sqlite'")
+            if len(self.durable_secret.get_secret_value()) < 32:
+                raise ValueError("durable_secret must contain at least 32 characters when durable_mode='sqlite'")
+
+        if self.transport_mode == "long_connection":
+            parsed_url = urlparse(self.long_connection_url)
+            if (
+                parsed_url.scheme != "wss"
+                or parsed_url.hostname != "openws.work.weixin.qq.com"
+                or parsed_url.username
+                or parsed_url.password
+                or parsed_url.query
+                or parsed_url.fragment
+            ):
+                raise ValueError("long_connection_url must be the official wss://openws.work.weixin.qq.com endpoint")
+            if self.long_connection_reconnect_min_seconds > self.long_connection_reconnect_max_seconds:
+                raise ValueError("long_connection reconnect minimum must not exceed maximum")
+            if not self.long_connection_lock_path.strip() or Path(self.long_connection_lock_path).name in {"", ".", ".."}:
+                raise ValueError("long_connection_lock_path must name a lock file")
+            if self.enabled and not self.long_connection_bot_id.strip():
+                raise ValueError("long_connection_bot_id is required when long connection is enabled")
+            if self.enabled and not self.long_connection_secret.get_secret_value():
+                raise ValueError("long_connection_secret is required when long connection is enabled")
         return self
 
 

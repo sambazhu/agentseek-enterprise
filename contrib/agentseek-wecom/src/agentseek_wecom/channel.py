@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
@@ -20,8 +21,9 @@ from fastapi.responses import Response
 from loguru import logger
 from republic import StreamEvent
 
-from agentseek_wecom.addressing import ConversationAddress
+from agentseek_wecom.addressing import ConversationAddress, WeComChatType
 from agentseek_wecom.config import WeComSettings
+from agentseek_wecom.crypto import WeComCryptoError
 from agentseek_wecom.durable import (
     DurableMessageStore,
     InboxRecord,
@@ -47,6 +49,10 @@ from agentseek_wecom.outbound import (
 from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.transport import WeComTransport
 from agentseek_wecom.transports.callback import AiBotCallbackTransport
+from agentseek_wecom.transports.long_connection import (
+    LONG_CONNECTION_REQUEST_ID_KEY,
+    AiBotLongConnectionTransport,
+)
 from agentseek_wecom.userid_resolver import UseridResolver, make_userid_resolver
 
 _STREAM_ID_ATTR = "_agentseek_wecom_stream_id"
@@ -105,6 +111,8 @@ class StreamReply:
     inbox_id: str | None = None
     reply_deadline: datetime | None = None
     response_url: str | None = None
+    long_connection_request_id: str | None = None
+    long_connection_proactive_address: ConversationAddress | None = None
     initial_response_sent: bool = False
     initial_response_content: str | None = None
     initial_response_finish: bool | None = None
@@ -114,6 +122,8 @@ class StreamReply:
     finish: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    last_stream_delivery_at: float = 0.0
+    last_stream_delivery_content: str = ""
 
     def update(self, *, content: str | None = None, append: str | None = None, finish: bool | None = None) -> None:
         if content is not None:
@@ -175,10 +185,13 @@ class WeComChannel(Channel):
         self._active_turn_started_at: dict[str, float] = {}
         self._pending_turn_counts: dict[str, int] = {}
         self._queue_expiry_handles: set[asyncio.TimerHandle] = set()
-        self._transport = transport or AiBotCallbackTransport(
-            settings=settings,
-            tenant_id=os.environ.get("AGENTSEEK_ENTERPRISE_TENANT_ID", "default"),
-        )
+        tenant_id = os.environ.get("AGENTSEEK_ENTERPRISE_TENANT_ID", "default")
+        if transport is not None:
+            self._transport = transport
+        elif settings.transport_mode == "long_connection":
+            self._transport = AiBotLongConnectionTransport(settings=settings, tenant_id=tenant_id)
+        else:
+            self._transport = AiBotCallbackTransport(settings=settings, tenant_id=tenant_id)
         self._transport.bind_inbound(self._handle_plain_message)
         app = self._transport.app
         self.app = app
@@ -199,17 +212,25 @@ class WeComChannel(Channel):
         self._on_receive = on_receive
 
     async def start(self, stop_event: asyncio.Event) -> None:
-        store = await self._ensure_durable_store()
-        await self._recover_durable_messages()
-        if store is not None:
-            self._durable_recovery_task = asyncio.create_task(
-                self._run_durable_recovery_loop(stop_event),
-                name="agentseek-wecom.durable-recovery",
-            )
+        transport_started = False
         try:
-            await self._transport.start(stop_event)
+            if self._is_long_connection():
+                await self._transport.start(stop_event)
+                transport_started = True
+            store = await self._ensure_durable_store()
+            await self._recover_durable_messages()
+            if store is not None:
+                self._durable_recovery_task = asyncio.create_task(
+                    self._run_durable_recovery_loop(stop_event),
+                    name="agentseek-wecom.durable-recovery",
+                )
+            if not self._is_long_connection():
+                await self._transport.start(stop_event)
+                transport_started = True
         except BaseException:
             await self._stop_durable_recovery_loop()
+            if transport_started:
+                await self._transport.stop()
             raise
 
     async def stop(self) -> None:
@@ -263,7 +284,11 @@ class WeComChannel(Channel):
             return
         stream.update(content=content_of(message), finish=True)
         delivery_status = "succeeded"
-        if stream.deferred_response_url:
+        if self._is_long_connection() and stream.long_connection_proactive_address is not None:
+            delivery_status = await self._deliver_long_connection_proactive_terminal(stream, stream.content)
+        elif self._is_long_connection():
+            delivery_status = await self._deliver_long_connection_stream_once(stream, stream.content)
+        elif stream.deferred_response_url:
             delivery_status = await self._deliver_response_url_once(stream, stream.content)
         elif stream.inbox_id:
             await self._mark_inbox(stream.inbox_id, "completed")
@@ -277,6 +302,111 @@ class WeComChannel(Channel):
             content_chars=len(stream.content),
             age_ms=round((time.time() - stream.created_at) * 1000),
         )
+
+    async def send_proactive_markdown(
+        self,
+        address: ConversationAddress,
+        content: str,
+        *,
+        idempotency_key: str,
+    ) -> str:
+        if not content.strip():
+            raise ValueError("proactive markdown content must not be empty")
+        return await self._send_long_connection_proactive(
+            address,
+            message_type="markdown",
+            payload={"content": content},
+            idempotency_key=idempotency_key,
+        )
+
+    async def send_proactive_template_card(
+        self,
+        address: ConversationAddress,
+        template_card: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> str:
+        if not template_card:
+            raise ValueError("proactive template_card must not be empty")
+        return await self._send_long_connection_proactive(
+            address,
+            message_type="template_card",
+            payload=dict(template_card),
+            idempotency_key=idempotency_key,
+        )
+
+    async def _send_long_connection_proactive(
+        self,
+        address: ConversationAddress,
+        *,
+        message_type: Literal["markdown", "template_card"],
+        payload: dict[str, Any],
+        idempotency_key: str,
+        inbox_id: str | None = None,
+    ) -> str:
+        transport = self._long_connection_transport()
+        store = await self._ensure_durable_store()
+        if not transport.is_proactive_eligible(address) and store is not None:
+            persisted_eligible = await asyncio.to_thread(store.has_interaction, address)
+            if persisted_eligible:
+                transport.remember_interaction(address)
+        if not transport.is_proactive_eligible(address):
+            raise RuntimeError("conversation has no observed user interaction for proactive delivery")
+        normalized_key = idempotency_key.strip()
+        if not normalized_key or len(normalized_key) > 256:
+            raise ValueError("proactive idempotency_key must contain 1 to 256 characters")
+        stable_scope = "\x1f".join(
+            (address.tenant_id, address.bot_or_agent_id, address.chat_type, address.chat_id, normalized_key)
+        )
+        stream_id = f"proactive_{hashlib.sha256(stable_scope.encode()).hexdigest()}"
+        request_id = uuid4().hex
+        deadline = datetime.now(UTC) + timedelta(hours=24)
+        durable_outbox: OutboxRecord | None = None
+        if store is not None:
+            durable_outbox = await asyncio.to_thread(
+                store.enqueue_outbox,
+                inbox_id=inbox_id,
+                stream_id=stream_id,
+                message_type=f"long_connection_proactive_{message_type}",
+                envelope={
+                    "request_id": request_id,
+                    "address": _address_envelope(address),
+                    "payload": payload,
+                },
+                reply_deadline=deadline,
+                now=datetime.now(UTC),
+            )
+            request_id = str(durable_outbox.envelope.get("request_id") or request_id)
+            durable_outbox = await asyncio.to_thread(
+                store.claim_outbox,
+                durable_outbox.outbox_id,
+                now=datetime.now(UTC),
+                owner=self._durable_owner,
+                lease_duration=self._durable_lease_duration(),
+            )
+            if durable_outbox is None:
+                return "skipped"
+        try:
+            await transport.send_proactive(
+                address,
+                message_type=message_type,
+                payload=payload,
+                request_id=request_id,
+            )
+        except Exception as exc:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
+            raise
+        if durable_outbox is not None:
+            await self._mark_outbox(durable_outbox.outbox_id, "delivered")
+        _emit_enterprise_event(
+            "wecom_long_connection_proactive_delivery",
+            status="succeeded",
+            stream_id=stream_id,
+            chat_type=address.chat_type,
+            content_chars=len(str(payload.get("content") or "")),
+        )
+        return "succeeded"
 
     def stream_events(self, message: ChannelMessage, stream: AsyncIterable[StreamEvent]) -> AsyncIterable[StreamEvent]:
         return self._stream_events(message, stream)
@@ -293,6 +423,8 @@ class WeComChannel(Channel):
                 if reply is not None:
                     if event.kind == "text":
                         reply.update(append=str(event.data.get("delta", "")), finish=False)
+                        if self._is_long_connection():
+                            await self._maybe_deliver_long_connection_stream(reply)
                     elif event.kind == "error":
                         reply.update(content=str(event.data.get("message", "模型处理失败")), finish=True)
                         if reply.inbox_id:
@@ -383,7 +515,7 @@ class WeComChannel(Channel):
         logger.info("wecom.unsupported_msgtype msgtype={}", msgtype)
         return None
 
-    async def _handle_text(self, data: dict[str, Any]) -> str:
+    async def _handle_text(self, data: dict[str, Any]) -> str | None:
         content = str((data.get("text") or {}).get("content") or "")
         trigger = self.settings.response_url_probe_trigger
         if trigger and content == trigger:
@@ -528,20 +660,20 @@ class WeComChannel(Channel):
         else:
             _emit_enterprise_event("wecom_template_card_event_probe", status="succeeded")
 
-    async def _handle_voice(self, data: dict[str, Any]) -> str:
+    async def _handle_voice(self, data: dict[str, Any]) -> str | None:
         content = str((data.get("voice") or {}).get("content") or "")
         if not content:
             content = "用户发送了一条语音消息，但回调未包含转写内容。"
         return await self._dispatch_user_message(data, _append_quote_context(data, content))
 
-    async def _handle_mixed(self, data: dict[str, Any]) -> str:
+    async def _handle_mixed(self, data: dict[str, Any]) -> str | None:
         content = _mixed_text_content(data)
         if _extract_media_items(data):
             return await self._handle_media_message(data, fallback_content=content)
         content = _append_quote_context(data, content)
         return await self._dispatch_user_message(data, content or "用户发送了一条图文混排消息。")
 
-    async def _handle_media_message(self, data: dict[str, Any], *, fallback_content: str = "") -> str:
+    async def _handle_media_message(self, data: dict[str, Any], *, fallback_content: str = "") -> str | None:
         media_items = _extract_media_items(data)
         content = _append_quote_context(data, fallback_content.strip())
         if not media_items:
@@ -573,7 +705,7 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 msgtype=data.get("msgtype"),
             )
-            return await self._stream_response(stream.stream_id)
+            return await self._commit_inbound_stream_response(stream)
 
         _emit_enterprise_event(
             "wecom_message_received",
@@ -605,7 +737,7 @@ class WeComChannel(Channel):
         setattr(message, _QUEUE_SESSION_ID_ATTR, session_id)
         setattr(message, _FROM_USERID_ATTR, from_userid)
         setattr(message, _CONVERSATION_ADDRESS_ATTR, conversation)
-        first_response = await self._commit_stream_response(
+        first_response = await self._commit_inbound_stream_response(
             stream,
             force_deferred=bool(stream.response_url),
         )
@@ -620,7 +752,13 @@ class WeComChannel(Channel):
         )
         return first_response
 
-    async def _dispatch_user_message(self, data: dict[str, Any], content: str) -> str:
+    async def _dispatch_user_message(
+        self,
+        data: dict[str, Any],
+        content: str,
+        *,
+        long_connection_proactive: bool = False,
+    ) -> str | None:
         from_userid = _extract_from_userid(data)
         # Queue admission and the first callback response must not wait for the
         # network-backed open-userid conversion. The session worker resolves the
@@ -649,7 +787,12 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 msgtype=data.get("msgtype"),
             )
-            return await self._stream_response(stream.stream_id)
+            if long_connection_proactive and self._is_long_connection():
+                return None
+            return await self._commit_inbound_stream_response(stream)
+
+        if long_connection_proactive and self._is_long_connection():
+            stream.long_connection_proactive_address = conversation
 
         _emit_enterprise_event(
             "wecom_message_received",
@@ -672,7 +815,7 @@ class WeComChannel(Channel):
                 active=self._session_worker_running(session_id),
                 pending_count=self._pending_turn_counts.get(session_id, 0),
             )
-            return await self._commit_stream_response(stream)
+            return await self._commit_inbound_stream_response(stream)
         message = ChannelMessage(
             session_id=session_id,
             channel=self.name,
@@ -695,6 +838,13 @@ class WeComChannel(Channel):
         # Fast turns finish in this callback. Slow turns receive one terminal
         # acknowledgement here and deliver their eventual result through the
         # callback's one-shot response_url.
+        if self._is_long_connection():
+            if stream.long_connection_proactive_address is not None:
+                self._schedule_receive(message)
+                return None
+            first_response = await self._commit_inbound_stream_response(stream)
+            self._schedule_receive(message)
+            return first_response
         self._schedule_receive(message)
         if stream.response_url:
             return await self._commit_stream_response(
@@ -732,8 +882,14 @@ class WeComChannel(Channel):
             content = _template_card_event_content(event.get("template_card_event"))
             if content is None:
                 logger.warning("wecom.template_card_event invalid msgid={}", _extract_msgid(data))
+                if self._is_long_connection():
+                    return None
                 return make_text("卡片操作数据无效，请重新打开卡片后再试。")
-            return await self._dispatch_user_message(data, content)
+            return await self._dispatch_user_message(
+                data,
+                content,
+                long_connection_proactive=True,
+            )
         return None
 
     async def _create_stream(self, *, session_id: str, chat_id: str, from_userid: str | None) -> StreamReply:
@@ -771,6 +927,7 @@ class WeComChannel(Channel):
             inbox_id=str(data.get(_DURABLE_INBOX_ID_ATTR) or "") or None,
             reply_deadline=_durable_reply_deadline(data) or address.reply_deadline,
             response_url=response_url,
+            long_connection_request_id=str(data.get(LONG_CONNECTION_REQUEST_ID_KEY) or "") or None,
             content="已收到，正在处理...",
             finish=False,
         )
@@ -786,6 +943,11 @@ class WeComChannel(Channel):
             if msgid and not _is_durable_recovery(data):
                 store = await self._ensure_durable_store()
                 if store is not None:
+                    await asyncio.to_thread(
+                        store.remember_interaction,
+                        address,
+                        now=datetime.now(UTC),
+                    )
                     admission = await asyncio.to_thread(
                         store.admit_inbound,
                         message_id=msgid,
@@ -908,6 +1070,38 @@ class WeComChannel(Channel):
             await self._mark_inbox(current.inbox_id, "completed")
         return make_text_stream(current.stream_id, initial_content, initial_finish)
 
+    async def _commit_inbound_stream_response(
+        self,
+        current: StreamReply,
+        *,
+        force_deferred: bool | None = None,
+    ) -> str | None:
+        if not self._is_long_connection():
+            if force_deferred is None:
+                return await self._stream_response(current.stream_id)
+            return await self._commit_stream_response(current, force_deferred=force_deferred)
+
+        request_id = current.long_connection_request_id
+        if not request_id:
+            if current.inbox_id:
+                await self._mark_inbox(current.inbox_id, "blocked", error_type="long_connection_req_id_missing")
+            raise RuntimeError("long-connection callback did not include req_id")
+        transport = self._long_connection_transport()
+        await transport.deliver_stream(
+            request_id=request_id,
+            stream_id=current.stream_id,
+            content=current.content or "已收到，正在处理...",
+            finish=current.finish,
+        )
+        current.initial_response_content = current.content or "已收到，正在处理..."
+        current.initial_response_finish = current.finish
+        current.initial_response_sent = True
+        current.last_stream_delivery_at = time.monotonic()
+        current.last_stream_delivery_content = current.content
+        if current.finish and current.inbox_id:
+            await self._mark_inbox(current.inbox_id, "completed")
+        return None
+
     async def _ensure_durable_store(self) -> DurableMessageStore | None:
         if self._durable_store_initialized:
             return self._durable_store
@@ -981,7 +1175,11 @@ class WeComChannel(Channel):
 
     async def _recover_inbox(self, record: InboxRecord) -> None:
         response_url = _extract_response_url(record.payload)
-        if not response_url:
+        long_connection_request_id = _extract_long_connection_request_id(record.payload)
+        if self._is_long_connection() and not long_connection_request_id:
+            await self._mark_inbox(record.inbox_id, "blocked", error_type="reply_capability_missing")
+            return
+        if not self._is_long_connection() and not response_url:
             await self._mark_inbox(record.inbox_id, "blocked", error_type="reply_capability_missing")
             return
         data = dict(record.payload)
@@ -997,6 +1195,15 @@ class WeComChannel(Channel):
             logger.warning("wecom.durable inbox recovery failed error_type={}", type(exc).__name__)
 
     async def _recover_outbox(self, record: OutboxRecord) -> None:
+        if record.message_type in {
+            "long_connection_proactive_markdown",
+            "long_connection_proactive_template_card",
+        }:
+            await self._recover_long_connection_proactive_outbox(record)
+            return
+        if record.message_type == "long_connection_stream":
+            await self._recover_long_connection_stream_outbox(record)
+            return
         if record.message_type == "template_card":
             await self._recover_template_card_outbox(record)
             return
@@ -1017,6 +1224,86 @@ class WeComChannel(Channel):
         except Exception as exc:
             await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
             logger.warning("wecom.durable outbox recovery failed error_type={}", type(exc).__name__)
+            return
+        await self._mark_outbox(record.outbox_id, "delivered")
+        if record.inbox_id:
+            await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _recover_long_connection_stream_outbox(self, record: OutboxRecord) -> None:
+        if not self._is_long_connection():
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="transport_unavailable")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="transport_unavailable")
+            return
+        request_id = record.envelope.get("request_id")
+        content = record.envelope.get("content")
+        finish = record.envelope.get("finish")
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or not isinstance(content, str)
+            or finish is not True
+        ):
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="invalid_envelope")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="invalid_envelope")
+            return
+        try:
+            await self._long_connection_transport().deliver_stream(
+                request_id=request_id,
+                stream_id=record.stream_id,
+                content=content,
+                finish=True,
+            )
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning("wecom.long_connection outbox recovery failed error_type={}", type(exc).__name__)
+            return
+        await self._mark_outbox(record.outbox_id, "delivered")
+        if record.inbox_id:
+            await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _recover_long_connection_proactive_outbox(self, record: OutboxRecord) -> None:
+        if not self._is_long_connection():
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="transport_unavailable")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="transport_unavailable")
+            return
+        if record.status == "sending" and record.attempts > 1:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            return
+        address = _address_from_envelope(record.envelope.get("address"))
+        payload = record.envelope.get("payload")
+        request_id = record.envelope.get("request_id")
+        message_type = record.message_type.removeprefix("long_connection_proactive_")
+        if (
+            address is None
+            or not isinstance(payload, dict)
+            or not isinstance(request_id, str)
+            or not request_id
+            or message_type not in {"markdown", "template_card"}
+        ):
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="invalid_envelope")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="invalid_envelope")
+            return
+        transport = self._long_connection_transport()
+        # A proactive outbox can only be created after this address was
+        # observed on an authenticated inbound callback. Restore that sealed
+        # qualification for this recovery attempt.
+        transport.remember_interaction(address)
+        try:
+            await transport.send_proactive(
+                address,
+                message_type=cast(Literal["markdown", "template_card"], message_type),
+                payload=payload,
+                request_id=request_id,
+            )
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning("wecom.long_connection proactive recovery failed error_type={}", type(exc).__name__)
             return
         await self._mark_outbox(record.outbox_id, "delivered")
         if record.inbox_id:
@@ -1461,9 +1748,11 @@ class WeComChannel(Channel):
         stream_id = getattr(message, _STREAM_ID_ATTR, None)
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
         should_deliver = False
+        should_deliver_long_connection = False
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
             should_deliver = stream.deferred_response_url
+            should_deliver_long_connection = self._is_long_connection()
             if stream.inbox_id:
                 self._schedule_inbox_status(stream.inbox_id, "failed", error_type=error_type or status)
         _emit_enterprise_event(
@@ -1476,6 +1765,148 @@ class WeComChannel(Channel):
         )
         if should_deliver and stream is not None:
             self._schedule_response_url_delivery(stream, content)
+        elif should_deliver_long_connection and stream is not None:
+            if stream.long_connection_proactive_address is not None:
+                self._schedule_long_connection_proactive_delivery(stream, content)
+            else:
+                self._schedule_long_connection_delivery(stream, content)
+
+    async def _maybe_deliver_long_connection_stream(self, stream: StreamReply) -> None:
+        if (
+            stream.finish
+            or not stream.initial_response_sent
+            or not stream.long_connection_request_id
+            or stream.content == stream.last_stream_delivery_content
+        ):
+            return
+        now = time.monotonic()
+        if now - stream.last_stream_delivery_at < self.settings.long_connection_stream_interval_seconds:
+            return
+        try:
+            await self._long_connection_transport().deliver_stream(
+                request_id=stream.long_connection_request_id,
+                stream_id=stream.stream_id,
+                content=stream.content,
+                finish=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "wecom.long_connection stream refresh failed stream_id={} error_type={}",
+                stream.stream_id,
+                type(exc).__name__,
+            )
+            return
+        stream.last_stream_delivery_at = now
+        stream.last_stream_delivery_content = stream.content
+
+    def _schedule_long_connection_delivery(self, stream: StreamReply, content: str) -> None:
+        task = asyncio.create_task(
+            self._deliver_long_connection_stream_background(stream, content),
+            name=f"agentseek-wecom.long-final.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    async def _deliver_long_connection_stream_background(self, stream: StreamReply, content: str) -> None:
+        await self._deliver_long_connection_stream_once(stream, content)
+
+    def _schedule_long_connection_proactive_delivery(self, stream: StreamReply, content: str) -> None:
+        task = asyncio.create_task(
+            self._deliver_long_connection_proactive_background(stream, content),
+            name=f"agentseek-wecom.long-proactive-final.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    async def _deliver_long_connection_proactive_background(self, stream: StreamReply, content: str) -> None:
+        await self._deliver_long_connection_proactive_terminal(stream, content)
+
+    async def _deliver_long_connection_proactive_terminal(self, stream: StreamReply, content: str) -> str:
+        address = stream.long_connection_proactive_address
+        if address is None:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="conversation_address_missing")
+            return "blocked"
+        try:
+            status = await self._send_long_connection_proactive(
+                address,
+                message_type="markdown",
+                payload={"content": content},
+                idempotency_key=f"card-event:{stream.inbox_id or stream.stream_id}",
+                inbox_id=stream.inbox_id,
+            )
+        except Exception as exc:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning(
+                "wecom.long_connection card event delivery failed stream_id={} error_type={}",
+                stream.stream_id,
+                type(exc).__name__,
+            )
+            return "delivery_error"
+        if stream.inbox_id and status in {"succeeded", "skipped"}:
+            await self._mark_inbox(stream.inbox_id, "completed")
+        return status
+
+    async def _deliver_long_connection_stream_once(self, stream: StreamReply, content: str) -> str:
+        request_id = stream.long_connection_request_id
+        if not request_id:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="long_connection_req_id_missing")
+            return "blocked"
+        now = datetime.now(UTC)
+        if stream.reply_deadline is not None and stream.reply_deadline <= now:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="reply_deadline_expired")
+            return "expired"
+        durable_outbox: OutboxRecord | None = None
+        store = await self._ensure_durable_store()
+        if store is not None:
+            durable_outbox = await asyncio.to_thread(
+                store.enqueue_outbox,
+                inbox_id=stream.inbox_id,
+                stream_id=stream.stream_id,
+                message_type="long_connection_stream",
+                envelope={
+                    "request_id": request_id,
+                    "content": content,
+                    "finish": True,
+                },
+                reply_deadline=stream.reply_deadline,
+                now=now,
+            )
+            durable_outbox = await asyncio.to_thread(
+                store.claim_outbox,
+                durable_outbox.outbox_id,
+                now=datetime.now(UTC),
+                owner=self._durable_owner,
+                lease_duration=self._durable_lease_duration(),
+            )
+            if durable_outbox is None:
+                return "skipped"
+        try:
+            await self._long_connection_transport().deliver_stream(
+                request_id=request_id,
+                stream_id=stream.stream_id,
+                content=content,
+                finish=True,
+            )
+        except Exception as exc:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
+            logger.warning(
+                "wecom.long_connection final delivery failed stream_id={} error_type={}",
+                stream.stream_id,
+                type(exc).__name__,
+            )
+            return "delivery_error"
+        if durable_outbox is not None:
+            await self._mark_outbox(durable_outbox.outbox_id, "delivered")
+        if stream.inbox_id:
+            await self._mark_inbox(stream.inbox_id, "completed")
+        stream.last_stream_delivery_at = time.monotonic()
+        stream.last_stream_delivery_content = content
+        return "succeeded"
 
     def _schedule_response_url_delivery(self, stream: StreamReply, content: str) -> None:
         task = asyncio.create_task(
@@ -1610,6 +2041,8 @@ class WeComChannel(Channel):
             session_id = address.session_id
             chat_id = address.chat_id
             setattr(message, _CONVERSATION_ADDRESS_ATTR, address)
+            if self._is_long_connection():
+                self._long_connection_transport().remember_interaction(address)
         else:
             wecom_context = message.context.get("wecom")
             raw = wecom_context.get("raw") if isinstance(wecom_context, dict) else None
@@ -1755,6 +2188,14 @@ class WeComChannel(Channel):
             logger.warning("wecom.group_message missing chatid msgid={}", _extract_msgid(data))
         return self._transport.address_for(data, plaintext_userid=plaintext_userid)
 
+    def _is_long_connection(self) -> bool:
+        return self._transport.kind == "aibot_long_connection"
+
+    def _long_connection_transport(self) -> AiBotLongConnectionTransport:
+        if not isinstance(self._transport, AiBotLongConnectionTransport):
+            raise TypeError("active stream delivery requires AiBotLongConnectionTransport")
+        return self._transport
+
     async def _download_and_store_media(
         self,
         *,
@@ -1775,7 +2216,7 @@ class WeComChannel(Channel):
             download = await asyncio.to_thread(
                 media_client.download_media,
                 media["url"],
-                aes_key=decode_encoding_aes_key(self.settings.encoding_aes_key),
+                aes_key=_media_decryption_key(media, callback_encoding_aes_key=self.settings.encoding_aes_key),
                 fallback_filename=media["filename"],
                 fallback_mime_type=media["mime_type"],
             )
@@ -1863,6 +2304,59 @@ def _extract_from_userid(data: dict[str, Any]) -> str | None:
 def _extract_response_url(data: dict[str, Any]) -> str | None:
     value = data.get("responseurl") or data.get("response_url")
     return str(value).strip() if value else None
+
+
+def _extract_long_connection_request_id(data: dict[str, Any]) -> str | None:
+    value = data.get(LONG_CONNECTION_REQUEST_ID_KEY)
+    return str(value).strip() if value else None
+
+
+def _address_envelope(address: ConversationAddress) -> dict[str, Any]:
+    return {
+        "tenant_id": address.tenant_id,
+        "bot_or_agent_id": address.bot_or_agent_id,
+        "transport": address.transport,
+        "chat_type": address.chat_type,
+        "chat_id": address.chat_id,
+        "sender_userid": address.sender_userid,
+        "plaintext_userid": address.plaintext_userid,
+        "last_interacted_at": address.last_interacted_at.isoformat(),
+        "reply_deadline": address.reply_deadline.isoformat() if address.reply_deadline else None,
+    }
+
+
+def _address_from_envelope(value: Any) -> ConversationAddress | None:
+    if not isinstance(value, dict):
+        return None
+    chat_type = value.get("chat_type")
+    if value.get("transport") != "aibot_long_connection" or chat_type not in {"single", "group"}:
+        return None
+    try:
+        last_interacted_at = datetime.fromisoformat(str(value["last_interacted_at"]))
+        raw_deadline = value.get("reply_deadline")
+        reply_deadline = datetime.fromisoformat(str(raw_deadline)) if raw_deadline else None
+    except (KeyError, ValueError):
+        return None
+    if last_interacted_at.tzinfo is None or (reply_deadline is not None and reply_deadline.tzinfo is None):
+        return None
+    tenant_id = str(value.get("tenant_id") or "").strip()
+    bot_id = str(value.get("bot_or_agent_id") or "").strip()
+    chat_id = str(value.get("chat_id") or "").strip()
+    if not tenant_id or not bot_id or not chat_id:
+        return None
+    sender_userid = value.get("sender_userid")
+    plaintext_userid = value.get("plaintext_userid")
+    return ConversationAddress(
+        tenant_id=tenant_id,
+        bot_or_agent_id=bot_id,
+        transport="aibot_long_connection",
+        chat_type=cast(WeComChatType, chat_type),
+        chat_id=chat_id,
+        sender_userid=str(sender_userid) if sender_userid else None,
+        plaintext_userid=str(plaintext_userid) if plaintext_userid else None,
+        last_interacted_at=last_interacted_at.astimezone(UTC),
+        reply_deadline=reply_deadline.astimezone(UTC) if reply_deadline else None,
+    )
 
 
 def _is_durable_recovery(data: dict[str, Any]) -> bool:
@@ -2000,7 +2494,18 @@ def _extract_ai_bot_media(data: dict[str, Any]) -> dict[str, str] | None:
     # the decrypted bytes and response Content-Type.
     filename = _first_text(payload, "filename", "file_name", "name") or ""
     mime_type = _first_text(payload, "mime_type", "mimetype", "content_type") or _default_media_mime_type(msgtype)
-    return {"url": url, "filename": filename, "mime_type": mime_type, "kind": msgtype}
+    media = {"url": url, "filename": filename, "mime_type": mime_type, "kind": msgtype}
+    aes_key = _first_text(payload, "aeskey")
+    if aes_key:
+        media["aes_key"] = aes_key
+    return media
+
+
+def _media_decryption_key(media: dict[str, str], *, callback_encoding_aes_key: str) -> bytes:
+    value = media.get("aes_key") or callback_encoding_aes_key
+    if not value:
+        raise WeComCryptoError("AI Bot media callback did not include a decryption key")
+    return decode_encoding_aes_key(value)
 
 
 def _extract_legacy_media_info(data: dict[str, Any]) -> dict[str, str] | None:

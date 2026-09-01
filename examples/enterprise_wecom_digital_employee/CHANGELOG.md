@@ -3,15 +3,42 @@ title: Enterprise WeCom changelog
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-07-12
+verified_on: 2026-09-01
 sources:
   - contrib/agentseek-files/src/agentseek_files
   - contrib/agentseek-wecom/src/agentseek_wecom
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
+  - examples/enterprise_wecom_digital_employee/V0.1.2_M0_5_WECOM_LONG_CONNECTION.md
 ---
 
 # Enterprise WeCom changelog
+
+## v0.1.2 M0.5 — pending Linux live verification
+
+Status — Feature branch only. Do not switch the production robot or merge to
+`production` before the exclusive Linux switching Oracle passes.
+
+### Added
+
+| Area | Change |
+| --- | --- |
+| AI Bot long connection | WebSocket subscribe, documented JSON heartbeat, reconnect, and local single-owner lock. |
+| Active stream reply | Reuse inbound `req_id` and one `stream.id`; deliver the first acknowledgement before Agent work. |
+| Reply recovery | Persist terminal long-connection streams in the encrypted outbox with a 24-hour deadline. |
+| Proactive delivery | Send idempotent Markdown or template-card messages to previously observed direct or group sessions. |
+| Card-event terminal | Route card-click Agent results through idempotent proactive Markdown without using a message-stream reply command. |
+| Durable qualification | Local SQLite revision 2 adds encrypted proactive-conversation qualification. |
+| Operations | Preserve `:12000/health`; report selected transport and subscription readiness. |
+
+### Boundaries
+
+| Boundary | Behavior |
+| --- | --- |
+| Callback coexistence | Configuration supports either transport; the WeCom console permits only one mode for one robot. |
+| Direct file | Disabled. Official chunked media upload is not implemented in M0.5. |
+| Arbitrary recipient | Not supported by AI Bot. M0.6 self-built application transport owns this capability. |
+| Shared PostgreSQL | No schema or data change. The revision 1→2 migration applies only to the dedicated local durable SQLite. |
 
 ## enterprise-wecom-v0.0.9-ga — 2026-07-12
 

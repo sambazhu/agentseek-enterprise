@@ -11,6 +11,19 @@ from agentseek_wecom.addressing import ConversationAddress, WeComTransportKind
 InboundMessageHandler = Callable[[dict[str, Any]], Awaitable[str | None]]
 
 
+class ActiveStreamTransport(Protocol):
+    """Optional contract for transports that actively push stream refreshes."""
+
+    async def deliver_stream(
+        self,
+        *,
+        request_id: str,
+        stream_id: str,
+        content: str,
+        finish: bool,
+    ) -> None: ...
+
+
 class WeComTransport(Protocol):
     """Lifecycle and addressing boundary implemented by every WeCom transport."""
 

@@ -114,13 +114,29 @@ def check_model(env: dict[str, str], report: CheckReport) -> None:
 
 
 def check_wecom(env: dict[str, str], report: CheckReport) -> None:
-    for key in (
-        "AGENTSEEK_WECOM_CALLBACK_PATH",
-        "AGENTSEEK_WECOM_TOKEN",
-        "AGENTSEEK_WECOM_ENCODING_AES_KEY",
-        "AGENTSEEK_WECOM_CORP_ID",
-        "AGENTSEEK_WECOM_APP_SECRET",
-    ):
+    transport = env.get("AGENTSEEK_WECOM_TRANSPORT_MODE", "callback").strip()
+    if transport == "callback":
+        for key in (
+            "AGENTSEEK_WECOM_CALLBACK_PATH",
+            "AGENTSEEK_WECOM_TOKEN",
+            "AGENTSEEK_WECOM_ENCODING_AES_KEY",
+        ):
+            require(env, report, key)
+    elif transport == "long_connection":
+        require(env, report, "AGENTSEEK_WECOM_LONG_CONNECTION_BOT_ID")
+        require(env, report, "AGENTSEEK_WECOM_LONG_CONNECTION_SECRET")
+        endpoint = env.get(
+            "AGENTSEEK_WECOM_LONG_CONNECTION_URL",
+            "wss://openws.work.weixin.qq.com",
+        ).strip()
+        if endpoint != "wss://openws.work.weixin.qq.com":
+            report.fail("long connection must use the official wss://openws.work.weixin.qq.com endpoint")
+        else:
+            report.ok("WeCom long-connection endpoint is official")
+        require(env, report, "AGENTSEEK_WECOM_LONG_CONNECTION_LOCK_PATH")
+    else:
+        report.fail("AGENTSEEK_WECOM_TRANSPORT_MODE must be callback or long_connection")
+    for key in ("AGENTSEEK_WECOM_CORP_ID", "AGENTSEEK_WECOM_APP_SECRET"):
         require(env, report, key)
     if env.get("AGENTSEEK_WECOM_USERID_RESOLVE_MODE") != "openuserid_to_userid":
         report.warn("AGENTSEEK_WECOM_USERID_RESOLVE_MODE should usually be openuserid_to_userid")
@@ -159,17 +175,31 @@ def check_wecom_durable(env: dict[str, str], project_root: Path, report: CheckRe
 
 def check_wecom_outbound(env: dict[str, str], report: CheckReport) -> None:
     transport = env.get("AGENTSEEK_WECOM_TRANSPORT_MODE", "callback").strip()
-    if transport != "callback":
-        report.fail("this gateway implements AGENTSEEK_WECOM_TRANSPORT_MODE=callback only")
+    if transport not in {"callback", "long_connection"}:
+        report.fail("AGENTSEEK_WECOM_TRANSPORT_MODE must be callback or long_connection")
         return
-    report.ok("WeCom AI Bot callback transport selected")
+    report.ok(f"WeCom AI Bot {transport} transport selected")
+    if transport == "long_connection" and env.get("AGENTSEEK_WECOM_DURABLE_MODE", "memory").strip() != "sqlite":
+        report.fail("long_connection production deployment requires AGENTSEEK_WECOM_DURABLE_MODE=sqlite")
+
+    _check_wecom_artifact_delivery(env, report, transport)
+
+
+def _check_wecom_artifact_delivery(
+    env: dict[str, str],
+    report: CheckReport,
+    transport: str,
+) -> None:
 
     delivery_mode = env.get("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE", "disabled").strip()
     if delivery_mode == "disabled":
         report.ok("outbound Artifact delivery is disabled")
         return
     if delivery_mode == "direct_file":
-        report.fail("AI Bot callback response_url cannot deliver file messages; use signed_link or disabled")
+        if transport == "callback":
+            report.fail("AI Bot callback response_url cannot deliver file messages; use signed_link or disabled")
+        else:
+            report.fail("long-connection media upload is not implemented in M0.5; use signed_link or disabled")
         return
     if delivery_mode != "signed_link":
         report.fail("AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE must be disabled or signed_link")

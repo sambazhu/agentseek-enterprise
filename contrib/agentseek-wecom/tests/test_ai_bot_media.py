@@ -8,7 +8,12 @@ import pytest
 from agentseek_files.models import FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import LocalFileStore
-from agentseek_wecom.channel import _extract_ai_bot_media, _extract_media_items, _mixed_text_content
+from agentseek_wecom.channel import (
+    _extract_ai_bot_media,
+    _extract_media_items,
+    _media_decryption_key,
+    _mixed_text_content,
+)
 from agentseek_wecom.media import (
     WeComMediaClient,
     decode_encoding_aes_key,
@@ -50,6 +55,23 @@ def test_extract_ai_bot_file_image_video_urls() -> None:
     assert image_media and image_media["mime_type"] == "image/jpeg"
     assert video_media and video_media["filename"] == ""
     assert video_media and video_media["mime_type"] == "video/mp4"
+
+
+def test_long_connection_media_uses_per_url_aes_key() -> None:
+    long_key = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+    media = _extract_ai_bot_media(
+        {
+            "msgtype": "file",
+            "file": {
+                "url": "https://ww-aibot-img.example.com/opaque?sign=secret",
+                "aeskey": long_key,
+            },
+        }
+    )
+
+    assert media is not None
+    assert media["aes_key"] == long_key
+    assert _media_decryption_key(media, callback_encoding_aes_key=AES_KEY) == decode_encoding_aes_key(long_key)
 
 
 def test_ai_bot_download_uses_response_content_type_and_accepts_missing_filename(monkeypatch, tmp_path) -> None:

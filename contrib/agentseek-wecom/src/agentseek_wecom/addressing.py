@@ -10,6 +10,7 @@ WeComChatType = Literal["single", "group"]
 
 _CALLBACK_STREAM_REPLY_TTL = timedelta(minutes=6)
 _CALLBACK_RESPONSE_URL_TTL = timedelta(hours=1)
+_LONG_CONNECTION_REPLY_TTL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,44 @@ def callback_conversation_address(
         plaintext_userid=plaintext_userid.strip() if plaintext_userid else None,
         last_interacted_at=now,
         reply_deadline=now + reply_ttl,
+    )
+
+
+def long_connection_conversation_address(
+    data: dict[str, Any],
+    *,
+    tenant_id: str,
+    plaintext_userid: str | None = None,
+    interacted_at: datetime | None = None,
+) -> ConversationAddress:
+    """Normalize an AI Bot long-connection callback into the shared address contract."""
+
+    now = interacted_at or datetime.now(UTC)
+    if now.tzinfo is None:
+        raise ValueError("interacted_at must be timezone-aware")
+
+    sender_userid = _extract_sender_userid(data)
+    chat_type: WeComChatType = "group" if str(data.get("chattype") or "single") == "group" else "single"
+    bot_id = str(data.get("aibotid") or "unknown-bot").strip() or "unknown-bot"
+    if chat_type == "group":
+        chat_id = str(data.get("chatid") or "").strip()
+        if not chat_id:
+            message_id = str(data.get("msgid") or "").strip()
+            chat_id = f"missing-chatid:{message_id or uuid4().hex}"
+    else:
+        effective_userid = (plaintext_userid or sender_userid or "").strip()
+        chat_id = effective_userid or "wecom:unknown"
+
+    return ConversationAddress(
+        tenant_id=tenant_id.strip() or "default",
+        bot_or_agent_id=bot_id,
+        transport="aibot_long_connection",
+        chat_type=chat_type,
+        chat_id=chat_id,
+        sender_userid=sender_userid,
+        plaintext_userid=plaintext_userid.strip() if plaintext_userid else None,
+        last_interacted_at=now,
+        reply_deadline=now + _LONG_CONNECTION_REPLY_TTL,
     )
 
 

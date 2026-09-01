@@ -1073,7 +1073,7 @@ M0.1 是 Transport Kernel 的前置安全切片，不改变 M1–M5 的业务范
 
 目标是收口 Callback 剩余的耗时 I/O 和可恢复卡片状态机。
 
-当前状态：代码与确定性门禁已完成，等待 Linux Callback 活体复验后进入合并评估。
+当前状态：Linux Callback 活体复验 PASS，已合入 `production`。
 
 范围：
 
@@ -1093,6 +1093,8 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 目标是实现 `AiBotLongConnectionTransport`，并让长任务、定时提醒和
 已交互会话主动状态通知使用长连接主通道。
 
+当前状态：代码与确定性门禁已完成，等待 Linux 独占切换窗口活体复验。
+
 范围：
 
 - WebSocket 建连、鉴权、心跳、断线重连和单实例所有权；
@@ -1101,7 +1103,9 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 - 复用 `ConversationAddress`、持久化 inbox/outbox 和群/单聊隔离合同；
 - 与 Callback 配置互斥，并保留 Callback 作为回退通道。
 
-验收通过前，`transport_mode` 不接受长连接生产启用。
+Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
+设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和
+`V0.1.2_M0_5_WECOM_LONG_CONNECTION_VERIFICATION.md`。
 
 ### M0.6：企微自建应用 Transport
 

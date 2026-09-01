@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.outbound import (
@@ -11,7 +9,7 @@ from agentseek_wecom.outbound import (
     require_outbound_message_type,
     validate_artifact_download_base_url,
 )
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 
 def test_callback_capabilities_fail_closed_for_files() -> None:
@@ -26,14 +24,14 @@ def test_callback_capabilities_fail_closed_for_files() -> None:
         require_outbound_message_type("callback", "file")
 
 
-def test_long_connection_capabilities_are_documented_but_not_implemented() -> None:
+def test_long_connection_capabilities_are_implemented() -> None:
     capabilities = outbound_capabilities("long_connection")
 
-    assert capabilities.implemented is False
-    assert capabilities.direct_file_delivery is True
-    assert "file" in capabilities.reply_message_types
+    assert capabilities.implemented is True
+    assert capabilities.direct_file_delivery is False
+    assert "file" not in capabilities.reply_message_types
     assert capabilities.proactive_message_types == ("template_card", "markdown")
-    with pytest.raises(UnsupportedWeComOutbound, match="not implemented"):
+    with pytest.raises(UnsupportedWeComOutbound, match="does not support"):
         require_outbound_message_type("long_connection", "file")
 
 
@@ -44,9 +42,26 @@ def test_internal_template_card_instruction_is_detected_without_marker() -> None
     assert not has_template_card_control_instruction("报告文件已准备好，请按卡片提示下载。")
 
 
-def test_settings_reject_unimplemented_long_connection_transport() -> None:
-    with pytest.raises(ValidationError, match="transport_mode"):
-        WeComSettings(transport_mode=cast(Any, "long_connection"))
+def test_settings_require_long_connection_credentials_only_when_enabled() -> None:
+    disabled = WeComSettings(transport_mode="long_connection")
+    assert disabled.transport_mode == "long_connection"
+
+    with pytest.raises(ValidationError, match="long_connection_bot_id"):
+        WeComSettings(enabled=True, transport_mode="long_connection")
+
+    enabled = WeComSettings(
+        enabled=True,
+        transport_mode="long_connection",
+        long_connection_bot_id="bot-1",
+        long_connection_secret=SecretStr("long-secret"),
+    )
+    assert enabled.long_connection_secret.get_secret_value() == "long-secret"
+
+
+def test_callback_ignores_inactive_long_connection_endpoint() -> None:
+    settings = WeComSettings(transport_mode="callback", long_connection_url="https://unused.invalid")
+
+    assert settings.transport_mode == "callback"
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,13 @@ def _check_durable(env: dict[str, str], project_root: Path) -> tuple[list[str], 
     return report.failures, report.warnings
 
 
+def _check_transport(env: dict[str, str]) -> tuple[list[str], list[str]]:
+    module = _load_prod_check()
+    report = module.CheckReport()
+    module.check_wecom(env, report)
+    return report.failures, report.warnings
+
+
 def test_durable_preflight_accepts_default_memory_mode(tmp_path: Path) -> None:
     failures, warnings = _check_durable({}, tmp_path)
 
@@ -82,10 +89,45 @@ def test_outbound_preflight_rejects_direct_file_on_callback() -> None:
     assert failures == ["AI Bot callback response_url cannot deliver file messages; use signed_link or disabled"]
 
 
-def test_outbound_preflight_rejects_unimplemented_transport() -> None:
+def test_outbound_preflight_accepts_long_connection_with_durable_store() -> None:
+    failures, _ = _check({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "long_connection",
+        "AGENTSEEK_WECOM_DURABLE_MODE": "sqlite",
+    })
+
+    assert failures == []
+
+
+def test_outbound_preflight_requires_durable_store_for_long_connection() -> None:
     failures, _ = _check({"AGENTSEEK_WECOM_TRANSPORT_MODE": "long_connection"})
 
-    assert failures == ["this gateway implements AGENTSEEK_WECOM_TRANSPORT_MODE=callback only"]
+    assert failures == [
+        "long_connection production deployment requires AGENTSEEK_WECOM_DURABLE_MODE=sqlite"
+    ]
+
+
+def test_transport_preflight_accepts_long_connection_credentials() -> None:
+    failures, _ = _check_transport({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "long_connection",
+        "AGENTSEEK_WECOM_LONG_CONNECTION_BOT_ID": "bot-1",
+        "AGENTSEEK_WECOM_LONG_CONNECTION_SECRET": "dedicated-secret",
+        "AGENTSEEK_WECOM_LONG_CONNECTION_LOCK_PATH": "runtime/wecom-long.lock",
+        "AGENTSEEK_WECOM_CORP_ID": "corp-1",
+        "AGENTSEEK_WECOM_APP_SECRET": "app-secret",
+        "AGENTSEEK_WECOM_USERID_RESOLVE_MODE": "openuserid_to_userid",
+    })
+
+    assert failures == []
+
+
+def test_outbound_preflight_rejects_unimplemented_long_connection_direct_file() -> None:
+    failures, _ = _check({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "long_connection",
+        "AGENTSEEK_WECOM_DURABLE_MODE": "sqlite",
+        "AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE": "direct_file",
+    })
+
+    assert failures == ["long-connection media upload is not implemented in M0.5; use signed_link or disabled"]
 
 
 def test_outbound_preflight_validates_signed_link_base_url() -> None:

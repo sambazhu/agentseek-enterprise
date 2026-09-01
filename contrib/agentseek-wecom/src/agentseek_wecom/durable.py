@@ -19,7 +19,7 @@ from agentseek_wecom.addressing import ConversationAddress
 InboxStatus = Literal["pending", "processing", "completed", "failed", "blocked"]
 OutboxStatus = Literal["pending", "sending", "sent", "delivered", "failed", "blocked"]
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _INBOX_STATUSES: frozenset[str] = frozenset({"pending", "processing", "completed", "failed", "blocked"})
 _OUTBOX_STATUSES: frozenset[str] = frozenset({"pending", "sending", "sent", "delivered", "failed", "blocked"})
 
@@ -65,6 +65,10 @@ class OutboxRecord:
 
 
 class DurableMessageStore(Protocol):
+    def remember_interaction(self, address: ConversationAddress, *, now: datetime) -> None: ...
+
+    def has_interaction(self, address: ConversationAddress) -> bool: ...
+
     def admit_inbound(
         self,
         *,
@@ -187,6 +191,58 @@ class SqliteDurableMessageStore:
             if row is None:
                 raise DurableStoreError("inbox insert did not return a record")
             return InboxAdmission(record=self._inbox_record(row), admitted=True)
+
+    def remember_interaction(self, address: ConversationAddress, *, now: datetime) -> None:
+        now = _aware_utc(now)
+        conversation_id = self._conversation_id(address)
+        sealed_address = self._seal(
+            {
+                "tenant_id": address.tenant_id,
+                "bot_or_agent_id": address.bot_or_agent_id,
+                "transport": address.transport,
+                "chat_type": address.chat_type,
+                "chat_id": address.chat_id,
+                "sender_userid": address.sender_userid,
+                "plaintext_userid": address.plaintext_userid,
+                "last_interacted_at": address.last_interacted_at.isoformat(),
+            },
+            aad=f"conversation:{conversation_id}",
+        )
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO wecom_conversations (
+                    conversation_id, sealed_address, last_interacted_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    sealed_address = excluded.sealed_address,
+                    last_interacted_at = excluded.last_interacted_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    conversation_id,
+                    sealed_address,
+                    _dump_datetime(address.last_interacted_at),
+                    _dump_datetime(now),
+                    _dump_datetime(now),
+                ),
+            )
+
+    def has_interaction(self, address: ConversationAddress) -> bool:
+        conversation_id = self._conversation_id(address)
+        connection = self._connection()
+        try:
+            row = connection.execute(
+                "SELECT sealed_address FROM wecom_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return False
+        # Authenticate the encrypted record before treating it as qualification.
+        self._open(bytes(row["sealed_address"]), aad=f"conversation:{conversation_id}")
+        return True
 
     def mark_inbox(self, inbox_id: str, status: InboxStatus, *, now: datetime, error_type: str = "") -> None:
         if status not in _INBOX_STATUSES:
@@ -484,7 +540,7 @@ class SqliteDurableMessageStore:
             row = connection.execute(
                 "SELECT value FROM wecom_durable_meta WHERE key = 'schema_version'"
             ).fetchone()
-            if row is not None and str(row["value"]) != _SCHEMA_VERSION:
+            if row is not None and str(row["value"]) not in {"1", _SCHEMA_VERSION}:
                 raise DurableSchemaError(
                     f"durable SQLite schema revision {row['value']} is unsupported; expected {_SCHEMA_VERSION}"
                 )
@@ -531,9 +587,25 @@ class SqliteDurableMessageStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_wecom_outbox_recovery ON wecom_outbox(status, lease_expires_at, created_at)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wecom_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    sealed_address BLOB NOT NULL,
+                    last_interacted_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             if row is None:
                 connection.execute(
                     "INSERT INTO wecom_durable_meta(key, value) VALUES ('schema_version', ?)",
+                    (_SCHEMA_VERSION,),
+                )
+            elif str(row["value"]) == "1":
+                connection.execute(
+                    "UPDATE wecom_durable_meta SET value = ? WHERE key = 'schema_version'",
                     (_SCHEMA_VERSION,),
                 )
 
@@ -572,6 +644,18 @@ class SqliteDurableMessageStore:
     def _stable_id(self, kind: str, value: str) -> str:
         digest = hmac.new(self._key, f"{kind}\0{value}".encode(), hashlib.sha256).hexdigest()
         return f"{kind}_{digest}"
+
+    def _conversation_id(self, address: ConversationAddress) -> str:
+        scope = "\x1f".join(
+            (
+                address.tenant_id,
+                address.bot_or_agent_id,
+                address.transport,
+                address.chat_type,
+                address.chat_id,
+            )
+        )
+        return self._stable_id("conversation", scope)
 
     def _seal(self, value: dict[str, Any], *, aad: str) -> bytes:
         try:
