@@ -54,6 +54,8 @@ AGENTSEEK_WECOM_LONG_CONNECTION_LOCK_PATH=runtime/wecom-long-connection.lock
 AGENTSEEK_WECOM_DURABLE_MODE=sqlite
 AGENTSEEK_WECOM_DURABLE_SQLITE_PATH=runtime/wecom-messages.sqlite3
 AGENTSEEK_WECOM_DURABLE_SECRET=
+# Keep empty outside an explicit live-verification window.
+AGENTSEEK_WECOM_LONG_CONNECTION_PROACTIVE_PROBE_TRIGGER=
 ```
 
 Long connection keeps `AGENTSEEK_WECOM_HOST` and `AGENTSEEK_WECOM_PORT` for

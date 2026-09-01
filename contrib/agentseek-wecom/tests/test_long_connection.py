@@ -328,6 +328,52 @@ async def test_channel_sends_initial_stream_before_agent_terminal_reply(tmp_path
 
 
 @sync_async_test
+async def test_proactive_probe_sends_markdown_and_button_card_once(tmp_path: Path) -> None:
+    settings = long_settings(
+        tmp_path,
+        enabled=False,
+        long_connection_proactive_probe_trigger="M0.5长连接主动消息探针",
+    )
+    transport = AiBotLongConnectionTransport(settings=settings, tenant_id="tenant-1")
+    deliver_stream = AsyncMock()
+    send_proactive = AsyncMock()
+    cast(Any, transport).deliver_stream = deliver_stream
+    cast(Any, transport).send_proactive = send_proactive
+    channel = WeComChannel(on_receive=None, settings=settings, transport=transport)
+    payload = {
+        "msgid": "probe-message-1",
+        "aibotid": "bot-1",
+        "chattype": "single",
+        "from": {"userid": "user-1"},
+        "msgtype": "text",
+        "text": {"content": "M0.5长连接主动消息探针"},
+        LONG_CONNECTION_REQUEST_ID_KEY: "probe-callback-1",
+    }
+    transport.remember_interaction(transport.address_for(payload))
+
+    first = await channel._handle_plain_message(payload)
+    payload[LONG_CONNECTION_REQUEST_ID_KEY] = "probe-callback-duplicate"
+    duplicate = await channel._handle_plain_message(payload)
+    await channel.stop()
+
+    assert first is None
+    assert duplicate is None
+    assert deliver_stream.await_count == 2
+    assert deliver_stream.await_args_list[0].kwargs["request_id"] == "probe-callback-1"
+    assert deliver_stream.await_args_list[1].kwargs["request_id"] == "probe-callback-duplicate"
+    assert send_proactive.await_count == 2
+    assert send_proactive.await_args_list[0].kwargs == {
+        "message_type": "markdown",
+        "payload": {"content": "AgentSeek M0.5：长连接主动 Markdown 发送成功。"},
+        "request_id": send_proactive.await_args_list[0].kwargs["request_id"],
+    }
+    card = send_proactive.await_args_list[1].kwargs
+    assert card["message_type"] == "template_card"
+    assert card["payload"]["card_type"] == "button_interaction"
+    assert card["payload"]["button_list"][0]["key"] == "M05_CONFIRM"
+
+
+@sync_async_test
 async def test_card_event_uses_proactive_terminal_without_invalid_stream_reply(tmp_path: Path) -> None:
     settings = long_settings(tmp_path, enabled=False, initial_wait_seconds=0.01)
     transport = AiBotLongConnectionTransport(settings=settings, tenant_id="tenant-1")

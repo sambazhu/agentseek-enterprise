@@ -266,6 +266,13 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_TEMPLATE_CARD_EVENT_PROBE_TRIGGER",
         ),
     )
+    long_connection_proactive_probe_trigger: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_LONG_CONNECTION_PROACTIVE_PROBE_TRIGGER",
+            "AGENTSEEK_WECOM_LONG_CONNECTION_PROACTIVE_PROBE_TRIGGER",
+        ),
+    )
     response_url_probe_delay_seconds: float = Field(
         default=5.0,
         validation_alias=AliasChoices(

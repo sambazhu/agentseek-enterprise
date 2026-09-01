@@ -517,6 +517,9 @@ class WeComChannel(Channel):
 
     async def _handle_text(self, data: dict[str, Any]) -> str | None:
         content = str((data.get("text") or {}).get("content") or "")
+        proactive_trigger = self.settings.long_connection_proactive_probe_trigger
+        if self._is_long_connection() and proactive_trigger and content == proactive_trigger:
+            return await self._handle_long_connection_proactive_probe(data)
         trigger = self.settings.response_url_probe_trigger
         if trigger and content == trigger:
             return await self._handle_response_url_probe(data)
@@ -527,6 +530,55 @@ class WeComChannel(Channel):
         if interaction_trigger and content == interaction_trigger:
             return await self._handle_template_card_event_probe(data)
         return await self._dispatch_user_message(data, _append_quote_context(data, content))
+
+    async def _handle_long_connection_proactive_probe(self, data: dict[str, Any]) -> None:
+        from_userid = _extract_from_userid(data)
+        conversation = self._conversation_address(data)
+        stream, is_duplicate = await self._get_or_create_stream_for_message(
+            msgid=_extract_msgid(data),
+            data=data,
+            address=conversation,
+            session_id=conversation.session_id,
+            chat_id=conversation.chat_id,
+            from_userid=from_userid,
+            response_url=None,
+        )
+        if is_duplicate:
+            await self._commit_inbound_stream_response(stream)
+            return
+        stream.update(content="长连接主动消息探针已启动，请检查随后两条消息。", finish=True)
+        await self._commit_inbound_stream_response(stream)
+        probe_scope = _extract_msgid(data) or stream.stream_id
+        card = {
+            "card_type": "button_interaction",
+            "main_title": {
+                "title": "AgentSeek M0.5 长连接探针",
+                "desc": "主动模板卡片发送成功",
+            },
+            "sub_title_text": "点击按钮后应进入同一会话的卡片事件回合。",
+            "button_list": [{"text": "确认交互", "style": 1, "key": "M05_CONFIRM"}],
+            "task_id": f"agentseek_m05_{stream.stream_id}",
+        }
+        try:
+            await self.send_proactive_markdown(
+                conversation,
+                "AgentSeek M0.5：长连接主动 Markdown 发送成功。",
+                idempotency_key=f"m05-probe:{probe_scope}:markdown",
+            )
+            await self.send_proactive_template_card(
+                conversation,
+                card,
+                idempotency_key=f"m05-probe:{probe_scope}:template-card",
+            )
+        except Exception as exc:
+            logger.warning("wecom.long_connection proactive probe failed error_type={}", type(exc).__name__)
+            _emit_enterprise_event(
+                "wecom_long_connection_proactive_probe",
+                status="error",
+                error_type=type(exc).__name__,
+            )
+            return
+        _emit_enterprise_event("wecom_long_connection_proactive_probe", status="succeeded")
 
     async def _handle_response_url_probe(self, data: dict[str, Any]) -> str:
         from_userid = _extract_from_userid(data)
@@ -937,6 +989,9 @@ class WeComChannel(Channel):
                 existing_id = self._stream_ids_by_msgid.get(msgid)
                 existing = self._streams.get(existing_id or "")
                 if existing is not None:
+                    incoming_request_id = str(data.get(LONG_CONNECTION_REQUEST_ID_KEY) or "").strip()
+                    if incoming_request_id:
+                        existing.long_connection_request_id = incoming_request_id
                     return existing, True
                 self._stream_ids_by_msgid.pop(msgid, None)
 

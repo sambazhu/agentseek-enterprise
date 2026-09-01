@@ -30,6 +30,7 @@ Status — Feature branch only. Do not switch the production robot or merge to
 | Card-event terminal | Route card-click Agent results through idempotent proactive Markdown without using a message-stream reply command. |
 | Durable qualification | Local SQLite revision 2 adds encrypted proactive-conversation qualification. |
 | Operations | Preserve `:12000/health`; report selected transport and subscription readiness. |
+| Live Oracle | Default-off trigger sends proactive Markdown and a button card for end-to-end verification. |
 
 ### Boundaries
 
