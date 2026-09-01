@@ -15,12 +15,13 @@ sources:
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.5 — pending Linux literal-recall re-verification
+## v0.1.2 M0.5 — pending Linux prompt-projection re-verification
 
 Status — Feature branch only. Transport live Oracles passed, and ContextSeek group
-isolation is zero-crossing in fresh groups. Short-term literal-recall fix `e81b779`
-still requires the targeted Linux group C/D Oracle. Do not merge to `production`
-before that Oracle passes.
+isolation is zero-crossing in fresh groups. Linux evidence showed that the apparent
+hexadecimal hallucinations were inbound `msgid` values exposed to the model.
+Prompt-projection fix `5668e2f` requires the targeted Linux group C/D Oracle. Do
+not merge to `production` before that Oracle passes.
 
 ### Added
 
@@ -43,6 +44,8 @@ before that Oracle passes.
 | Group runtime missing a trusted conversation key | Fail closed instead of falling back to the broader employee scope. |
 | A model treated an employee-provided marker as a technical identifier | Label historical user source separately, copy requested literals exactly, and forbid fabricated UUID/hash/internal IDs. |
 | A prior assistant hallucination competed with stored user text | Mark historical assistant output as fallible and prefer conflicting historical user source. |
+| WeCom routing identifiers could be interpreted as business content | Keep rich routing metadata in private channel context, but project only semantic message fields into the model prompt. |
+| Work idempotency previously read `msgid` from model-visible raw data | Read the private internal message ID first while retaining a legacy fallback for stored messages. |
 
 ### Boundaries
 

@@ -106,6 +106,11 @@ Long-connection card clicks enter the same session queue. Their terminal Agent
 result uses idempotent proactive Markdown; it is not sent with the message-only
 `aibot_respond_msg` command.
 
+Inbound messages keep a rich internal context for routing, identity resolution,
+media handling, deduplication, and idempotency. The model-visible context is a
+separate semantic projection. It excludes `msgid`, BotID, raw chatid, userid,
+reply capabilities, and signed media data.
+
 ## Verify
 
 ```bash
