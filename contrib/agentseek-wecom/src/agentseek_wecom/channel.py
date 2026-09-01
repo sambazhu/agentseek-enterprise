@@ -63,7 +63,16 @@ _DURABLE_INBOX_ID_ATTR = "_agentseek_wecom_durable_inbox_id"
 _DURABLE_RECOVERY_ATTR = "_agentseek_wecom_durable_recovery"
 _DURABLE_REPLY_DEADLINE_ATTR = "_agentseek_wecom_durable_reply_deadline"
 _DURABLE_STREAM_ID_ATTR = "_agentseek_wecom_durable_stream_id"
+_INTERNAL_CONTEXT_KEY = "_agentseek_wecom_internal"
 _QUEUE_STATUS_COMMANDS = frozenset({"查看消息队列", "查看排队状态"})
+
+
+class _WeComInboundMessage(ChannelMessage):
+    """Keep routing metadata available to plugins but out of the model prompt."""
+
+    @property
+    def context_str(self) -> str:
+        return _prompt_safe_context_str(self.context)
 
 
 class MediaClient(Protocol):
@@ -770,7 +779,7 @@ class WeComChannel(Channel):
             msgtype=data.get("msgtype"),
             content_chars=len(content),
         )
-        message = ChannelMessage(
+        message = _WeComInboundMessage(
             session_id=session_id,
             channel=self.name,
             chat_id=chat_id,
@@ -868,7 +877,7 @@ class WeComChannel(Channel):
                 pending_count=self._pending_turn_counts.get(session_id, 0),
             )
             return await self._commit_inbound_stream_response(stream)
-        message = ChannelMessage(
+        message = _WeComInboundMessage(
             session_id=session_id,
             channel=self.name,
             chat_id=chat_id,
@@ -2229,6 +2238,9 @@ class WeComChannel(Channel):
                 "raw": _safe_wecom_payload(data),
             },
         }
+        message_id = _extract_msgid(data)
+        if message_id:
+            context[_INTERNAL_CONTEXT_KEY] = {"message_id": message_id}
         if files_context:
             context["files"] = files_context
         return context
@@ -2728,14 +2740,10 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Return the prompt-safe subset of a WeCom callback payload."""
 
     safe: dict[str, Any] = {}
-    for key in ("msgid", "aibotid", "chatid", "chattype", "msgtype"):
+    for key in ("chattype", "msgtype"):
         value = data.get(key)
         if value:
             safe[key] = value
-
-    raw_from = data.get("from")
-    if isinstance(raw_from, dict) and raw_from.get("userid"):
-        safe["from"] = {"userid": str(raw_from["userid"])}
 
     msgtype = str(data.get("msgtype") or "")
     if msgtype == "text":
@@ -2774,6 +2782,30 @@ def _safe_wecom_payload(data: dict[str, Any]) -> dict[str, Any]:
             safe["quote"] = safe_quote
 
     return safe
+
+
+def _prompt_safe_context_str(context: Mapping[str, Any]) -> str:
+    """Project semantic WeCom context without transport or identity identifiers."""
+
+    prompt_context: dict[str, Any] = {}
+    channel = context.get("channel")
+    if channel:
+        prompt_context["channel"] = channel
+
+    wecom = context.get("wecom")
+    if isinstance(wecom, Mapping):
+        prompt_wecom: dict[str, Any] = {}
+        for key in ("chat_type", "msgtype"):
+            value = wecom.get(key)
+            if value:
+                prompt_wecom[key] = value
+        raw = wecom.get("raw")
+        if isinstance(raw, Mapping) and raw:
+            prompt_wecom["raw"] = dict(raw)
+        if prompt_wecom:
+            prompt_context["wecom"] = prompt_wecom
+
+    return "|".join(f"{key}={value}" for key, value in prompt_context.items())
 
 
 def _safe_quote_payload(quote: dict[str, Any]) -> dict[str, Any]:

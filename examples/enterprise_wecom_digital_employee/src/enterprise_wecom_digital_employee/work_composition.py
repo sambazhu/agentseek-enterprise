@@ -1862,6 +1862,11 @@ def _request_key(
 def _nested_message_id(context: object) -> str:
     if not isinstance(context, Mapping):
         return ""
+    internal = context.get("_agentseek_wecom_internal")
+    if isinstance(internal, Mapping):
+        message_id = _clean(internal.get("message_id"))
+        if message_id:
+            return message_id
     wecom = context.get("wecom")
     raw = wecom.get("raw") if isinstance(wecom, Mapping) else None
     if isinstance(raw, Mapping):

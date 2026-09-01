@@ -95,6 +95,13 @@ def message(msgid: str = "message-001") -> dict:
     }
 
 
+def internal_message(msgid: str = "message-internal-001") -> dict:
+    return {
+        "content": "创建行业报告",
+        "context": {"_agentseek_wecom_internal": {"message_id": msgid}},
+    }
+
+
 def test_enrichment_publishes_safe_profile_and_preserves_enterprise_context(tmp_path: Path) -> None:
     composition = build_composition(tmp_path)
     state = authorized_state()
@@ -313,10 +320,12 @@ def test_distinct_wecom_message_ids_do_not_collapse_identical_content(tmp_path: 
     composition = build_composition(tmp_path)
     first = authorized_state()
     second = authorized_state()
-    first.update(composition.load_message_state(message("message-001"), "wecom:test"))
-    second.update(composition.load_message_state(message("message-002"), "wecom:test"))
-    composition.enrich_state(message(), "wecom:test", first)
-    composition.enrich_state(message(), "wecom:test", second)
+    first_message = internal_message("message-001")
+    second_message = internal_message("message-002")
+    first.update(composition.load_message_state(first_message, "wecom:test"))
+    second.update(composition.load_message_state(second_message, "wecom:test"))
+    composition.enrich_state(first_message, "wecom:test", first)
+    composition.enrich_state(second_message, "wecom:test", second)
 
     assert first["work_request_key"] != second["work_request_key"]
 

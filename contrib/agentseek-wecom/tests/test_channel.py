@@ -953,14 +953,53 @@ def test_text_message_sanitizes_wecom_raw_payload() -> None:
 
     raw = received[0].context["wecom"]["raw"]
     assert raw == {
-        "msgid": "m1",
-        "aibotid": "bot-1",
         "chattype": "single",
         "msgtype": "text",
-        "from": {"userid": "chenkang2"},
         "text": {"content": "你好"},
     }
     assert "responseurl" not in raw
+    assert received[0].context["_agentseek_wecom_internal"] == {"message_id": "m1"}
+    prompt_context = received[0].context_str
+    assert "你好" in prompt_context
+    assert "m1" not in prompt_context
+    assert "bot-1" not in prompt_context
+    assert "chenkang2" not in prompt_context
+
+
+def test_group_prompt_context_excludes_routing_and_identity_identifiers() -> None:
+    received: list[ChannelMessage] = []
+    channel = _channel()
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+        await channel.send(ChannelMessage(
+            session_id=message.session_id,
+            channel="wecom",
+            chat_id=message.chat_id,
+            content="处理完成",
+        ))
+
+    channel.bind_receiver(on_receive)
+    asyncio.run(channel._handle_plain_message({
+        "msgid": "group-message-secret",
+        "aibotid": "bot-secret",
+        "chatid": "chat-secret",
+        "chattype": "group",
+        "msgtype": "text",
+        "from": {"userid": "employee-secret"},
+        "text": {"content": "请只回复当前文本"},
+    }))
+
+    prompt_context = received[0].context_str
+    assert "请只回复当前文本" in prompt_context
+    assert "chat_type': 'group'" in prompt_context
+    for internal_value in (
+        "group-message-secret",
+        "bot-secret",
+        "chat-secret",
+        "employee-secret",
+    ):
+        assert internal_value not in prompt_context
 
 
 def test_response_url_probe_consumes_url_once_without_dispatching_to_agent() -> None:
