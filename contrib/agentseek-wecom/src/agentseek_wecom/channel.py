@@ -991,6 +991,9 @@ class WeComChannel(Channel):
             reply_deadline=_durable_reply_deadline(data) or address.reply_deadline,
             response_url=response_url,
             long_connection_request_id=str(data.get(LONG_CONNECTION_REQUEST_ID_KEY) or "") or None,
+            long_connection_proactive_address=(
+                address if self._is_long_connection() and _is_durable_recovery(data) else None
+            ),
             conversation_address=address,
             content="已收到，正在处理...",
             finish=False,

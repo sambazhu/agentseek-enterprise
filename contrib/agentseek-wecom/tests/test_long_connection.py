@@ -577,6 +577,75 @@ async def test_rejected_recovered_stream_falls_back_to_durable_proactive_markdow
 
 
 @sync_async_test
+async def test_recovered_inbox_skips_stale_stream_and_delivers_terminal_proactively(tmp_path: Path) -> None:
+    database_path = tmp_path / "recovered-inbox.sqlite3"
+    key_material = "0123456789abcdef0123456789abcdef"
+    settings = long_settings(
+        tmp_path,
+        enabled=False,
+        durable_mode="sqlite",
+        durable_sqlite_path=str(database_path),
+        durable_secret=key_material,
+    )
+    payload = {
+        "msgid": "recover-inbox-message-1",
+        "aibotid": "bot-1",
+        "chattype": "group",
+        "chatid": "group-beta",
+        "from": {"userid": "user-1"},
+        "msgtype": "text",
+        "text": {"content": "恢复未完成回合"},
+        LONG_CONNECTION_REQUEST_ID_KEY: "stale-callback-request",
+    }
+    transport = AiBotLongConnectionTransport(settings=settings, tenant_id="tenant-1")
+    address = transport.address_for(payload)
+    store = SqliteDurableMessageStore(path=database_path, secret=SecretStr(key_material))
+    store.remember_interaction(address, now=datetime.now(UTC))
+    store.admit_inbound(
+        message_id="recover-inbox-message-1",
+        address=address,
+        stream_id="recover-inbox-stream-1",
+        payload=payload,
+        now=datetime.now(UTC),
+    )
+    stale_stream = AsyncMock(side_effect=AssertionError("stale stream must not be used"))
+    proactive = AsyncMock()
+    cast(Any, transport).deliver_stream = stale_stream
+    cast(Any, transport).send_proactive = proactive
+    channel: WeComChannel
+
+    async def receive(message: ChannelMessage) -> None:
+        await channel.send(
+            ChannelMessage(
+                session_id=message.session_id,
+                channel="wecom",
+                chat_id=message.chat_id,
+                content="恢复回合主动终态",
+                is_active=True,
+            )
+        )
+
+    channel = WeComChannel(
+        on_receive=receive,
+        settings=settings,
+        transport=transport,
+        durable_store=store,
+    )
+
+    await channel.start(asyncio.Event())
+    await wait_until(lambda: proactive.await_count == 1)
+    await channel.stop()
+
+    assert stale_stream.await_count == 0
+    assert proactive.await_args is not None
+    assert proactive.await_args.kwargs["message_type"] == "markdown"
+    assert proactive.await_args.kwargs["payload"] == {"content": "恢复回合主动终态"}
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status FROM wecom_inbox").fetchone() == ("completed",)
+        assert connection.execute("SELECT status FROM wecom_outbox").fetchone() == ("delivered",)
+
+
+@sync_async_test
 async def test_proactive_markdown_is_qualified_durable_and_idempotent(tmp_path: Path) -> None:
     database_path = tmp_path / "proactive.sqlite3"
     settings = long_settings(
