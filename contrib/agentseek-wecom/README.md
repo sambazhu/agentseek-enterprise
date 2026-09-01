@@ -102,6 +102,12 @@ deadline, and must finish their stream within WeCom's ten-minute stream window.
 `send_proactive_markdown()` and `send_proactive_template_card()` require an
 idempotency key and an address previously observed from that robot.
 
+After a process restart, an unfinished inbox no longer reuses the previous
+connection's stream callback. Its terminal result uses durable, idempotent
+proactive Markdown. A recovered stream outbox first retries its original stream;
+if WeCom explicitly rejects that command, the channel falls back to the same
+proactive path. Timeouts and other ambiguous outcomes do not trigger fallback.
+
 Long-connection card clicks enter the same session queue. Their terminal Agent
 result uses idempotent proactive Markdown; it is not sent with the message-only
 `aibot_respond_msg` command.

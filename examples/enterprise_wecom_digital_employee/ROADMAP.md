@@ -1096,8 +1096,9 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 当前状态：Transport 确定性与 Linux 活体 Oracle 已通过。`fb6e851`
 的 ContextSeek 群会话作用域已在无污染新群中证实零交叉。后续证据确认
 所谓“编造的技术 ID”其实是模型回显当前入站 `msgid`。`5668e2f` 已将
-内部路由上下文与模型可见语义投影分离，待 Linux 在原群 C/D 单项复验。
-现有 Callback 机器人不切换模式。
+内部路由上下文与模型可见语义投影分离，Linux 静态合同和模型侧旁证均已
+通过。该轮又暴露 SeekDB 原生并发和旧连接 stream 恢复缺口；`a216db8`、
+`13c4b85` 已修复，待 Linux 在原群 C/D 终验。现有 Callback 机器人不切换模式。
 
 范围：
 
@@ -1112,6 +1113,9 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
   助手历史与用户原文冲突时以用户原文为准。
 - 渠道内部保留 `msgid`、BotID、chatid 和 userid 供寻址、去重、身份及
   幂等插件使用；模型 prompt 只接收聊天类型、消息类型与业务语义内容。
+- SeekDB 初始化、检索和写入在同一插件实例内保持单线程及线程亲和。
+- 非优雅退出后的 inbox 终态直接走持久化主动 Markdown；旧 stream outbox
+  仅在企微明确拒绝原命令后降级，不对超时等不确定结果盲目补发。
 
 Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
 设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和

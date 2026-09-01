@@ -94,6 +94,11 @@ upstream storage configuration, so an environment that provides a compatible
 Milvus adapter can be introduced without changing the enterprise scope or
 prompt-injection code.
 
+The plugin runs SeekDB bootstrap, retrieval, and writes on one dedicated worker
+thread per plugin instance. This preserves native thread affinity and prevents
+concurrent calls into the embedded observer/ONNX stack. Other storage backends
+continue to use the shared asyncio thread pool.
+
 ### MCP server registration
 
 contextseek ships a stdio MCP server (`contextseek-mcp-stdio`). To expose it
