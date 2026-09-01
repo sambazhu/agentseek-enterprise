@@ -215,6 +215,82 @@ async def test_enterprise_scope_uses_anonymous_employee_keys_and_state_injection
 
 
 @pytest.mark.anyio
+async def test_enterprise_group_scopes_are_isolated_by_anonymous_conversation(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = []
+    plugin._client = mock_client
+    plugin._client_initialized = True
+
+    state_a = _enterprise_state(session_key=f"hmac-{'c' * 64}")
+    state_b = _enterprise_state(session_key=f"hmac-{'d' * 64}")
+    message_a = _wecom_message(chat_type="group", chat_id="raw-group-alpha")
+    message_b = _wecom_message(chat_type="group", chat_id="raw-group-beta")
+
+    await plugin.build_prompt(message=message_a, session_id="wecom:bot:group:alpha", state=state_a)
+    await plugin.build_prompt(message=message_b, session_id="wecom:bot:group:beta", state=state_b)
+
+    scope_a = state_a["_contextseek_scope"]
+    scope_b = state_b["_contextseek_scope"]
+    assert isinstance(scope_a, str)
+    assert isinstance(scope_b, str)
+    assert scope_a != scope_b
+    assert "/conversation/hmac-" in scope_a
+    assert "/conversation/hmac-" in scope_b
+    assert "raw-group-alpha" not in scope_a
+    assert "raw-group-beta" not in scope_b
+    assert [call.kwargs["scope"] for call in mock_client.retrieve.call_args_list] == [scope_a, scope_b]
+
+
+@pytest.mark.anyio
+async def test_enterprise_direct_chat_keeps_employee_scope_across_sessions(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = []
+    plugin._client = mock_client
+    plugin._client_initialized = True
+
+    state_a = _enterprise_state(session_key=f"hmac-{'c' * 64}")
+    state_b = _enterprise_state(session_key=f"hmac-{'d' * 64}")
+
+    await plugin.build_prompt(
+        message=_wecom_message(chat_type="single", chat_id="employee-a"),
+        session_id="wecom:employee-a",
+        state=state_a,
+    )
+    await plugin.build_prompt(
+        message=_wecom_message(chat_type="single", chat_id="employee-a"),
+        session_id="wecom:employee-a:new-transport",
+        state=state_b,
+    )
+
+    assert state_a["_contextseek_scope"] == state_b["_contextseek_scope"]
+    assert "/conversation/" not in str(state_a["_contextseek_scope"])
+
+
+@pytest.mark.anyio
+async def test_enterprise_group_scope_fails_closed_without_session_key(monkeypatch):
+    monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
+    plugin = ContextSeekPlugin()
+    mock_client = MagicMock()
+    plugin._client = mock_client
+    plugin._client_initialized = True
+    state = _enterprise_state()
+
+    result = await plugin.build_prompt(
+        message=_wecom_message(chat_type="group", chat_id="group-a"),
+        session_id="wecom:bot:group:a",
+        state=state,
+    )
+
+    assert result is None
+    assert state["_contextseek_scope_status"] == "conversation_required"
+    mock_client.retrieve.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_enterprise_scope_fails_closed_without_identity_state(monkeypatch):
     monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
     plugin = ContextSeekPlugin()
@@ -365,13 +441,28 @@ def test_enterprise_scope_falls_back_to_employee_context_without_runtime_context
     assert "Alice" not in scope
 
 
-def _enterprise_state() -> dict[str, object]:
+def _enterprise_state(*, session_key: str | None = None) -> dict[str, object]:
+    enterprise = {
+        "version": "v1",
+        "tenant_key": f"hmac-{'a' * 64}",
+        "user_key": f"hmac-{'b' * 64}",
+    }
+    if session_key is not None:
+        enterprise["session_key"] = session_key
     return {
         "_langgraph_runtime_context": {
-            "enterprise": {
-                "version": "v1",
-                "tenant_key": f"hmac-{'a' * 64}",
-                "user_key": f"hmac-{'b' * 64}",
-            }
+            "enterprise": enterprise,
         }
+    }
+
+
+def _wecom_message(*, chat_type: str, chat_id: str) -> dict[str, object]:
+    return {
+        "content": "recall the marker",
+        "context": {
+            "wecom": {
+                "chat_type": chat_type,
+                "address": {"chat_type": chat_type, "chat_id": chat_id},
+            }
+        },
     }

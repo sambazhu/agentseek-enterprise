@@ -59,7 +59,7 @@ class ContextSeekPlugin:
     def _scope_from_state(self, message: Envelope, session_id: str, state: State) -> str | None:
         if self._settings.SCOPE_MODE.strip().lower() != "enterprise_user":
             return self._scope_from_message(message, session_id)
-        return _enterprise_employee_scope(state, session_id)
+        return _enterprise_semantic_scope(message, state, session_id)
 
     @hookimpl
     async def load_state(
@@ -90,7 +90,9 @@ class ContextSeekPlugin:
 
         scope = self._scope_from_state(message, session_id, state)
         if scope is None:
-            state["_contextseek_scope_status"] = "identity_required"
+            state["_contextseek_scope_status"] = (
+                "conversation_required" if _is_group_conversation(message, session_id) else "identity_required"
+            )
             return None
         state["_contextseek_scope"] = scope
 
@@ -161,6 +163,41 @@ class ContextSeekPlugin:
 
 
 def _enterprise_employee_scope(state: State, session_id: str) -> str | None:
+    enterprise = _enterprise_identity_context(state, session_id)
+    if enterprise is None:
+        return None
+
+    version = _clean(enterprise.get("version"))
+    tenant_key = _clean(enterprise.get("tenant_key"))
+    user_key = _clean(enterprise.get("user_key"))
+    if version != "v1" or not _is_scoped_key(tenant_key) or not _is_scoped_key(user_key):
+        return None
+    return f"enterprise/{version}/{tenant_key}/{user_key}/semantic"
+
+
+def _enterprise_semantic_scope(message: Envelope, state: State, session_id: str) -> str | None:
+    """Resolve enterprise semantic memory without crossing group conversations.
+
+    Direct chats intentionally retain the employee-wide scope used by existing
+    deployments. Group chats add the already-anonymized enterprise session key,
+    so one employee's semantic recall in group A cannot retrieve turns from
+    group B. If an older or incomplete runtime omits that key, group recall and
+    storage fail closed instead of falling back to the broader employee scope.
+    """
+    employee_scope = _enterprise_employee_scope(state, session_id)
+    if employee_scope is None or not _is_group_conversation(message, session_id):
+        return employee_scope
+
+    enterprise = _enterprise_identity_context(state, session_id)
+    if enterprise is None:
+        return None
+    session_key = _clean(enterprise.get("session_key"))
+    if not _is_scoped_key(session_key):
+        return None
+    return f"{employee_scope.removesuffix('/semantic')}/conversation/{session_key}/semantic"
+
+
+def _enterprise_identity_context(state: State, session_id: str) -> Mapping[str, object] | None:
     runtime_context = state.get("_langgraph_runtime_context")
     enterprise: Mapping[str, object] | None = None
     if not isinstance(runtime_context, Mapping):
@@ -174,13 +211,23 @@ def _enterprise_employee_scope(state: State, session_id: str) -> str | None:
 
     if enterprise is None:
         return None
+    return enterprise
 
-    version = _clean(enterprise.get("version"))
-    tenant_key = _clean(enterprise.get("tenant_key"))
-    user_key = _clean(enterprise.get("user_key"))
-    if version != "v1" or not _is_scoped_key(tenant_key) or not _is_scoped_key(user_key):
-        return None
-    return f"enterprise/{version}/{tenant_key}/{user_key}/semantic"
+
+def _is_group_conversation(message: Envelope, session_id: str) -> bool:
+    context = field_of(message, "context", {})
+    if isinstance(context, Mapping):
+        wecom = context.get("wecom")
+        if isinstance(wecom, Mapping):
+            if _clean(wecom.get("chat_type")).lower() == "group":
+                return True
+            address = wecom.get("address")
+            if isinstance(address, Mapping) and _clean(address.get("chat_type")).lower() == "group":
+                return True
+            raw = wecom.get("raw")
+            if isinstance(raw, Mapping) and _clean(raw.get("chattype")).lower() == "group":
+                return True
+    return session_id.startswith("wecom:") and ":group:" in session_id
 
 
 def _enterprise_context_from_employee_context(

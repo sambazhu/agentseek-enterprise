@@ -138,7 +138,7 @@ The Bub plugin registers three hooks:
 - **`build_prompt`**: retrieves semantic context and either prepends it to the user prompt (`prompt`) or leaves it in state (`state`) for a template to inject as a system message.
 - **`save_state`**: stores the final assistant response, or the final user+assistant turn when configured. It never records MCP calls or raw tool output.
 
-`SCOPE_MODE=session` derives `{AGENTSEEK_CTX_TENANT}/{chat_id}/{session_id}`. The enterprise-wecom template sets `SCOPE_MODE=enterprise_user`, which derives an anonymous `enterprise/v1/<tenant-key>/<employee-key>/semantic` scope from P1 runtime state. If identity state is unavailable, it fails closed and does not retrieve or write context.
+`SCOPE_MODE=session` derives `{AGENTSEEK_CTX_TENANT}/{chat_id}/{session_id}`. The enterprise-wecom template sets `SCOPE_MODE=enterprise_user`. Direct chats derive an anonymous `enterprise/v1/<tenant-key>/<employee-key>/semantic` scope from P1 runtime state, preserving employee-level semantic continuity. Group chats further append the anonymous enterprise session key as `.../<employee-key>/conversation/<session-key>/semantic`; this prevents one employee's semantic memory from crossing between groups. A group turn with no valid session key fails closed instead of falling back to the broader employee scope. Raw userid, chatid, BotID, and transport names never enter either scope. If identity state is unavailable, retrieval and storage also fail closed.
 
 The enterprise template also selects `INJECTION_MODE=state`, so retrieved history becomes an explicitly marked, untrusted system message rather than text embedded inside the employee's latest message.
 
