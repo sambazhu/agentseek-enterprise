@@ -15,11 +15,12 @@ sources:
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.5 — pending Linux group-isolation re-verification
+## v0.1.2 M0.5 — pending Linux literal-recall re-verification
 
-Status — Feature branch only. Transport live Oracles passed. ContextSeek group
-isolation fix `fb6e851` still requires the targeted Linux group A/B Oracle. Do not
-merge to `production` before that Oracle passes.
+Status — Feature branch only. Transport live Oracles passed, and ContextSeek group
+isolation is zero-crossing in fresh groups. Short-term literal-recall fix `e81b779`
+still requires the targeted Linux group C/D Oracle. Do not merge to `production`
+before that Oracle passes.
 
 ### Added
 
@@ -40,6 +41,8 @@ merge to `production` before that Oracle passes.
 | --- | --- |
 | One employee's semantic recall could cross WeCom groups | Keep direct chat at employee scope; append the anonymous enterprise session key for group retrieval and storage. |
 | Group runtime missing a trusted conversation key | Fail closed instead of falling back to the broader employee scope. |
+| A model treated an employee-provided marker as a technical identifier | Label historical user source separately, copy requested literals exactly, and forbid fabricated UUID/hash/internal IDs. |
+| A prior assistant hallucination competed with stored user text | Mark historical assistant output as fallible and prefer conflicting historical user source. |
 
 ### Boundaries
 

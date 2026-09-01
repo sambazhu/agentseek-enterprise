@@ -1093,10 +1093,10 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 目标是实现 `AiBotLongConnectionTransport`，并让长任务、定时提醒和
 已交互会话主动状态通知使用长连接主通道。
 
-当前状态：Transport 确定性与 Linux 活体 Oracle 已通过。Linux canary 暴露
-ContextSeek 员工级语义记忆跨群泄漏，修复 `fb6e851` 已将群聊追加匿名
-conversation scope，待 Linux 只重验群 A/B 双向隔离。现有 Callback 机器人
-不切换模式。
+当前状态：Transport 确定性与 Linux 活体 Oracle 已通过。`fb6e851`
+的 ContextSeek 群会话作用域已在无污染新群中证实零交叉。新群复验另暴露
+模型将员工字面标识误解为技术 ID；短期记忆角色/原文修复 `e81b779` 待
+Linux 在原群 C/D 单项复验。现有 Callback 机器人不切换模式。
 
 范围：
 
@@ -1107,6 +1107,8 @@ conversation scope，待 Linux 只重验群 A/B 双向隔离。现有 Callback �
 - 与 Callback 配置互斥，并保留 Callback 作为回退通道。
 - 单聊保持员工级 ContextSeek 语义连续性；群聊在员工边界内再按当前
   会话隔离，不得跨群检索。
+- 短期记忆区分历史用户原文与历史助手回复；原文复述不生成技术 ID，
+  助手历史与用户原文冲突时以用户原文为准。
 
 Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
 设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和
