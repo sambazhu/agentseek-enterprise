@@ -361,8 +361,27 @@ def test_system_prompt_can_include_short_term_memory(monkeypatch: Any) -> None:
 
     assert prompt is not None
     assert "[ShortTermMemory]" in prompt
-    assert "用户: 帮我记一下，我明天去深圳出差" in prompt
-    assert "不要主动提及这里的不相关近期事实" in prompt
+    assert "历史用户原文: 帮我记一下，我明天去深圳出差" in prompt
+    assert "不得改写或编造 UUID/哈希/内部 ID" in prompt
+    assert "历史助手回复可能错误" in prompt
+
+
+def test_short_term_memory_prompt_preserves_user_literal_over_assistant_hallucination() -> None:
+    prompt = format_short_term_memory_for_prompt(
+        {
+            "recent_messages": [
+                {"role": "user", "content": "GROUP-GAMMA-M05R2-literal"},
+                {"role": "assistant", "content": "0123456789abcdef0123456789abcdef"},
+            ]
+        }
+    )
+
+    assert prompt is not None
+    assert "历史用户原文: GROUP-GAMMA-M05R2-literal" in prompt
+    assert "历史助手回复: 0123456789abcdef0123456789abcdef" in prompt
+    assert "员工自带字面量不是 runtime 内部 ID" in prompt
+    assert "只能从最相关的历史用户原文逐字复制" in prompt
+    assert "以用户原文为准" in prompt
 
 
 def test_short_term_memory_prompt_keeps_newest_messages_with_bounded_content() -> None:
