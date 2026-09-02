@@ -48,7 +48,7 @@ class WeComAppPartialDelivery(WeComAppError):
 
 
 class WeComAppVisibilityDenied(WeComAppError):
-    """A target is outside the explicit application visibility snapshot."""
+    """A target is outside the resolved application visibility boundary."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,13 +208,15 @@ class WeComAppTransport:
         data = await self._api_json("GET", "/cgi-bin/agent/get", params={"agentid": self.agent_id})
         if str(data.get("agentid") or "") != self.agent_id or int(data.get("close") or 0) != 0:
             raise WeComAppVisibilityDenied("application identity mismatch or application disabled")
+        party_roots = frozenset(str(item) for item in ((data.get("allow_partys") or {}).get("partyid") or []))
+        parties = await self._expand_visible_parties(party_roots) if party_roots else frozenset()
         visibility = WeComAppVisibility(
             users=frozenset(
                 str(item.get("userid"))
                 for item in ((data.get("allow_userinfos") or {}).get("user") or [])
                 if isinstance(item, dict) and item.get("userid")
             ),
-            parties=frozenset(str(item) for item in ((data.get("allow_partys") or {}).get("partyid") or [])),
+            parties=parties,
             tags=frozenset(str(item) for item in ((data.get("allow_tags") or {}).get("tagid") or [])),
             expires_at=time.monotonic() + self.settings.app_visibility_cache_ttl_seconds,
             # Some self-built applications return the allow_* containers but
@@ -222,11 +224,23 @@ class WeComAppTransport:
             # from the configured visible scope. An empty list is therefore an
             # unknown snapshot, not proof that the application can see nobody.
             users_authoritative=bool((data.get("allow_userinfos") or {}).get("user") or []),
-            parties_authoritative=bool((data.get("allow_partys") or {}).get("partyid") or []),
+            parties_authoritative=bool(party_roots),
             tags_authoritative=bool((data.get("allow_tags") or {}).get("tagid") or []),
         )
         self._visibility = visibility
         return visibility
+
+    async def _expand_visible_parties(self, roots: frozenset[str]) -> frozenset[str]:
+        expanded: set[str] = set()
+        for root in roots:
+            if not root.isdigit() or int(root) <= 0:
+                raise WeComAppVisibilityDenied("agent/get returned an invalid visible department ID")
+            data = await self._api_json("GET", "/cgi-bin/department/simplelist", params={"id": root})
+            try:
+                expanded.update(_validated_department_subtree(data.get("department_id"), root=root))
+            except (TypeError, ValueError):
+                raise WeComAppVisibilityDenied("WeCom returned an incomplete visible department subtree") from None
+        return frozenset(expanded)
 
     async def send(
         self,
@@ -423,6 +437,36 @@ def _assert_visible(target: WeComAppTarget, visibility: WeComAppVisibility) -> N
         raise WeComAppVisibilityDenied("one or more departments are outside application visibility")
     if visibility.tags_authoritative and not set(target.tags).issubset(visibility.tags):
         raise WeComAppVisibilityDenied("one or more tags are outside application visibility")
+
+
+def _validated_department_subtree(value: Any, *, root: str) -> frozenset[str]:
+    if not isinstance(value, list):
+        raise TypeError("department subtree must be a list")
+    parents: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            raise TypeError("department subtree item must be an object")
+        department_id = str(item.get("id") or "").strip()
+        parent_id = str(item.get("parentid") if item.get("parentid") is not None else "").strip()
+        if not department_id.isdigit() or int(department_id) <= 0:
+            raise ValueError("department ID must be a positive integer")
+        if not parent_id.isdigit() or int(parent_id) < 0:
+            raise ValueError("department parent ID must be a non-negative integer")
+        previous_parent = parents.setdefault(department_id, parent_id)
+        if previous_parent != parent_id:
+            raise ValueError("department has conflicting parents")
+    if root not in parents:
+        raise ValueError("visible department root is missing")
+
+    descendants = {root}
+    pending = set(parents) - descendants
+    while pending:
+        resolved = {department_id for department_id in pending if parents[department_id] in descendants}
+        if not resolved:
+            raise ValueError("department subtree contains an orphan or cycle")
+        descendants.update(resolved)
+        pending.difference_update(resolved)
+    return frozenset(descendants)
 
 
 def _pipe_count(value: Any) -> int:

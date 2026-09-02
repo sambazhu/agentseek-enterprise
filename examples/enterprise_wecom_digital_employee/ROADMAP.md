@@ -1134,9 +1134,10 @@ conversation_id`。不能用 BotID 代替 `digital_employee_id`，否则同一�
 
 目标是实现 `WeComAppTransport`，承担真正的指定成员、部门和标签主动通知。
 
-当前状态：功能分支 `enterprise/v0.1.2-wecom-app-transport` 的代码提交
-`12a6bbc` 已通过本地确定性门禁，等待 Linux 隔离部署和活体复验。只在
-Linux 静态门禁通过后由管理员创建公共自建应用。设计与复验分别见
+当前状态：功能分支 `enterprise/v0.1.2-wecom-app-transport` 已完成
+Linux 隔离部署。应用入站、主动成员消息和 SIGTERM 恢复已活体通过；
+最后收口为将 `agent/get` 的授权部门根节点按企微子树语义安全展开，
+然后只复验主动部门、标签和文件投递。设计与复验分别见
 `V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md` 和
 `V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION.md`。
 

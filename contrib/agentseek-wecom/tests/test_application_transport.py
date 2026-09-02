@@ -112,10 +112,22 @@ def test_application_token_visibility_and_send_are_cached() -> None:
                     "allow_tags": {"tagid": [3]},
                 },
             )
+        if request.url.path == "/cgi-bin/department/simplelist":
+            assert request.url.params["id"] == "2"
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "department_id": [
+                        {"id": 2, "parentid": 1},
+                        {"id": 4, "parentid": 2},
+                    ],
+                },
+            )
         body = json.loads(request.content)
         assert body["touser"] == "user-1"
         if body["msgtype"] == "text":
-            assert body["toparty"] == "2"
+            assert body["toparty"] == "4"
             assert body["totag"] == "3"
         assert body["enable_duplicate_check"] == 1
         assert body["agentid"] == 1000005
@@ -126,7 +138,7 @@ def test_application_token_visibility_and_send_are_cached() -> None:
         transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
         await transport.start()
         await transport.send(
-            target=WeComAppTarget(users=("user-1",), parties=("2",), tags=("3",)),
+            target=WeComAppTarget(users=("user-1",), parties=("4",), tags=("3",)),
             message_type="text",
             payload={"content": "通知"},
         )
@@ -141,6 +153,7 @@ def test_application_token_visibility_and_send_are_cached() -> None:
 
     assert [request.url.path for request in requests].count("/cgi-bin/gettoken") == 1
     assert [request.url.path for request in requests].count("/cgi-bin/agent/get") == 1
+    assert [request.url.path for request in requests].count("/cgi-bin/department/simplelist") == 1
     assert [request.url.path for request in requests].count("/cgi-bin/message/send") == 2
     assert "application-secret" not in " ".join(str(request.content) for request in requests)
 
@@ -290,6 +303,139 @@ def test_empty_agent_visibility_snapshot_defers_authorization_to_send_api() -> N
     asyncio.run(scenario())
 
     assert requests == ["/cgi-bin/gettoken", "/cgi-bin/agent/get", "/cgi-bin/message/send"]
+
+
+def test_application_visibility_allows_only_resolved_department_descendants() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/cgi-bin/gettoken":
+            return httpx.Response(200, json={"errcode": 0, "access_token": "token-1", "expires_in": 7200})
+        if request.url.path == "/cgi-bin/agent/get":
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "agentid": 1000005,
+                    "close": 0,
+                    "allow_userinfos": {"user": []},
+                    "allow_partys": {"partyid": [407]},
+                    "allow_tags": {"tagid": []},
+                },
+            )
+        if request.url.path == "/cgi-bin/department/simplelist":
+            assert request.url.params["id"] == "407"
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "department_id": [
+                        {"id": 407, "parentid": 1},
+                        {"id": 433, "parentid": 407},
+                        {"id": 434, "parentid": 433},
+                    ],
+                },
+            )
+        if request.url.path == "/cgi-bin/message/send":
+            assert json.loads(request.content)["toparty"] == "433"
+            return httpx.Response(200, json={"errcode": 0})
+        raise AssertionError(request.url)
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
+        visibility = await transport.refresh_visibility()
+        assert visibility.parties == frozenset({"407", "433", "434"})
+        assert visibility.parties_authoritative is True
+        await transport.send(
+            target=WeComAppTarget(parties=("433",)),
+            message_type="markdown",
+            payload={"content": "authorized descendant"},
+        )
+        with pytest.raises(WeComAppVisibilityDenied):
+            await transport.send(
+                target=WeComAppTarget(parties=("999",)),
+                message_type="markdown",
+                payload={"content": "outside subtree"},
+            )
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+    assert requests == [
+        "/cgi-bin/gettoken",
+        "/cgi-bin/agent/get",
+        "/cgi-bin/department/simplelist",
+        "/cgi-bin/message/send",
+    ]
+
+
+@pytest.mark.parametrize(
+    "department_id",
+    [
+        [{"id": 433, "parentid": 407}],
+        [{"id": 407, "parentid": 1}, {"id": 433, "parentid": 999}],
+        [{"id": 407, "parentid": 1}, {"id": 433, "parentid": 434}, {"id": 434, "parentid": 433}],
+    ],
+)
+def test_application_visibility_fails_closed_on_incomplete_department_tree(
+    department_id: list[dict[str, int]],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/cgi-bin/gettoken":
+            return httpx.Response(200, json={"errcode": 0, "access_token": "token-1", "expires_in": 7200})
+        if request.url.path == "/cgi-bin/agent/get":
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "agentid": 1000005,
+                    "close": 0,
+                    "allow_partys": {"partyid": [407]},
+                },
+            )
+        if request.url.path == "/cgi-bin/department/simplelist":
+            return httpx.Response(200, json={"errcode": 0, "department_id": department_id})
+        raise AssertionError(request.url)
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
+        with pytest.raises(WeComAppVisibilityDenied, match="incomplete visible department subtree"):
+            await transport.refresh_visibility()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_application_visibility_fails_closed_when_department_expansion_is_denied() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/cgi-bin/gettoken":
+            return httpx.Response(200, json={"errcode": 0, "access_token": "token-1", "expires_in": 7200})
+        if request.url.path == "/cgi-bin/agent/get":
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "agentid": 1000005,
+                    "close": 0,
+                    "allow_partys": {"partyid": [407]},
+                },
+            )
+        if request.url.path == "/cgi-bin/department/simplelist":
+            return httpx.Response(200, json={"errcode": 60020})
+        raise AssertionError(request.url)
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
+        with pytest.raises(WeComAppVisibilityDenied, match="target or visibility scope"):
+            await transport.refresh_visibility()
+        assert transport._visibility is None
+        await client.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_application_permission_error_is_visibility_denied() -> None:
