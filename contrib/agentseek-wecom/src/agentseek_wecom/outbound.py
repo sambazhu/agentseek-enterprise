@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
-TransportMode = Literal["callback", "long_connection"]
+TransportMode = Literal["callback", "long_connection", "application"]
 
 
 class UnsupportedWeComOutbound(RuntimeError):
@@ -110,6 +110,42 @@ _CAPABILITIES: dict[TransportMode, WeComOutboundCapabilities] = {
             "aibot_send_msg proactive delivery only supports template_card and markdown.",
             "Proactive delivery requires the user to have contacted the bot in that conversation.",
             "WeCom allows either long connection or callback mode for one AI Bot, not both.",
+        ),
+    ),
+    "application": WeComOutboundCapabilities(
+        transport_mode="application",
+        implemented=True,
+        reply_message_types=(
+            "text",
+            "image",
+            "voice",
+            "video",
+            "file",
+            "textcard",
+            "news",
+            "mpnews",
+            "markdown",
+            "template_card",
+        ),
+        proactive_message_types=(
+            "text",
+            "image",
+            "voice",
+            "video",
+            "file",
+            "textcard",
+            "news",
+            "mpnews",
+            "markdown",
+            "template_card",
+        ),
+        response_url_one_shot=False,
+        response_url_ttl_seconds=None,
+        direct_file_delivery=True,
+        notes=(
+            "The application is a supplementary outbound transport, not an AI Bot mode.",
+            "Recipients must be inside the explicit application visibility snapshot.",
+            "Media messages require an official temporary media_id.",
         ),
     ),
 }

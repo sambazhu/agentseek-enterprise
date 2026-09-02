@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote, urlparse
 from uuid import uuid4
@@ -48,6 +49,11 @@ from agentseek_wecom.outbound import (
 )
 from agentseek_wecom.response_url import WeComResponseUrlSender
 from agentseek_wecom.transport import WeComTransport
+from agentseek_wecom.transports.application import (
+    WeComAppPartialDelivery,
+    WeComAppTarget,
+    WeComAppTransport,
+)
 from agentseek_wecom.transports.callback import AiBotCallbackTransport
 from agentseek_wecom.transports.long_connection import (
     LONG_CONNECTION_REQUEST_ID_KEY,
@@ -170,12 +176,14 @@ class WeComChannel(Channel):
         file_service: InboundFileServiceProtocol | None = None,
         response_url_sender: ResponseUrlSenderProtocol | None = None,
         transport: WeComTransport | None = None,
+        app_transport: WeComAppTransport | None = None,
         durable_store: DurableMessageStore | None = None,
     ) -> None:
         self._on_receive = on_receive
         self.settings = settings
         self._userid_resolver = userid_resolver if userid_resolver is not None else make_userid_resolver(settings)
         self._media_client = media_client
+        self._application_media_client: MediaClient | None = None
         self._file_service = file_service
         self._file_service_initialized = file_service is not None
         self._response_url_sender = response_url_sender or WeComResponseUrlSender(
@@ -204,9 +212,16 @@ class WeComChannel(Channel):
         else:
             self._transport = AiBotCallbackTransport(settings=settings, tenant_id=tenant_id)
         self._transport.bind_inbound(self._handle_plain_message)
+        self._app_transport = app_transport
+        if self._app_transport is None and settings.app_transport_enabled:
+            self._app_transport = WeComAppTransport(settings=settings, tenant_id=tenant_id)
+        if self._app_transport is not None:
+            self._app_transport.bind_inbound(self._handle_application_plain_message)
         app = self._transport.app
         self.app = app
         if app is not None:
+            if self._app_transport is not None:
+                self._app_transport.mount(app)
             self._register_artifact_routes(app)
         elif settings.artifact_delivery_mode == "signed_link":
             raise RuntimeError("signed-link artifact delivery requires a WeCom transport with an ASGI application")
@@ -224,7 +239,11 @@ class WeComChannel(Channel):
 
     async def start(self, stop_event: asyncio.Event) -> None:
         transport_started = False
+        app_transport_started = False
         try:
+            if self._app_transport is not None:
+                await self._app_transport.start()
+                app_transport_started = True
             if self._is_long_connection():
                 await self._transport.start(stop_event)
                 transport_started = True
@@ -242,12 +261,16 @@ class WeComChannel(Channel):
             await self._stop_durable_recovery_loop()
             if transport_started:
                 await self._transport.stop()
+            if app_transport_started and self._app_transport is not None:
+                await self._app_transport.stop()
             raise
 
     async def stop(self) -> None:
         await self._stop_durable_recovery_loop()
         await self._transport.stop()
         await self._drain_dispatch_tasks()
+        if self._app_transport is not None:
+            await self._app_transport.stop()
         self._dispatch_tasks.clear()
         for handle in self._queue_expiry_handles:
             handle.cancel()
@@ -295,7 +318,9 @@ class WeComChannel(Channel):
             return
         stream.update(content=content_of(message), finish=True)
         delivery_status = "succeeded"
-        if self._is_long_connection() and stream.long_connection_proactive_address is not None:
+        if stream.conversation_address is not None and stream.conversation_address.transport == "wecom_app":
+            delivery_status = await self._deliver_application_terminal(stream, stream.content)
+        elif self._is_long_connection() and stream.long_connection_proactive_address is not None:
             delivery_status = await self._deliver_long_connection_proactive_terminal(stream, stream.content)
         elif self._is_long_connection():
             delivery_status = await self._deliver_long_connection_stream_once(stream, stream.content)
@@ -419,6 +444,76 @@ class WeComChannel(Channel):
         )
         return "succeeded"
 
+    async def send_application_message(
+        self,
+        *,
+        digital_employee_id: str,
+        target: WeComAppTarget,
+        message_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+        inbox_id: str | None = None,
+    ) -> str:
+        transport = self._require_app_transport()
+        source = transport.validate_source(digital_employee_id)
+        transport.validate_outbound(message_type, payload)
+        normalized_key = idempotency_key.strip()
+        if not normalized_key or len(normalized_key) > 256:
+            raise ValueError("application idempotency_key must contain 1 to 256 characters")
+        stable_scope = "\x1f".join(
+            (transport.tenant_id, source, transport.agent_id, target.stable_scope(), normalized_key)
+        )
+        stream_id = f"wecom_app_{hashlib.sha256(stable_scope.encode()).hexdigest()}"
+        store = await self._ensure_durable_store()
+        durable_outbox: OutboxRecord | None = None
+        if store is not None:
+            durable_outbox = await asyncio.to_thread(
+                store.enqueue_outbox,
+                inbox_id=inbox_id,
+                stream_id=stream_id,
+                message_type=f"wecom_app_{message_type}",
+                envelope={
+                    "digital_employee_id": source,
+                    "target": _app_target_envelope(target),
+                    "payload": payload,
+                },
+                reply_deadline=datetime.now(UTC) + timedelta(hours=24),
+                now=datetime.now(UTC),
+            )
+            durable_outbox = await asyncio.to_thread(
+                store.claim_outbox,
+                durable_outbox.outbox_id,
+                now=datetime.now(UTC),
+                owner=self._durable_owner,
+                lease_duration=self._durable_lease_duration(),
+            )
+            if durable_outbox is None:
+                return "skipped"
+        try:
+            await transport.send(target=target, message_type=message_type, payload=payload)
+        except WeComAppPartialDelivery:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "blocked", error_type="partial_delivery")
+            if inbox_id:
+                await self._mark_inbox(inbox_id, "blocked", error_type="partial_delivery")
+            raise
+        except Exception as exc:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
+            raise
+        if durable_outbox is not None:
+            await self._mark_outbox(durable_outbox.outbox_id, "delivered")
+        _emit_enterprise_event(
+            "wecom_app_proactive_delivery",
+            status="succeeded",
+            digital_employee_id=source,
+            target_user_count=len(target.users),
+            target_party_count=len(target.parties),
+            target_tag_count=len(target.tags),
+            message_type=message_type,
+        )
+        return "succeeded"
+
     def stream_events(self, message: ChannelMessage, stream: AsyncIterable[StreamEvent]) -> AsyncIterable[StreamEvent]:
         return self._stream_events(message, stream)
 
@@ -526,8 +621,20 @@ class WeComChannel(Channel):
         logger.info("wecom.unsupported_msgtype msgtype={}", msgtype)
         return None
 
+    async def _handle_application_plain_message(self, data: dict[str, Any]) -> str | None:
+        data["_agentseek_wecom_app"] = True
+        return await self._handle_plain_message(data)
+
     async def _handle_text(self, data: dict[str, Any]) -> str | None:
         content = str((data.get("text") or {}).get("content") or "")
+        app_probe_trigger = self.settings.app_proactive_probe_trigger
+        if (
+            self._app_transport is not None
+            and not _is_application_message(data)
+            and app_probe_trigger
+            and content == app_probe_trigger
+        ):
+            return await self._handle_application_proactive_probe(data)
         proactive_trigger = self.settings.long_connection_proactive_probe_trigger
         if self._is_long_connection() and proactive_trigger and content == proactive_trigger:
             return await self._handle_long_connection_proactive_probe(data)
@@ -541,6 +648,111 @@ class WeComChannel(Channel):
         if interaction_trigger and content == interaction_trigger:
             return await self._handle_template_card_event_probe(data)
         return await self._dispatch_user_message(data, _append_quote_context(data, content))
+
+    async def _handle_application_proactive_probe(self, data: dict[str, Any]) -> str | None:
+        conversation = self._conversation_address(data)
+        stream, is_duplicate = await self._get_or_create_stream_for_message(
+            msgid=_extract_msgid(data),
+            data=data,
+            address=conversation,
+            session_id=conversation.session_id,
+            chat_id=conversation.chat_id,
+            from_userid=_extract_from_userid(data),
+            response_url=_extract_response_url(data),
+        )
+        if is_duplicate:
+            return await self._commit_inbound_stream_response(stream)
+        stream.update(content="M0.6 自建应用探针已启动，请检查应用消息。", finish=True)
+        first_response = await self._commit_inbound_stream_response(stream)
+        probe_scope = _extract_msgid(data) or stream.stream_id
+        task = asyncio.create_task(
+            self._run_application_proactive_probe(probe_scope),
+            name=f"agentseek-wecom.application-probe.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+        return first_response
+
+    async def _run_application_proactive_probe(self, probe_scope: str) -> None:
+        source = self.settings.app_default_digital_employee_id
+        deliveries = 0
+        try:
+            userid = self.settings.app_proactive_probe_userid.strip()
+            await self.send_application_message(
+                digital_employee_id=source,
+                target=WeComAppTarget(users=(userid,)),
+                message_type="text",
+                payload={"content": "AgentSeek M0.6：指定成员应用消息发送成功。"},
+                idempotency_key=f"m06-probe:{probe_scope}:user-text",
+            )
+            deliveries += 1
+            party_id = self.settings.app_proactive_probe_party_id.strip()
+            if party_id:
+                await self.send_application_message(
+                    digital_employee_id=source,
+                    target=WeComAppTarget(parties=(party_id,)),
+                    message_type="markdown",
+                    payload={"content": "**AgentSeek M0.6**：指定部门应用消息发送成功。"},
+                    idempotency_key=f"m06-probe:{probe_scope}:party-markdown",
+                )
+                deliveries += 1
+            tag_id = self.settings.app_proactive_probe_tag_id.strip()
+            if tag_id:
+                await self.send_application_message(
+                    digital_employee_id=source,
+                    target=WeComAppTarget(tags=(tag_id,)),
+                    message_type="textcard",
+                    payload={
+                        "title": "AgentSeek M0.6 应用通知",
+                        "description": "指定标签应用消息发送成功。",
+                        "url": "https://work.weixin.qq.com",
+                        "btntxt": "查看",
+                    },
+                    idempotency_key=f"m06-probe:{probe_scope}:tag-textcard",
+                )
+                deliveries += 1
+            if self.settings.app_proactive_probe_file_path.strip():
+                await self._send_application_probe_file(
+                    source=source,
+                    userid=userid,
+                    probe_scope=probe_scope,
+                )
+                deliveries += 1
+        except Exception as exc:
+            logger.warning("wecom.application proactive probe failed error_type={}", type(exc).__name__)
+            _emit_enterprise_event(
+                "wecom_app_proactive_probe",
+                status="error",
+                error_type=type(exc).__name__,
+                completed_delivery_count=deliveries,
+            )
+            return
+        _emit_enterprise_event(
+            "wecom_app_proactive_probe",
+            status="succeeded",
+            completed_delivery_count=deliveries,
+        )
+
+    async def _send_application_probe_file(self, *, source: str, userid: str, probe_scope: str) -> None:
+        path = Path(self.settings.app_proactive_probe_file_path).expanduser()
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("application probe file must be a regular non-symlink file")
+        size = path.stat().st_size
+        if not 5 < size <= 20 * 1024 * 1024:
+            raise ValueError("application probe file must contain 6 bytes to 20 MB")
+        content = await asyncio.to_thread(path.read_bytes)
+        media_id = await self._require_app_transport().upload_media(
+            media_type="file",
+            filename=path.name,
+            content=content,
+        )
+        await self.send_application_message(
+            digital_employee_id=source,
+            target=WeComAppTarget(users=(userid,)),
+            message_type="file",
+            payload={"media_id": media_id},
+            idempotency_key=f"m06-probe:{probe_scope}:user-file",
+        )
 
     async def _handle_long_connection_proactive_probe(self, data: dict[str, Any]) -> None:
         from_userid = _extract_from_userid(data)
@@ -725,6 +937,8 @@ class WeComChannel(Channel):
 
     async def _handle_voice(self, data: dict[str, Any]) -> str | None:
         content = str((data.get("voice") or {}).get("content") or "")
+        if not content and _extract_media_items(data):
+            return await self._handle_media_message(data)
         if not content:
             content = "用户发送了一条语音消息，但回调未包含转写内容。"
         return await self._dispatch_user_message(data, _append_quote_context(data, content))
@@ -850,6 +1064,8 @@ class WeComChannel(Channel):
                 from_userid=from_userid,
                 msgtype=data.get("msgtype"),
             )
+            if _is_application_message(data):
+                return None
             if long_connection_proactive and self._is_long_connection():
                 return None
             return await self._commit_inbound_stream_response(stream)
@@ -908,6 +1124,9 @@ class WeComChannel(Channel):
             first_response = await self._commit_inbound_stream_response(stream)
             self._schedule_receive(message)
             return first_response
+        if _is_application_message(data):
+            self._schedule_receive(message)
+            return None
         self._schedule_receive(message)
         if stream.response_url:
             return await self._commit_stream_response(
@@ -939,6 +1158,15 @@ class WeComChannel(Channel):
     async def _handle_event(self, data: dict[str, Any]) -> str | None:
         raw_event = data.get("event")
         event = raw_event if isinstance(raw_event, dict) else {}
+        if _is_application_message(data):
+            event_type = _bounded_event_value(event.get("eventtype"), 64)
+            event_key = _bounded_event_value(event.get("event_key"), 128)
+            if not event_type:
+                return None
+            content = f"用户触发了企业微信自建应用事件。\n事件类型：{event_type}"
+            if event_key:
+                content += f"\n操作标识：{event_key}"
+            return await self._dispatch_user_message(data, content)
         if event.get("eventtype") == "enter_chat":
             return make_text(self.settings.welcome_text)
         if event.get("eventtype") == "template_card_event":
@@ -1246,10 +1474,14 @@ class WeComChannel(Channel):
     async def _recover_inbox(self, record: InboxRecord) -> None:
         response_url = _extract_response_url(record.payload)
         long_connection_request_id = _extract_long_connection_request_id(record.payload)
-        if self._is_long_connection() and not long_connection_request_id:
+        application_message = _is_application_message(record.payload)
+        if application_message and self._app_transport is None:
+            await self._mark_inbox(record.inbox_id, "blocked", error_type="transport_unavailable")
+            return
+        if not application_message and self._is_long_connection() and not long_connection_request_id:
             await self._mark_inbox(record.inbox_id, "blocked", error_type="reply_capability_missing")
             return
-        if not self._is_long_connection() and not response_url:
+        if not application_message and not self._is_long_connection() and not response_url:
             await self._mark_inbox(record.inbox_id, "blocked", error_type="reply_capability_missing")
             return
         data = dict(record.payload)
@@ -1265,6 +1497,9 @@ class WeComChannel(Channel):
             logger.warning("wecom.durable inbox recovery failed error_type={}", type(exc).__name__)
 
     async def _recover_outbox(self, record: OutboxRecord) -> None:
+        if record.message_type.startswith("wecom_app_"):
+            await self._recover_application_outbox(record)
+            return
         if record.message_type in {
             "long_connection_proactive_markdown",
             "long_connection_proactive_template_card",
@@ -1294,6 +1529,48 @@ class WeComChannel(Channel):
         except Exception as exc:
             await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
             logger.warning("wecom.durable outbox recovery failed error_type={}", type(exc).__name__)
+            return
+        await self._mark_outbox(record.outbox_id, "delivered")
+        if record.inbox_id:
+            await self._mark_inbox(record.inbox_id, "completed")
+
+    async def _recover_application_outbox(self, record: OutboxRecord) -> None:
+        transport = self._app_transport
+        if transport is None:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="transport_unavailable")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="transport_unavailable")
+            return
+        if record.status == "sending" and record.attempts > 1:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="delivery_outcome_ambiguous")
+            return
+        target = _app_target_from_envelope(record.envelope.get("target"))
+        payload = record.envelope.get("payload")
+        source = record.envelope.get("digital_employee_id")
+        message_type = record.message_type.removeprefix("wecom_app_")
+        if target is None or not isinstance(payload, dict) or not isinstance(source, str):
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="invalid_envelope")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="invalid_envelope")
+            return
+        try:
+            transport.validate_source(source)
+            transport.validate_outbound(message_type, payload)
+            await transport.send(target=target, message_type=message_type, payload=payload)
+        except ValueError:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="invalid_envelope")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="invalid_envelope")
+            return
+        except WeComAppPartialDelivery:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="partial_delivery")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="partial_delivery")
+            return
+        except Exception as exc:
+            await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
             return
         await self._mark_outbox(record.outbox_id, "delivered")
         if record.inbox_id:
@@ -2313,6 +2590,8 @@ class WeComChannel(Channel):
         *,
         plaintext_userid: str | None = None,
     ) -> ConversationAddress:
+        if _is_application_message(data):
+            return self._require_app_transport().address_for(data, plaintext_userid=plaintext_userid)
         if str(data.get("chattype") or "single") == "group" and not str(data.get("chatid") or "").strip():
             logger.warning("wecom.group_message missing chatid msgid={}", _extract_msgid(data))
         return self._transport.address_for(data, plaintext_userid=plaintext_userid)
@@ -2325,6 +2604,38 @@ class WeComChannel(Channel):
             raise TypeError("active stream delivery requires AiBotLongConnectionTransport")
         return self._transport
 
+    def _require_app_transport(self) -> WeComAppTransport:
+        if self._app_transport is None:
+            raise RuntimeError("WeCom application transport is not enabled")
+        return self._app_transport
+
+    async def _deliver_application_terminal(self, stream: StreamReply, content: str) -> str:
+        address = stream.conversation_address
+        if address is None or address.transport != "wecom_app" or not address.effective_userid:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="application_address_missing")
+            return "blocked"
+        try:
+            status = await self.send_application_message(
+                digital_employee_id=self.settings.app_default_digital_employee_id,
+                target=WeComAppTarget(users=(address.effective_userid,)),
+                message_type="text",
+                payload={"content": content},
+                idempotency_key=f"application-terminal:{stream.inbox_id or stream.stream_id}",
+                inbox_id=stream.inbox_id,
+            )
+        except WeComAppPartialDelivery:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="partial_delivery")
+            return "blocked"
+        except Exception as exc:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "failed", error_type=type(exc).__name__)
+            return "delivery_error"
+        if stream.inbox_id and status in {"succeeded", "skipped"}:
+            await self._mark_inbox(stream.inbox_id, "completed")
+        return status
+
     async def _download_and_store_media(
         self,
         *,
@@ -2335,7 +2646,11 @@ class WeComChannel(Channel):
         userid: str | None,
         from_userid: str | None,
     ) -> Any:
-        media_client = self._get_media_client()
+        media_client = (
+            self._get_application_media_client()
+            if _is_application_message(data)
+            else self._get_media_client()
+        )
         if media_client is None:
             raise RuntimeError("WeCom media download requires AGENTSEEK_WECOM_CORP_ID and APP_SECRET")
         file_service = self._get_file_service()
@@ -2376,6 +2691,17 @@ class WeComChannel(Channel):
             return self._media_client
         self._media_client = WeComMediaClient.from_settings(self.settings)
         return self._media_client
+
+    def _get_application_media_client(self) -> MediaClient:
+        if self._application_media_client is not None:
+            return self._application_media_client
+        self._application_media_client = WeComMediaClient(
+            corp_id=self.settings.corp_id,
+            app_secret=self.settings.app_transport_secret.get_secret_value(),
+            api_base_url=self.settings.api_base_url,
+            timeout_seconds=self.settings.api_timeout_seconds,
+        )
+        return self._application_media_client
 
     def _get_file_service(self) -> InboundFileServiceProtocol | None:
         if self._file_service_initialized:
@@ -2454,6 +2780,27 @@ def _address_envelope(address: ConversationAddress) -> dict[str, Any]:
     }
 
 
+def _app_target_envelope(target: WeComAppTarget) -> dict[str, list[str]]:
+    return {
+        "users": list(target.users),
+        "parties": list(target.parties),
+        "tags": list(target.tags),
+    }
+
+
+def _app_target_from_envelope(value: Any) -> WeComAppTarget | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return WeComAppTarget(
+            users=tuple(str(item) for item in value.get("users", [])),
+            parties=tuple(str(item) for item in value.get("parties", [])),
+            tags=tuple(str(item) for item in value.get("tags", [])),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _address_from_envelope(value: Any) -> ConversationAddress | None:
     if not isinstance(value, dict):
         return None
@@ -2490,6 +2837,10 @@ def _address_from_envelope(value: Any) -> ConversationAddress | None:
 
 def _is_durable_recovery(data: dict[str, Any]) -> bool:
     return data.get(_DURABLE_RECOVERY_ATTR) is True
+
+
+def _is_application_message(data: dict[str, Any]) -> bool:
+    return data.get("_agentseek_wecom_app") is True
 
 
 def _durable_reply_deadline(data: dict[str, Any]) -> datetime | None:

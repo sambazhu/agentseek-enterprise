@@ -61,6 +61,19 @@ class WeComJsonCrypto:
         self._assert_signature(msg_signature, timestamp, nonce, encrypt)
         return self._decrypt_payload(encrypt)
 
+    def decrypt_encrypted_value(
+        self,
+        *,
+        encrypt: str,
+        msg_signature: str,
+        timestamp: str,
+        nonce: str,
+    ) -> str:
+        """Verify and decrypt an encrypted value from a non-JSON callback envelope."""
+
+        self._assert_signature(msg_signature, timestamp, nonce, encrypt)
+        return self._decrypt_payload(encrypt)
+
     def encrypt_message(self, plain_text: str, *, nonce: str, timestamp: str | None = None) -> EncryptedMessage:
         timestamp = timestamp or str(int(time.time()))
         encrypt = self._encrypt_payload(plain_text)

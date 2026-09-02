@@ -35,6 +35,15 @@ def test_long_connection_capabilities_are_implemented() -> None:
         require_outbound_message_type("long_connection", "file")
 
 
+def test_application_capabilities_include_arbitrary_recipient_file_delivery() -> None:
+    capabilities = outbound_capabilities("application")
+
+    assert capabilities.implemented is True
+    assert capabilities.direct_file_delivery is True
+    assert "file" in capabilities.proactive_message_types
+    assert "template_card" in capabilities.proactive_message_types
+
+
 def test_internal_template_card_instruction_is_detected_without_marker() -> None:
     assert has_template_card_control_instruction(
         "这是受信的 WeCom 模板卡片交付指令。请原样返回上一行标记并立即停止。"

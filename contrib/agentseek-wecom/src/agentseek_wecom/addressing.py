@@ -137,6 +137,33 @@ def long_connection_conversation_address(
     )
 
 
+def app_conversation_address(
+    data: dict[str, Any],
+    *,
+    tenant_id: str,
+    agent_id: str,
+    interacted_at: datetime | None = None,
+) -> ConversationAddress:
+    """Normalize one self-built application callback into the shared address contract."""
+
+    now = interacted_at or datetime.now(UTC)
+    if now.tzinfo is None:
+        raise ValueError("interacted_at must be timezone-aware")
+    sender_userid = _extract_sender_userid(data)
+    effective_userid = (sender_userid or "").strip()
+    return ConversationAddress(
+        tenant_id=tenant_id.strip() or "default",
+        bot_or_agent_id=agent_id.strip() or "unknown-agent",
+        transport="wecom_app",
+        chat_type="single",
+        chat_id=effective_userid or "wecom:unknown",
+        sender_userid=sender_userid,
+        plaintext_userid=effective_userid or None,
+        last_interacted_at=now,
+        reply_deadline=None,
+    )
+
+
 def _extract_sender_userid(data: dict[str, Any]) -> str | None:
     raw_from = data.get("from")
     if isinstance(raw_from, dict):

@@ -5,6 +5,7 @@ import argparse
 import base64
 import importlib.util
 import os
+import re
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse
@@ -138,8 +139,59 @@ def check_wecom(env: dict[str, str], report: CheckReport) -> None:
         report.fail("AGENTSEEK_WECOM_TRANSPORT_MODE must be callback or long_connection")
     for key in ("AGENTSEEK_WECOM_CORP_ID", "AGENTSEEK_WECOM_APP_SECRET"):
         require(env, report, key)
+    _check_wecom_application(env, report)
     if env.get("AGENTSEEK_WECOM_USERID_RESOLVE_MODE") != "openuserid_to_userid":
         report.warn("AGENTSEEK_WECOM_USERID_RESOLVE_MODE should usually be openuserid_to_userid")
+
+
+def _check_wecom_application(env: dict[str, str], report: CheckReport) -> None:
+    if not truthy(env.get("AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED")):
+        report.ok("supplementary WeCom application transport is disabled")
+        return
+    for key in (
+        "AGENTSEEK_WECOM_CORP_ID",
+        "AGENTSEEK_WECOM_APP_AGENT_ID",
+        "AGENTSEEK_WECOM_APP_TRANSPORT_SECRET",
+        "AGENTSEEK_WECOM_APP_CALLBACK_PATH",
+        "AGENTSEEK_WECOM_APP_CALLBACK_TOKEN",
+        "AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY",
+        "AGENTSEEK_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS",
+        "AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID",
+    ):
+        require(env, report, key)
+    agent_id = env.get("AGENTSEEK_WECOM_APP_AGENT_ID", "").strip()
+    if agent_id.isdigit() and int(agent_id) > 0:
+        report.ok("WeCom application AgentID is valid")
+    else:
+        report.fail("AGENTSEEK_WECOM_APP_AGENT_ID must be a positive integer")
+    callback_path = env.get("AGENTSEEK_WECOM_APP_CALLBACK_PATH", "").strip()
+    if callback_path.startswith("/") and "{" not in callback_path:
+        report.ok("WeCom application callback path is fixed and absolute")
+    else:
+        report.fail("AGENTSEEK_WECOM_APP_CALLBACK_PATH must be a fixed absolute path")
+    if callback_path == env.get("AGENTSEEK_WECOM_CALLBACK_PATH", "").strip():
+        report.fail("WeCom application and AI Bot callback paths must be distinct")
+    callback_token = env.get("AGENTSEEK_WECOM_APP_CALLBACK_TOKEN", "").strip()
+    if re.fullmatch(r"[A-Za-z0-9]{1,32}", callback_token):
+        report.ok("WeCom application callback Token format is valid")
+    else:
+        report.fail("AGENTSEEK_WECOM_APP_CALLBACK_TOKEN must contain 1 to 32 alphanumeric characters")
+    if len(env.get("AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY", "").strip()) == 43:
+        report.ok("WeCom application callback EncodingAESKey length is valid")
+    else:
+        report.fail("AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY must contain 43 characters")
+    allowed = {
+        item.strip()
+        for item in env.get("AGENTSEEK_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS", "").split(",")
+        if item.strip()
+    }
+    default = env.get("AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID", "").strip()
+    if default and default in allowed:
+        report.ok("WeCom application default digital employee is allowlisted")
+    else:
+        report.fail("AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID must be allowlisted")
+    if env.get("AGENTSEEK_WECOM_DURABLE_MODE", "memory").strip() != "sqlite":
+        report.fail("WeCom application production deployment requires AGENTSEEK_WECOM_DURABLE_MODE=sqlite")
 
 
 def check_wecom_durable(env: dict[str, str], project_root: Path, report: CheckReport) -> None:
@@ -181,6 +233,8 @@ def check_wecom_outbound(env: dict[str, str], report: CheckReport) -> None:
     report.ok(f"WeCom AI Bot {transport} transport selected")
     if transport == "long_connection" and env.get("AGENTSEEK_WECOM_DURABLE_MODE", "memory").strip() != "sqlite":
         report.fail("long_connection production deployment requires AGENTSEEK_WECOM_DURABLE_MODE=sqlite")
+    if truthy(env.get("AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED")):
+        report.ok("supplementary WeCom application transport is enabled")
 
     _check_wecom_artifact_delivery(env, report, transport)
 

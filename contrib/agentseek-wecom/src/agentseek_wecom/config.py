@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -226,6 +227,106 @@ class WeComSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("BUB_WECOM_APP_SECRET", "AGENTSEEK_WECOM_APP_SECRET"),
     )
+    app_transport_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_TRANSPORT_ENABLED",
+            "AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED",
+        ),
+    )
+    app_agent_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("BUB_WECOM_APP_AGENT_ID", "AGENTSEEK_WECOM_APP_AGENT_ID"),
+    )
+    app_transport_secret: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_TRANSPORT_SECRET",
+            "AGENTSEEK_WECOM_APP_TRANSPORT_SECRET",
+        ),
+    )
+    app_callback_path: str = Field(
+        default="/wecom/app/callback",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_CALLBACK_PATH",
+            "AGENTSEEK_WECOM_APP_CALLBACK_PATH",
+        ),
+    )
+    app_callback_token: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_CALLBACK_TOKEN",
+            "AGENTSEEK_WECOM_APP_CALLBACK_TOKEN",
+        ),
+    )
+    app_callback_encoding_aes_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_CALLBACK_ENCODING_AES_KEY",
+            "AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY",
+        ),
+    )
+    app_allowed_digital_employee_ids: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS",
+            "AGENTSEEK_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS",
+        ),
+    )
+    app_default_digital_employee_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID",
+            "AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID",
+        ),
+    )
+    app_visibility_cache_ttl_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=3600,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_VISIBILITY_CACHE_TTL_SECONDS",
+            "AGENTSEEK_WECOM_APP_VISIBILITY_CACHE_TTL_SECONDS",
+        ),
+    )
+    app_proactive_probe_trigger: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_PROACTIVE_PROBE_TRIGGER",
+            "AGENTSEEK_WECOM_APP_PROACTIVE_PROBE_TRIGGER",
+        ),
+    )
+    app_proactive_probe_userid: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_PROACTIVE_PROBE_USERID",
+            "AGENTSEEK_WECOM_APP_PROACTIVE_PROBE_USERID",
+        ),
+    )
+    app_proactive_probe_party_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_PROACTIVE_PROBE_PARTY_ID",
+            "AGENTSEEK_WECOM_APP_PROACTIVE_PROBE_PARTY_ID",
+        ),
+    )
+    app_proactive_probe_tag_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_PROACTIVE_PROBE_TAG_ID",
+            "AGENTSEEK_WECOM_APP_PROACTIVE_PROBE_TAG_ID",
+        ),
+    )
+    app_proactive_probe_file_path: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_APP_PROACTIVE_PROBE_FILE_PATH",
+            "AGENTSEEK_WECOM_APP_PROACTIVE_PROBE_FILE_PATH",
+        ),
+    )
     api_base_url: str = Field(
         default="https://qyapi.weixin.qq.com",
         validation_alias=AliasChoices("BUB_WECOM_API_BASE_URL", "AGENTSEEK_WECOM_API_BASE_URL"),
@@ -326,8 +427,47 @@ class WeComSettings(BaseSettings):
                 raise ValueError("long_connection_bot_id is required when long connection is enabled")
             if self.enabled and not self.long_connection_secret.get_secret_value():
                 raise ValueError("long_connection_secret is required when long connection is enabled")
+        self._validate_app_transport()
         return self
+
+    def _validate_app_transport(self) -> None:
+        if not self.app_transport_enabled:
+            return
+        if not self.corp_id.strip():
+            raise ValueError("corp_id is required when app transport is enabled")
+        if not self.app_agent_id.strip().isdigit() or int(self.app_agent_id) <= 0:
+            raise ValueError("app_agent_id must be a positive integer when app transport is enabled")
+        if not self.app_transport_secret.get_secret_value():
+            raise ValueError("app_transport_secret is required when app transport is enabled")
+        _validate_app_callback(self)
+        allowed_digital_employees = _csv_values(self.app_allowed_digital_employee_ids)
+        if not allowed_digital_employees:
+            raise ValueError("app_allowed_digital_employee_ids is required when app transport is enabled")
+        if self.app_default_digital_employee_id not in allowed_digital_employees:
+            raise ValueError("app_default_digital_employee_id must be in app_allowed_digital_employee_ids")
+        _validate_app_probe(self)
 
 
 def load_settings() -> WeComSettings:
     return WeComSettings()
+
+
+def _csv_values(value: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
+def _validate_app_callback(settings: WeComSettings) -> None:
+    if not settings.app_callback_path.startswith("/") or "{" in settings.app_callback_path:
+        raise ValueError("app_callback_path must be a fixed absolute path")
+    if settings.app_callback_path == settings.callback_path:
+        raise ValueError("app_callback_path must be distinct from the AI Bot callback path")
+    callback_token = settings.app_callback_token.get_secret_value()
+    if re.fullmatch(r"[A-Za-z0-9]{1,32}", callback_token) is None:
+        raise ValueError("app_callback_token must contain 1 to 32 alphanumeric characters")
+    if len(settings.app_callback_encoding_aes_key.get_secret_value()) != 43:
+        raise ValueError("app_callback_encoding_aes_key must contain 43 characters")
+
+
+def _validate_app_probe(settings: WeComSettings) -> None:
+    if settings.app_proactive_probe_trigger and not settings.app_proactive_probe_userid:
+        raise ValueError("app_proactive_probe_userid is required when the application probe is enabled")

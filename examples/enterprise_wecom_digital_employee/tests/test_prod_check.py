@@ -120,6 +120,57 @@ def test_transport_preflight_accepts_long_connection_credentials() -> None:
     assert failures == []
 
 
+def test_transport_preflight_accepts_supplementary_application() -> None:
+    failures, warnings = _check_transport({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "callback",
+        "AGENTSEEK_WECOM_CALLBACK_PATH": "/ai-bot/callback/demo/bot-1",
+        "AGENTSEEK_WECOM_TOKEN": "bot-token",
+        "AGENTSEEK_WECOM_ENCODING_AES_KEY": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        "AGENTSEEK_WECOM_CORP_ID": "corp-1",
+        "AGENTSEEK_WECOM_APP_SECRET": "identity-helper-secret",
+        "AGENTSEEK_WECOM_USERID_RESOLVE_MODE": "openuserid_to_userid",
+        "AGENTSEEK_WECOM_DURABLE_MODE": "sqlite",
+        "AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED": "true",
+        "AGENTSEEK_WECOM_APP_AGENT_ID": "1000005",
+        "AGENTSEEK_WECOM_APP_TRANSPORT_SECRET": "application-secret",
+        "AGENTSEEK_WECOM_APP_CALLBACK_PATH": "/wecom/app/callback",
+        "AGENTSEEK_WECOM_APP_CALLBACK_TOKEN": "AppCallbackToken1",
+        "AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        "AGENTSEEK_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS": "industry-report,finance-assistant",
+        "AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID": "industry-report",
+    })
+
+    assert failures == []
+    assert warnings == []
+
+
+def test_transport_preflight_rejects_unsafe_application_configuration() -> None:
+    failures, _ = _check_transport({
+        "AGENTSEEK_WECOM_TRANSPORT_MODE": "callback",
+        "AGENTSEEK_WECOM_CALLBACK_PATH": "/shared/callback",
+        "AGENTSEEK_WECOM_TOKEN": "bot-token",
+        "AGENTSEEK_WECOM_ENCODING_AES_KEY": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        "AGENTSEEK_WECOM_CORP_ID": "corp-1",
+        "AGENTSEEK_WECOM_APP_SECRET": "identity-helper-secret",
+        "AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED": "true",
+        "AGENTSEEK_WECOM_DURABLE_MODE": "memory",
+        "AGENTSEEK_WECOM_APP_AGENT_ID": "not-an-agent",
+        "AGENTSEEK_WECOM_APP_TRANSPORT_SECRET": "application-secret",
+        "AGENTSEEK_WECOM_APP_CALLBACK_PATH": "/shared/callback",
+        "AGENTSEEK_WECOM_APP_CALLBACK_TOKEN": "invalid-token!",
+        "AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY": "too-short",
+        "AGENTSEEK_WECOM_APP_ALLOWED_DIGITAL_EMPLOYEE_IDS": "industry-report",
+        "AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID": "finance-assistant",
+    })
+
+    assert "AGENTSEEK_WECOM_APP_AGENT_ID must be a positive integer" in failures
+    assert "WeCom application and AI Bot callback paths must be distinct" in failures
+    assert "AGENTSEEK_WECOM_APP_CALLBACK_TOKEN must contain 1 to 32 alphanumeric characters" in failures
+    assert "AGENTSEEK_WECOM_APP_CALLBACK_ENCODING_AES_KEY must contain 43 characters" in failures
+    assert "AGENTSEEK_WECOM_APP_DEFAULT_DIGITAL_EMPLOYEE_ID must be allowlisted" in failures
+    assert "WeCom application production deployment requires AGENTSEEK_WECOM_DURABLE_MODE=sqlite" in failures
+
+
 def test_outbound_preflight_rejects_unimplemented_long_connection_direct_file() -> None:
     failures, _ = _check({
         "AGENTSEEK_WECOM_TRANSPORT_MODE": "long_connection",
