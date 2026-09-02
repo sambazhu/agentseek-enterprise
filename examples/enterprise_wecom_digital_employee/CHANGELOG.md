@@ -30,7 +30,7 @@ Do not fast-forward `production` or create a tag before the Linux PASS.
 | Application callback | Verify/decrypt the independent XML callback and normalize text, media, and events into the existing channel queue. |
 | Application sender | Cache the per-application access token and send official text, media, news, Markdown, and template-card message types. |
 | Explicit targets | Address visible members, departments, and tags; reject empty targets, `@all`, malformed identifiers, and official recipient-limit overflow. |
-| Visibility boundary | Refresh `agent/get` visibility and fail closed before delivery when an explicit target is not in the application snapshot. |
+| Visibility boundary | Enforce a non-empty `agent/get` visibility dimension locally; treat an empty dimension as unknown and classify server-side authorization or invalid-recipient results as `blocked`. |
 | Durable delivery | Scope idempotency by tenant, source `digital_employee_id`, AgentID, target, and business key; recover determinate failures from encrypted outbox. |
 | File delivery | Upload bounded temporary media and send the resulting three-day `media_id`; M0.6 live probe verifies one file without changing Work Artifact mode. |
 | Operations | Add production preflight checks and a default-off member/department/tag/file live probe. |

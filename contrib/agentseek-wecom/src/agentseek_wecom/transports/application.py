@@ -17,6 +17,7 @@ from agentseek_wecom.crypto import WeComCryptoError, WeComJsonCrypto
 from agentseek_wecom.transport import InboundMessageHandler
 
 _TOKEN_ERROR_CODES = {40014, 42001}
+_AUTHORIZATION_ERROR_CODES = {60011, 60020, 60111, 81016}
 _MESSAGE_TYPES = {
     "text",
     "image",
@@ -90,6 +91,9 @@ class WeComAppVisibility:
     parties: frozenset[str]
     tags: frozenset[str]
     expires_at: float
+    users_authoritative: bool = True
+    parties_authoritative: bool = True
+    tags_authoritative: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +217,13 @@ class WeComAppTransport:
             parties=frozenset(str(item) for item in ((data.get("allow_partys") or {}).get("partyid") or [])),
             tags=frozenset(str(item) for item in ((data.get("allow_tags") or {}).get("tagid") or [])),
             expires_at=time.monotonic() + self.settings.app_visibility_cache_ttl_seconds,
+            # Some self-built applications return the allow_* containers but
+            # leave every list empty even though message/send accepts targets
+            # from the configured visible scope. An empty list is therefore an
+            # unknown snapshot, not proof that the application can see nobody.
+            users_authoritative=bool((data.get("allow_userinfos") or {}).get("user") or []),
+            parties_authoritative=bool((data.get("allow_partys") or {}).get("partyid") or []),
+            tags_authoritative=bool((data.get("allow_tags") or {}).get("tagid") or []),
         )
         self._visibility = visibility
         return visibility
@@ -346,6 +357,8 @@ class WeComAppTransport:
                 self._access_token_expires_at = 0.0
                 continue
             if errcode != 0:
+                if errcode in _AUTHORIZATION_ERROR_CODES:
+                    raise WeComAppVisibilityDenied("WeCom rejected the application target or visibility scope")
                 raise WeComAppApiError(path, errcode)
             return data
         raise WeComAppApiError(path, 40014)
@@ -404,11 +417,11 @@ def _normalize_ids(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _assert_visible(target: WeComAppTarget, visibility: WeComAppVisibility) -> None:
-    if not set(target.users).issubset(visibility.users):
+    if visibility.users_authoritative and not set(target.users).issubset(visibility.users):
         raise WeComAppVisibilityDenied("one or more users are outside explicit application visibility")
-    if not set(target.parties).issubset(visibility.parties):
+    if visibility.parties_authoritative and not set(target.parties).issubset(visibility.parties):
         raise WeComAppVisibilityDenied("one or more departments are outside application visibility")
-    if not set(target.tags).issubset(visibility.tags):
+    if visibility.tags_authoritative and not set(target.tags).issubset(visibility.tags):
         raise WeComAppVisibilityDenied("one or more tags are outside application visibility")
 
 

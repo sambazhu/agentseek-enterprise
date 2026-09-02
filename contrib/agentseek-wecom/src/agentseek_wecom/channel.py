@@ -22,7 +22,7 @@ from fastapi.responses import Response
 from loguru import logger
 from republic import StreamEvent
 
-from agentseek_wecom.addressing import ConversationAddress, WeComChatType
+from agentseek_wecom.addressing import ConversationAddress, WeComChatType, WeComTransportKind
 from agentseek_wecom.config import WeComSettings
 from agentseek_wecom.crypto import WeComCryptoError
 from agentseek_wecom.durable import (
@@ -53,6 +53,7 @@ from agentseek_wecom.transports.application import (
     WeComAppPartialDelivery,
     WeComAppTarget,
     WeComAppTransport,
+    WeComAppVisibilityDenied,
 )
 from agentseek_wecom.transports.callback import AiBotCallbackTransport
 from agentseek_wecom.transports.long_connection import (
@@ -497,6 +498,12 @@ class WeComChannel(Channel):
             if inbox_id:
                 await self._mark_inbox(inbox_id, "blocked", error_type="partial_delivery")
             raise
+        except WeComAppVisibilityDenied:
+            if durable_outbox is not None:
+                await self._mark_outbox(durable_outbox.outbox_id, "blocked", error_type="visibility_denied")
+            if inbox_id:
+                await self._mark_inbox(inbox_id, "blocked", error_type="visibility_denied")
+            raise
         except Exception as exc:
             if durable_outbox is not None:
                 await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
@@ -529,7 +536,7 @@ class WeComChannel(Channel):
                 if reply is not None:
                     if event.kind == "text":
                         reply.update(append=str(event.data.get("delta", "")), finish=False)
-                        if self._is_long_connection():
+                        if _stream_transport(reply) == "aibot_long_connection":
                             await self._maybe_deliver_long_connection_stream(reply)
                     elif event.kind == "error":
                         reply.update(content=str(event.data.get("message", "模型处理失败")), finish=True)
@@ -1117,6 +1124,10 @@ class WeComChannel(Channel):
         # Fast turns finish in this callback. Slow turns receive one terminal
         # acknowledgement here and deliver their eventual result through the
         # callback's one-shot response_url.
+        if _is_application_message(data):
+            first_response = await self._commit_inbound_stream_response(stream)
+            self._schedule_receive(message)
+            return first_response
         if self._is_long_connection():
             if stream.long_connection_proactive_address is not None:
                 self._schedule_receive(message)
@@ -1124,9 +1135,6 @@ class WeComChannel(Channel):
             first_response = await self._commit_inbound_stream_response(stream)
             self._schedule_receive(message)
             return first_response
-        if _is_application_message(data):
-            self._schedule_receive(message)
-            return None
         self._schedule_receive(message)
         if stream.response_url:
             return await self._commit_stream_response(
@@ -1220,7 +1228,9 @@ class WeComChannel(Channel):
             response_url=response_url,
             long_connection_request_id=str(data.get(LONG_CONNECTION_REQUEST_ID_KEY) or "") or None,
             long_connection_proactive_address=(
-                address if self._is_long_connection() and _is_durable_recovery(data) else None
+                address
+                if address.transport == "aibot_long_connection" and _is_durable_recovery(data)
+                else None
             ),
             conversation_address=address,
             content="已收到，正在处理...",
@@ -1374,6 +1384,13 @@ class WeComChannel(Channel):
         *,
         force_deferred: bool | None = None,
     ) -> str | None:
+        if current.conversation_address is not None and current.conversation_address.transport == "wecom_app":
+            current.initial_response_content = "success"
+            current.initial_response_finish = True
+            current.initial_response_sent = True
+            if current.finish:
+                await self._deliver_application_terminal(current, current.content)
+            return None
         if not self._is_long_connection():
             if force_deferred is None:
                 return await self._stream_response(current.stream_id)
@@ -1568,6 +1585,11 @@ class WeComChannel(Channel):
             await self._mark_outbox(record.outbox_id, "blocked", error_type="partial_delivery")
             if record.inbox_id:
                 await self._mark_inbox(record.inbox_id, "blocked", error_type="partial_delivery")
+            return
+        except WeComAppVisibilityDenied:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="visibility_denied")
+            if record.inbox_id:
+                await self._mark_inbox(record.inbox_id, "blocked", error_type="visibility_denied")
             return
         except Exception as exc:
             await self._mark_outbox(record.outbox_id, "failed", error_type=type(exc).__name__)
@@ -2147,10 +2169,13 @@ class WeComChannel(Channel):
         stream = self._streams.get(stream_id) if isinstance(stream_id, str) else None
         should_deliver = False
         should_deliver_long_connection = False
+        should_deliver_application = False
         if stream is not None and not stream.finish:
             stream.update(content=content, finish=True)
             should_deliver = stream.deferred_response_url
-            should_deliver_long_connection = self._is_long_connection()
+            stream_transport = _stream_transport(stream)
+            should_deliver_long_connection = stream_transport == "aibot_long_connection"
+            should_deliver_application = stream_transport == "wecom_app"
             if stream.inbox_id:
                 self._schedule_inbox_status(stream.inbox_id, "failed", error_type=error_type or status)
         _emit_enterprise_event(
@@ -2163,6 +2188,8 @@ class WeComChannel(Channel):
         )
         if should_deliver and stream is not None:
             self._schedule_response_url_delivery(stream, content)
+        elif should_deliver_application and stream is not None:
+            self._schedule_application_delivery(stream, content)
         elif should_deliver_long_connection and stream is not None:
             if stream.long_connection_proactive_address is not None:
                 self._schedule_long_connection_proactive_delivery(stream, content)
@@ -2204,6 +2231,17 @@ class WeComChannel(Channel):
         )
         self._dispatch_tasks.add(task)
         task.add_done_callback(self._on_dispatch_done)
+
+    def _schedule_application_delivery(self, stream: StreamReply, content: str) -> None:
+        task = asyncio.create_task(
+            self._deliver_application_background(stream, content),
+            name=f"agentseek-wecom.application-final.{stream.stream_id}",
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+
+    async def _deliver_application_background(self, stream: StreamReply, content: str) -> None:
+        await self._deliver_application_terminal(stream, content)
 
     async def _deliver_long_connection_stream_background(self, stream: StreamReply, content: str) -> None:
         await self._deliver_long_connection_stream_once(stream, content)
@@ -2436,15 +2474,18 @@ class WeComChannel(Channel):
         from_userid = getattr(message, _FROM_USERID_ATTR, None)
         if not isinstance(from_userid, str) or not from_userid:
             return
-        resolved_userid = await self._resolve_userid(from_userid)
-        userid = resolved_userid or from_userid
         address = getattr(message, _CONVERSATION_ADDRESS_ATTR, None)
+        if isinstance(address, ConversationAddress) and address.transport == "wecom_app":
+            resolved_userid = from_userid
+        else:
+            resolved_userid = await self._resolve_userid(from_userid)
+        userid = resolved_userid or from_userid
         if isinstance(address, ConversationAddress):
             address = address.with_plaintext_userid(resolved_userid)
             session_id = address.session_id
             chat_id = address.chat_id
             setattr(message, _CONVERSATION_ADDRESS_ATTR, address)
-            if self._is_long_connection():
+            if address.transport == "aibot_long_connection":
                 self._long_connection_transport().remember_interaction(address)
         else:
             wecom_context = message.context.get("wecom")
@@ -2627,6 +2668,10 @@ class WeComChannel(Channel):
         except WeComAppPartialDelivery:
             if stream.inbox_id:
                 await self._mark_inbox(stream.inbox_id, "blocked", error_type="partial_delivery")
+            return "blocked"
+        except WeComAppVisibilityDenied:
+            if stream.inbox_id:
+                await self._mark_inbox(stream.inbox_id, "blocked", error_type="visibility_denied")
             return "blocked"
         except Exception as exc:
             if stream.inbox_id:
@@ -2841,6 +2886,11 @@ def _is_durable_recovery(data: dict[str, Any]) -> bool:
 
 def _is_application_message(data: dict[str, Any]) -> bool:
     return data.get("_agentseek_wecom_app") is True
+
+
+def _stream_transport(stream: StreamReply) -> WeComTransportKind | None:
+    address = stream.conversation_address
+    return address.transport if address is not None else None
 
 
 def _durable_reply_deadline(data: dict[str, Any]) -> datetime | None:

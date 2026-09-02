@@ -26,6 +26,7 @@ from bub.channels.message import ChannelMessage
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
+from republic import StreamEvent
 from rich.console import Console
 from rich.traceback import Traceback
 
@@ -243,6 +244,78 @@ def test_application_visibility_and_partial_delivery_fail_closed() -> None:
                 target=WeComAppTarget(users=("user-1",)),
                 message_type="text",
                 payload={"content": "partial"},
+            )
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_empty_agent_visibility_snapshot_defers_authorization_to_send_api() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/cgi-bin/gettoken":
+            return httpx.Response(200, json={"errcode": 0, "access_token": "token-1", "expires_in": 7200})
+        if request.url.path == "/cgi-bin/agent/get":
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "agentid": 1000005,
+                    "close": 0,
+                    "allow_userinfos": {"user": []},
+                    "allow_partys": {"partyid": []},
+                    "allow_tags": {"tagid": []},
+                },
+            )
+        if request.url.path == "/cgi-bin/message/send":
+            return httpx.Response(200, json={"errcode": 0})
+        raise AssertionError(request.url)
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
+        visibility = await transport.refresh_visibility()
+        assert visibility.users_authoritative is False
+        assert visibility.parties_authoritative is False
+        assert visibility.tags_authoritative is False
+        await transport.send(
+            target=WeComAppTarget(users=("user-accepted-by-server",)),
+            message_type="text",
+            payload={"content": "server-authorized"},
+        )
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+    assert requests == ["/cgi-bin/gettoken", "/cgi-bin/agent/get", "/cgi-bin/message/send"]
+
+
+def test_application_permission_error_is_visibility_denied() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/cgi-bin/message/send"
+        return httpx.Response(200, json={"errcode": 60011})
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = WeComAppTransport(settings=app_settings(), tenant_id="tenant-1", client=client)
+        transport._access_token = "token-1"  # noqa: S105 - deterministic fake test credential
+        transport._access_token_expires_at = float("inf")
+        transport._visibility = WeComAppVisibility(
+            users=frozenset(),
+            parties=frozenset(),
+            tags=frozenset(),
+            expires_at=float("inf"),
+            users_authoritative=False,
+            parties_authoritative=False,
+            tags_authoritative=False,
+        )
+        with pytest.raises(WeComAppVisibilityDenied):
+            await transport.send(
+                target=WeComAppTarget(users=("user-denied-by-server",)),
+                message_type="text",
+                payload={"content": "denied"},
             )
         await client.aclose()
 
@@ -599,6 +672,12 @@ def test_application_inbox_recovers_without_a_callback_response_capability(tmp_p
 
         async def on_receive(message: ChannelMessage) -> None:
             received.append(message.content)
+
+            async def model_events():
+                yield StreamEvent("text", {"delta": "应用"})
+                yield StreamEvent("text", {"delta": "回调正常"})
+
+            _ = [event async for event in channel.stream_events(message, model_events())]
             await channel.send(
                 ChannelMessage(
                     session_id=message.session_id,
@@ -622,6 +701,86 @@ def test_application_inbox_recovers_without_a_callback_response_capability(tmp_p
     asyncio.run(scenario())
 
 
+def test_application_inbound_on_long_connection_host_uses_application_terminal(tmp_path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/cgi-bin/message/send":
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json={"errcode": 0})
+        raise AssertionError(request.url)
+
+    async def scenario() -> None:
+        settings = app_settings(
+            transport_mode="long_connection",
+            durable_mode="sqlite",
+            durable_sqlite_path=str(tmp_path / "messages.sqlite3"),
+            durable_secret=SecretStr("durable-secret-material-that-is-long-enough"),
+        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app_transport = WeComAppTransport(settings=settings, tenant_id="tenant-1", client=client)
+        app_transport._access_token = "token-1"  # noqa: S105 - deterministic fake test credential
+        app_transport._access_token_expires_at = float("inf")
+        app_transport._visibility = WeComAppVisibility(
+            users=frozenset({"user-1"}),
+            parties=frozenset(),
+            tags=frozenset(),
+            expires_at=float("inf"),
+        )
+        channel = WeComChannel(
+            on_receive=None,
+            settings=settings,
+            app_transport=app_transport,
+        )
+        received: list[str] = []
+
+        async def on_receive(message: ChannelMessage) -> None:
+            received.append(message.content)
+
+            async def model_events():
+                yield StreamEvent("text", {"delta": "应用"})
+                yield StreamEvent("text", {"delta": "回调正常"})
+
+            _ = [event async for event in channel.stream_events(message, model_events())]
+            await channel.send(
+                ChannelMessage(
+                    session_id=message.session_id,
+                    channel="wecom",
+                    chat_id=message.chat_id,
+                    content="应用回调正常",
+                )
+            )
+
+        channel.bind_receiver(on_receive)
+        callback_result = await channel._handle_application_plain_message({
+            "msgid": "app-long-host-1",
+            "msgtype": "text",
+            "agentid": "1000005",
+            "chattype": "single",
+            "from": {"userid": "user-1"},
+            "_agentseek_wecom_app": True,
+            "text": {"content": "请只回复应用回调正常"},
+        })
+        await wait_until(lambda: len(calls) == 1)
+        await channel.stop()
+        await client.aclose()
+
+        assert callback_result is None
+        assert received == ["请只回复应用回调正常"]
+        assert calls == [
+            {
+                "touser": "user-1",
+                "msgtype": "text",
+                "agentid": 1000005,
+                "text": {"content": "应用回调正常"},
+                "enable_duplicate_check": 1,
+                "duplicate_check_interval": 1800,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_application_partial_and_ambiguous_outbox_fail_closed(tmp_path) -> None:
     calls = 0
 
@@ -629,6 +788,8 @@ def test_application_partial_and_ambiguous_outbox_fail_closed(tmp_path) -> None:
         nonlocal calls
         if request.url.path == "/cgi-bin/message/send":
             calls += 1
+            if json.loads(request.content).get("text", {}).get("content") == "permission":
+                return httpx.Response(200, json={"errcode": 60011})
             return httpx.Response(200, json={"errcode": 0, "invaliduser": "user-1"})
         raise AssertionError(request.url)
 
@@ -669,8 +830,29 @@ def test_application_partial_and_ambiguous_outbox_fail_closed(tmp_path) -> None:
             )
         with sqlite3.connect(path) as connection:
             assert connection.execute(
-                "SELECT status, last_error_type FROM wecom_outbox"
+                "SELECT status, last_error_type FROM wecom_outbox WHERE last_error_type = 'partial_delivery'"
             ).fetchone() == ("blocked", "partial_delivery")
+        app_transport._visibility = WeComAppVisibility(
+            users=frozenset(),
+            parties=frozenset(),
+            tags=frozenset(),
+            expires_at=float("inf"),
+            users_authoritative=False,
+            parties_authoritative=False,
+            tags_authoritative=False,
+        )
+        with pytest.raises(WeComAppVisibilityDenied):
+            await channel.send_application_message(
+                digital_employee_id="industry-report",
+                target=WeComAppTarget(users=("user-1",)),
+                message_type="text",
+                payload={"content": "permission"},
+                idempotency_key="permission-1",
+            )
+        with sqlite3.connect(path) as connection:
+            assert connection.execute(
+                "SELECT status, last_error_type FROM wecom_outbox WHERE last_error_type = 'visibility_denied'"
+            ).fetchone() == ("blocked", "visibility_denied")
 
         now = datetime.now(UTC)
         ambiguous = store.enqueue_outbox(
@@ -710,4 +892,4 @@ def test_application_partial_and_ambiguous_outbox_fail_closed(tmp_path) -> None:
 
     asyncio.run(scenario())
 
-    assert calls == 1
+    assert calls == 2
