@@ -12,16 +12,57 @@ sources:
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_5_WECOM_LONG_CONNECTION.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md
+  - examples/enterprise_wecom_digital_employee/V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION_RECORD.md
+  - examples/enterprise_wecom_digital_employee/GA_READINESS_V0.1.2.md
 ---
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.6 — self-built application transport in verification
+## enterprise-wecom-v0.1.2-ga — 2026-09-02
 
-Status — Feature branch only. Code commit `12a6bbc` passed local deterministic
-gates. Linux isolated deployment and live Oracles remain required. M0.6 adds a
-supplementary common self-built application alongside the selected AI Bot transport.
-Do not fast-forward `production` or create a tag before the Linux PASS.
+Status — GA. M0.1 through M0.6 passed deterministic gates and Linux live
+verification. GitLab and GitHub `production` were fast-forwarded to the verified
+record `04c4b4a70baa2a04ae612e6416553b3f92c239f5` without a merge commit or
+history rewrite. The immutable enterprise release tag is
+`enterprise-wecom-v0.1.2-ga`.
+
+This enterprise release is the WeCom Transport Foundation. It does not change the
+AgentSeek Core package tag `v0.1.2`, which belongs to the upstream release line.
+
+### Release summary
+
+| Slice | Delivered capability |
+| --- | --- |
+| M0.1 Protocol baseline | Stable direct/group addressing, cross-group isolation, quote semantics, plaintext userid hydration without rewriting group boundaries, and secret-safe settings. |
+| M0.2 Transport kernel | Shared lifecycle and `ConversationAddress` contracts with Callback HTTP and cryptography extracted from channel orchestration. |
+| M0.3 Durable messaging | Encrypted SQLite inbox/outbox, persisted msgid deduplication, leases, reply deadlines, graceful drain, crash recovery, and periodic takeover. |
+| M0.4 Callback hardening | Fast first acknowledgement before media I/O, session-ordered file work, template-card events, and recoverable card delivery states. |
+| M0.5 AI Bot long connection | WebSocket subscribe/heartbeat/reconnect, active streams, 24-hour qualified proactive Markdown/Card, crash fallback, and controlled failed-inbox reconciliation. |
+| M0.6 Self-built application | Independent encrypted callback plus explicit member, authorized department subtree, tag, card, and temporary-file delivery through a common application. |
+
+### Reliability and security fixes
+
+| Area | Resolution |
+| --- | --- |
+| Model context | Keep msgid, BotID, chatid, userid, response capabilities, and signed URLs in private channel context rather than model-visible prompt state. |
+| Semantic memory | Keep direct chat employee-scoped and add the anonymous conversation scope for group storage and retrieval. |
+| Literal recall | Label historical user source separately, prefer it over conflicting assistant history, and preserve requested literals. |
+| Native storage | Serialize SeekDB bootstrap, retrieval, and writes on one dedicated worker thread per plugin instance. |
+| Recovery safety | Use proactive delivery only after determinate stream rejection; keep ambiguous sends blocked and expose bounded manual reconciliation for failed inbox records without outbox. |
+| Application visibility | Treat empty dimensions as unknown, expand non-empty department roots through token-scoped `department/simplelist`, and fail closed on malformed trees, permission denial, or partial recipients. |
+
+### Release boundaries
+
+| Boundary | v0.1.2 behavior |
+| --- | --- |
+| AI Bot selection | One robot uses Callback or long connection, never both. Callback remains the compatibility path. |
+| Common application | A supplementary self-built application may serve allowlisted digital employees; it is not a third AI Bot mode and does not stream. |
+| Runtime profile | The example still loads one Profile and one digital employee per gateway. Shared multi-Profile routing moves to v0.1.3. |
+| Durable topology | The verified durable adapter is encrypted single-host SQLite. Multi-host coordination through Redis/PostgreSQL moves to v0.1.3. |
+| Work artifact | Application file delivery exists, but Work composition does not infer or select application recipients. `direct_file` remains unsupported. |
+| Logging | Restricted local framework logs can still contain the internal `wecom:<userid>` session id and reply text. External structured events remain hashed/redacted; log projection hardening is a later item. |
+
+### M0.6 application additions
 
 ### Added
 

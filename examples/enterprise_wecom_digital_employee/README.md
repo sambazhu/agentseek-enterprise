@@ -6,16 +6,18 @@ It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent
 
 ## Developer Documentation
 
-The current verified baseline is `enterprise-wecom-v0.1.1-ga`. Developers who
+The current verified baseline is `enterprise-wecom-v0.1.2-ga`. Developers who
 deploy or extend this framework should start with:
 
 - [企业数字员工框架研发指南](DEVELOPER_GUIDE.md)
 - [快速部署与创建企业数字员工](DEVELOPER_QUICKSTART.md)
 - [扩展数字员工的 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [数字员工研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
+- [v0.1.2 GA readiness](GA_READINESS_V0.1.2.md)
+- [v0.1.2 production freeze](PRODUCTION_FREEZE.md)
 
 The sections below retain detailed implementation and historical rollout notes.
-When a version reference conflicts, the v0.1.1 developer documents and immutable
+When a version reference conflicts, the v0.1.2 release documents and immutable
 GA tag are authoritative.
 
 The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context, plus ContextSeek semantic recall across the same employee's sessions.
@@ -26,14 +28,19 @@ Use the repository `production` branch for internal deployment and trial use.
 It points at the current Enterprise WeCom GA baseline. Use the GA tag when you
 need an immutable rollback or audit target.
 
+v0.1.2 freezes three WeCom channel roles: an AI Bot chooses Callback or long
+connection, while an optional common self-built application supplies explicit
+member, department, tag, card, and file notifications. Encrypted durable
+inbox/outbox state supplies deduplication, restart recovery, and reconciliation.
+
 ```bash
 git clone -b production http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 ```
 
-To pin the current verified v0.1.1 build:
+To pin the current verified v0.1.2 build:
 
 ```bash
-git clone --branch enterprise-wecom-v0.1.1-ga http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
+git clone --branch enterprise-wecom-v0.1.2-ga http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 ```
 
 Every published development branch, production ref, and release tag must also be
@@ -245,14 +252,14 @@ Generate a new namespace secret before formal production handoff:
 examples/enterprise_wecom_digital_employee/scripts/prod_check.py --generate-namespace-secret
 ```
 
-`PRODUCTION_FREEZE.md` records the historical v0.0.9 freeze. For current
+`PRODUCTION_FREEZE.md` records the current v0.1.2 freeze. For current
 deployments, use this README's developer-documentation entry, the verified
-`production` branch, and the immutable v0.1.1 GA tag.
+`production` branch, and the immutable v0.1.2 GA tag.
 
 For production deployment, prefer the immutable GA tag:
 
 ```bash
-git checkout enterprise-wecom-v0.1.1-ga
+git checkout enterprise-wecom-v0.1.2-ga
 ```
 
 For Mac mini process supervision, edit the repo path in

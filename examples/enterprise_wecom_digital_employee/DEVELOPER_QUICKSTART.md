@@ -3,7 +3,7 @@ title: 快速部署与创建企业数字员工
 type: tutorial
 audience: [A1, A2]
 runs: yes
-verified_on: 2026-07-23
+verified_on: 2026-09-02
 sources:
   - ../../docs/guides/create-project.zh.md
   - ../../templates/deepagents/enterprise-wecom/cookiecutter.json
@@ -18,7 +18,7 @@ sources:
 本教程提供两条起步路径：
 
 - 部署当前已验证的部门数字员工：使用 `production` 或
-  `enterprise-wecom-v0.1.1-ga`。
+  `enterprise-wecom-v0.1.2-ga`。
 - 创建一个新的部门数字员工项目：使用 `deepagents/enterprise-wecom` 模板。
 
 完成后，你将得到可由 `agentseek info`、`doctor`、`task` 和 `dev` 管理的项目。
@@ -44,7 +44,7 @@ sources:
 git clone -b production \
   http://172.200.6.12:9091/harness_agent/agentseek-enterprise.git
 cd agentseek-enterprise
-git switch --detach enterprise-wecom-v0.1.1-ga
+git switch --detach enterprise-wecom-v0.1.2-ga
 ```
 
 公司网外使用必须同步的 GitHub 回退源：

@@ -3,7 +3,7 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-08-03
+verified_on: 2026-09-02
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
@@ -13,6 +13,7 @@ sources:
   - examples/enterprise_wecom_digital_employee/V0.1.1_DEPARTMENT_DIGITAL_EMPLOYEE_PLAN.md
   - examples/enterprise_wecom_digital_employee/V0.1.1_M4_IMPLEMENTATION.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_PLATFORM_FREEZE.md
+  - examples/enterprise_wecom_digital_employee/GA_READINESS_V0.1.2.md
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/profile.yaml
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/pack.yaml
   - docs/concepts/enterprise-wecom-template.zh.md
@@ -23,9 +24,9 @@ sources:
 
 本文记录 `enterprise-wecom` 的已交付基线、当前限制和后续路线。
 
-文档中的 v0.0.9、v0.1.0 和 v0.1.1 章节保留历史决策与验收记录。
-从 v0.1.2 开始的章节才是当前待执行路线，不能把历史章节中的早期设想
-当作尚未实现的需求。
+文档中的 v0.0.9、v0.1.0、v0.1.1 和 v0.1.2 章节保留已交付能力、
+历史决策与验收记录。v0.1.3 起的章节是当前待执行路线；
+不能把历史章节中的早期设想当作尚未实现的需求。
 
 ## 当前定位
 
@@ -56,18 +57,20 @@ v0.1.0 和 v0.1.1 在此基础上进一步完成：
 - DOCX Artifact、发布账本、一次性 signed-link 交付和下载消费；
 - 单会话串行化、队列背压、快速 ACK、exactly-once 交付和健康回归。
 
-当前生产基线是 `enterprise-wecom-v0.1.1-ga`。产品形态仍是：
+当前生产基线是 `enterprise-wecom-v0.1.2-ga`。产品形态是：
 
 ```text
-一个企微 Bot
+一个企微 AI Bot（Callback 或长连接二选一）
 -> 一名部门数字员工
 -> 一个 Profile 级共享能力池
 -> 一个已上线的证券行业报告 Playbook
+可选共用自建应用 -> 指定成员/部门/标签主动通知与文件投递
 ```
 
 Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具，尚未完成
-第二个真实部门数字员工与业务服务的生产验证。v0.1.2 M0 已将该目标
-冻结为信息技术部数字员工的“信息系统需求评审与立项评估”。
+第二个真实部门数字员工与业务服务的生产验证。原 v0.1.2 M0
+已将该目标冻结为信息技术部数字员工的“信息系统需求评审与
+立项评估”；实施已转入 v0.1.3。
 
 所以 v0.0.8 之后的 `enterprise-wecom`，已经不只是一个聊天示例。
 它是可部署、可观测、可审计的企业数字员工运行底座。
@@ -946,13 +949,20 @@ Mac mini 企微活体验收。RC 全生命周期与六项服务端可靠性加�
 v0.1.0 已完成的审批、发布和交付不在 v0.1.1 重做。尚未完成的多人评审、职责分离、
 组织 RBAC、审批中心、SLA、任务运营和人工接管，放在 Multi-Playbook 基础稳定后的治理切片。
 
-## v0.1.2：平台化加固与第二个部门数字员工
+## v0.1.2：企微 Transport Foundation
 
-v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或交付链路。
-本版本要回答两个问题：
+v0.1.2 收口企微 Callback、AI Bot 长连接和自建应用三种渠道，
+并建立共用的会话地址、持久化消息、幂等、恢复和安全边界。
+本版本回答两个问题：
 
-1. 当前实现能否安全地复用于第二个部门业务服务；
-2. 当前单实例样例能否演进为可由研发团队持续扩展和运维的平台。
+1. 一个 AI Bot 如何在 Callback 和长连接中选择稳定的主通道；
+2. 长任务、主动通知、文件和卡片如何在重启与异常后保持隔离、
+   幂等和可对账。
+
+M0.1–M0.6 均已完成 Linux 活体复验并快进合入 GitLab/GitHub
+`production` 提交 `04c4b4a70baa2a04ae612e6416553b3f92c239f5`。
+本版本不交付第二个真实部门数字员工；原计划的组织授权、
+扩展 SDK、第二部门 Playbook 和分布式运行时转入 v0.1.3。
 
 ### M0：当前状态与路线冻结
 
@@ -963,7 +973,7 @@ v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或�
 - 标记 v0.1.0 和 v0.1.1 已完成能力；
 - 将早期 research/content 设想保留为历史，不再列为待实现主线；
 - 公开当前权限、身份、运行时、下载和任务生命周期限制；
-- 冻结 v0.1.2 的里程碑顺序与不做事项；
+- 冻结原平台化里程碑顺序与不做事项；
 - 为第二个真实部门数字员工和 Playbook 选择业务负责人、输入、
   输出、审批人和验收样例。
 
@@ -976,8 +986,8 @@ v0.1.2 不再重复建设已经存在的 research、content、DOCX、发布或�
 
 M0 决策见 `V0.1.2_M0_PLATFORM_FREEZE.md`。首个交付物冻结为
 《信息系统立项评估报告》；数字员工只提供立项建议，不代替正式立项审批。
-本文档与配套研发指南完成后，由 Mac mini 执行文档一致性和模板回归复核；
-复核通过即关闭 M0，再进入 M1，不在 M0 提前修改运行时代码或 schema。
+该业务合同作为 v0.1.3 M1–M3 的输入保留，不属于 v0.1.2 GA
+的已交付范围。
 
 ### M0.1：企微协议基线
 
@@ -1134,12 +1144,11 @@ conversation_id`。不能用 BotID 代替 `digital_employee_id`，否则同一�
 
 目标是实现 `WeComAppTransport`，承担真正的指定成员、部门和标签主动通知。
 
-当前状态：功能分支 `enterprise/v0.1.2-wecom-app-transport` 已完成
-Linux 隔离部署。应用入站、主动成员消息和 SIGTERM 恢复已活体通过；
-最后收口为将 `agent/get` 的授权部门根节点按企微子树语义安全展开，
-然后只复验主动部门、标签和文件投递。设计与复验分别见
+当前状态：PASS 并已快进合入双端 `production`。应用入站、
+指定成员/部门/标签/文件主动投递、部门子树可见范围和
+SIGTERM 恢复已完成 Linux 活体验证。设计与复验分别见
 `V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md` 和
-`V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION.md`。
+`V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION_RECORD.md`。
 
 范围：
 
@@ -1156,8 +1165,13 @@ Linux 隔离部署。应用入站、主动成员消息和 SIGTERM 恢复已活�
 Profile 和一个 AI Bot；每个 Bot 在 Callback 与长连接中二选一。一个企业级
 自建应用可以作为这些数字员工共享的主动通知出口，但每条 outbox 必须携带
 来源 `digital_employee_id`，并校验应用可见范围、目标成员/部门/标签和幂等键。
-当前 `CORP_ID/APP_SECRET` 只服务 userid 转换等辅助 API，不代表该公共应用
-Transport 已实现。
+辅助 userid 转换凭据与公共应用 Transport 凭据仍须独立配置、独立轮换，
+不能混用。
+
+## v0.1.3：平台化加固与第二个部门数字员工
+
+v0.1.3 在 v0.1.2 三 Transport 和 durable 基座上，进入组织授权、
+扩展 SDK、第二部门数字员工与生产运行时加固。
 
 ### M1：组织授权与身份 Provider 抽象
 
@@ -1267,7 +1281,7 @@ Playbook 治理可跨部门复用，而不是复制证券报告。
 - 员工可以显式归档已交付任务，再创建同 Playbook 的新任务；
 - 历史 WorkItem、合同、Artifact、Publication 和 Delivery 保持不可变可审计。
 
-### v0.1.2 不做事项
+### v0.1.3 不做事项
 
 - 不使用 LLM-first 路由静默选择正式 Playbook；
 - 不恢复允许模型拼接 MCP server/tool 名的通用工具；
@@ -1295,7 +1309,8 @@ v0.0.8  企业身份、记忆、MCP、审计和观测 runtime
 v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
 v0.1.0  证券行业报告 WorkItem 全生命周期与 signed-link 交付
 v0.1.1  部门数字员工、Job Charter、统一能力池和 Multi-Playbook Foundation
-v0.1.2  组织授权、扩展 SDK、第二个部门数字员工和生产运行时加固
+v0.1.2  企微 Callback/长连接/自建应用 Transport、durable 恢复与安全隔离
+v0.1.3  组织授权、扩展 SDK、第二个部门数字员工和生产运行时加固
 后续     多人治理、多数字员工协作、多格式产物和管理后台
 ```
 

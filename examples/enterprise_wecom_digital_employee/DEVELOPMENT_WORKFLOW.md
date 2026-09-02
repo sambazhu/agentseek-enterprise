@@ -3,7 +3,7 @@ title: 数字员工研发分支、验证与合并流程
 type: how-to
 audience: [A1, A2, A3]
 runs: yes
-verified_on: 2026-07-23
+verified_on: 2026-09-02
 sources:
   - ../../Makefile
   - ../../tests/cli_commands/test_templates_render.py
@@ -39,7 +39,7 @@ git pull --ff-only
 确认 GA 是基线祖先：
 
 ```bash
-git merge-base --is-ancestor enterprise-wecom-v0.1.1-ga production
+git merge-base --is-ancestor enterprise-wecom-v0.1.2-ga production
 ```
 
 命令退出码应为 0。
@@ -55,7 +55,7 @@ enterprise/<version>-<short-topic>
 例如：
 
 ```bash title="not executed in this run"
-git switch -c enterprise/v0.1.2-department-briefing
+git switch -c enterprise/v0.1.3-department-briefing
 ```
 
 这是分支命名示例，本次文档改动保留在当前工作分支，没有额外创建分支。
@@ -166,7 +166,7 @@ make docs-test
 如果任务不包含企业 MCP policy 变更，确认受保护文件相对 GA 零差异：
 
 ```bash
-git diff enterprise-wecom-v0.1.1-ga -- \
+git diff enterprise-wecom-v0.1.2-ga -- \
   contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py \
   examples/enterprise_wecom_digital_employee/src/enterprise_wecom_digital_employee/tools.py
 ```
@@ -245,15 +245,15 @@ git commit -m "feat(enterprise-wecom): add department briefing playbook"
 不再视为可选镜像。以实际远端名为准：
 
 ```bash title="not executed in this run"
-git push -u company-gitlab enterprise/v0.1.2-department-briefing
+git push -u company-gitlab enterprise/v0.1.3-department-briefing
 git ls-remote company-gitlab \
-  refs/heads/enterprise/v0.1.2-department-briefing
+  refs/heads/enterprise/v0.1.3-department-briefing
 ```
 
 ```bash title="not executed in this run"
-git push -u origin enterprise/v0.1.2-department-briefing
+git push -u origin enterprise/v0.1.3-department-briefing
 git ls-remote origin \
-  refs/heads/enterprise/v0.1.2-department-briefing
+  refs/heads/enterprise/v0.1.3-department-briefing
 ```
 
 两次 `git ls-remote` 必须返回同一 commit。任一端推送失败时，

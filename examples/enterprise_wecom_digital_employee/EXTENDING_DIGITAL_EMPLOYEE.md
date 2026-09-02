@@ -3,7 +3,7 @@ title: 扩展数字员工的 Skill、MCP 和 Playbook
 type: how-to
 audience: [A2, A3]
 runs: yes
-verified_on: 2026-08-03
+verified_on: 2026-09-02
 sources:
   - V0.1.2_M0_PLATFORM_FREEZE.md
   - src/enterprise_wecom_digital_employee/capability_catalog.py
@@ -239,7 +239,8 @@ service_catalog:
 同时把 `information-system-requirement-review@1` 加入信息技术部 Profile 的
 `supported_playbooks`。这项服务属于独立的信息技术部数字员工，不要把它加入
 战略发展部 Profile。冻结的输入合同、审批边界和验收样例见
-[`V0.1.2_M0_PLATFORM_FREEZE.md`](V0.1.2_M0_PLATFORM_FREEZE.md)。
+[`V0.1.2_M0_PLATFORM_FREEZE.md`](V0.1.2_M0_PLATFORM_FREEZE.md)；该业务交付范围
+已转入 v0.1.3，v0.1.2 GA 不包含第二部门上线。
 
 不要为了证明多 Playbook 能运行而发布一个假的生产服务。测试夹具应只放在测试中。
 

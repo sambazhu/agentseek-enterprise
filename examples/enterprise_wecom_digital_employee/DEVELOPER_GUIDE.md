@@ -3,7 +3,7 @@ title: 企业数字员工框架研发指南
 type: explanation
 audience: [A1, A2, A3]
 runs: no
-verified_on: 2026-08-03
+verified_on: 2026-09-02
 sources:
   - ../../README.md
   - ../../contrib/README.md
@@ -20,12 +20,12 @@ sources:
 # 企业数字员工框架研发指南
 
 本文面向负责开发、部署和维护企业数字员工的研发人员，解释框架的职责边界、
-核心概念和扩展方式。当前可部署基线为 `enterprise-wecom-v0.1.1-ga`。
+核心概念和扩展方式。当前可部署基线为 `enterprise-wecom-v0.1.2-ga`。
 
 配套文档：
 
 - [当前基线、限制与后续路线](ROADMAP.md)
-- [v0.1.2 平台边界与第二个部门数字员工冻结](V0.1.2_M0_PLATFORM_FREEZE.md)
+- [原平台边界与第二部门冻结（v0.1.3 输入）](V0.1.2_M0_PLATFORM_FREEZE.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
@@ -103,7 +103,7 @@ v0.1.1 采用以下产品模型：
 组织授权或知识边界不同，就应新建另一个 Bot 和数字员工，不能为了展示
 Multi-Playbook 而混合部门。
 
-v0.1.2 的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
+v0.1.3 计划的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
 “信息系统需求评审与立项评估”。它与战略发展部数字员工复用同一套 SDK 和
 Capability 接口，但不共享部门身份、任务账本或审批边界。同 Bot Multi-Playbook
 继续由测试 fixture 验证。
@@ -275,7 +275,7 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 示例目录是已经持续验证的参考实现。凡是希望后续新项目自动获得的能力，都要
 同步修改 Cookiecutter 模板，并运行模板渲染测试；只改示例不会自动更新脚手架。
 当前模板尚未生成与示例工程等价的 Profile、权限、路由和 Playbook 单测骨架，
-该项已进入 v0.1.2 M2。
+该项已进入 v0.1.3 M2。
 
 ## 安全和治理底线
 
@@ -287,26 +287,26 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 - 外部数据和公开搜索按员工最新消息的明确授权执行。
 - Playbook 权限必须是 Profile 权限子集。
 - 不直接 `UPDATE`/`DELETE` 正式 Work、合同、证据、Artifact 或 Delivery。
-- 生产交付当前使用一次性短时签名链接；浏览器 SSO 尚未纳入 v0.1.1 GA。
+- 生产交付当前使用一次性短时签名链接；浏览器 SSO 尚未纳入 v0.1.2 GA。
 
 ## 当前平台限制
 
-在 v0.1.2 完成对应切片前，部署和扩展时必须接受以下边界：
+在 v0.1.3 完成对应平台化切片前，部署和扩展时必须接受以下边界：
 
 - 跨部门授权仍有展示名称匹配遗留；第二个部门服务必须等稳定组织 ID 和成员关系
   校验完成后再上线生产。
 - 会话队列默认是一条 active turn 加三条 pending；只有已接纳消息承诺
   exactly-once，超出容量的 burst 会明确拒绝，不进入 Agent。
-- 队列、stream ownership、msgid dedup 和 in-flight lease 主要是单进程状态，
-  多实例接管和重启恢复尚未完成。
+- 队列和 durable inbox/outbox 已支持单实例重启恢复；多主机共享
+  存储、同会话单飞和实例失效接管尚未完成。
 - signed-link 下载只有短时、一次性、recipient-bound token，没有浏览器侧
   OIDC、SAML 或企微网页身份二次校验。
 - `delivered` 任务仍占用同一 requester、数字员工和 Playbook 的活跃范围；
   正式归档和另建同类任务尚未实现。
 - Evidence/Claim 绑定提供可追溯性，不等于独立事实审查；当前正式产物只支持 DOCX。
 
-完整业务边界和 v0.1.2 实施顺序以
-[M0 冻结文档](V0.1.2_M0_PLATFORM_FREEZE.md)为准。
+完整业务边界和 v0.1.3 实施顺序以
+[Roadmap](ROADMAP.md) 为准；原 M0 冻结文档保留为范围转移记录。
 
 下一步请根据目标选择：
 
