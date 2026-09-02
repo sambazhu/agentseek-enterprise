@@ -1093,14 +1093,11 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 目标是实现 `AiBotLongConnectionTransport`，并让长任务、定时提醒和
 已交互会话主动状态通知使用长连接主通道。
 
-当前状态：Transport 确定性与 Linux 活体 Oracle 已通过。`fb6e851`
-的 ContextSeek 群会话作用域已在无污染新群中证实零交叉。后续证据确认
-所谓“编造的技术 ID”其实是模型回显当前入站 `msgid`。`5668e2f` 已将
-内部路由上下文与模型可见语义投影分离，Linux 静态合同和模型侧旁证均已
-通过。该轮又暴露 SeekDB 原生并发和旧连接 stream 恢复缺口；`a216db8`、
-`13c4b85` 已修复并通过 Linux 活体验证。剩余收口为：用 `7c29f6c` 提供的
-人工、精确、受限重排入口处理一条 failed 且无 outbox 的孤儿 inbox，并在
-无历史污染的新群 E/F 完成字面量召回终验。现有 Callback 机器人不切换模式。
+当前状态：PASS 并已快进合入双端 `production`，收官提交为
+`2cff5c0e609695349286cea9e10ceeca17f93792`。Transport、群会话语义隔离、
+短期记忆字面量召回、模型上下文投影、SeekDB 专用线程、原生退出后主动
+投递降级和 failed inbox 受控对账均已通过 Linux 活体 Oracle。历史
+BLOCKED 记录保留，不改写历史。
 
 范围：
 
@@ -1121,7 +1118,7 @@ M0.4 不改变 Transport 类型，也不提前实现 WebSocket 或应用主动�
 - `failed` inbox 不进入自动恢复；仅允许网关停止时，由操作员对无 outbox、
   未过期且未超过尝试上限的单条记录显式重排，避免重复业务副作用。
 
-Linux 活体验收通过前，不合入 `production`，也不建立发布 tag。
+该门禁已通过并快进合入 `production`；本轮未建立发布 tag。
 设计与切换复验分别见 `V0.1.2_M0_5_WECOM_LONG_CONNECTION.md` 和
 `V0.1.2_M0_5_WECOM_LONG_CONNECTION_VERIFICATION.md`。
 
@@ -1136,6 +1133,12 @@ conversation_id`。不能用 BotID 代替 `digital_employee_id`，否则同一�
 ### M0.6：企微自建应用 Transport
 
 目标是实现 `WeComAppTransport`，承担真正的指定成员、部门和标签主动通知。
+
+当前状态：功能分支 `enterprise/v0.1.2-wecom-app-transport` 的代码提交
+`12a6bbc` 已通过本地确定性门禁，等待 Linux 隔离部署和活体复验。只在
+Linux 静态门禁通过后由管理员创建公共自建应用。设计与复验分别见
+`V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md` 和
+`V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION.md`。
 
 范围：
 

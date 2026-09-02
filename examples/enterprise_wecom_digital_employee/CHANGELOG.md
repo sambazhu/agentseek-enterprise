@@ -3,7 +3,7 @@ title: Enterprise WeCom changelog
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-09-01
+verified_on: 2026-09-02
 sources:
   - contrib/agentseek-files/src/agentseek_files
   - contrib/agentseek-wecom/src/agentseek_wecom
@@ -11,21 +11,48 @@ sources:
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_5_WECOM_LONG_CONNECTION.md
+  - examples/enterprise_wecom_digital_employee/V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md
 ---
 
 # Enterprise WeCom changelog
 
-## v0.1.2 M0.5 — pending Linux reconciliation and clean-group verification
+## v0.1.2 M0.6 — self-built application transport in verification
 
-Status — Feature branch only. Transport live Oracles passed, and ContextSeek group
-isolation is zero-crossing in fresh groups. Linux evidence showed that the apparent
-hexadecimal hallucinations were inbound `msgid` values exposed to the model.
-Prompt-projection fix `5668e2f` passed its static and live contracts. Linux also
-validated SeekDB serialization `a216db8` and native-exit recovery `13c4b85`,
-including exactly-once proactive delivery of the recoverable historical result.
-The remaining gates are an explicit reconciliation of one failed inbox without an
-outbox and a literal-recall Oracle in fresh groups E/F. Do not merge to
-`production` before both pass.
+Status — Feature branch only. Code commit `12a6bbc` passed local deterministic
+gates. Linux isolated deployment and live Oracles remain required. M0.6 adds a
+supplementary common self-built application alongside the selected AI Bot transport.
+Do not fast-forward `production` or create a tag before the Linux PASS.
+
+### Added
+
+| Area | Change |
+| --- | --- |
+| Application callback | Verify/decrypt the independent XML callback and normalize text, media, and events into the existing channel queue. |
+| Application sender | Cache the per-application access token and send official text, media, news, Markdown, and template-card message types. |
+| Explicit targets | Address visible members, departments, and tags; reject empty targets, `@all`, malformed identifiers, and official recipient-limit overflow. |
+| Visibility boundary | Refresh `agent/get` visibility and fail closed before delivery when an explicit target is not in the application snapshot. |
+| Durable delivery | Scope idempotency by tenant, source `digital_employee_id`, AgentID, target, and business key; recover determinate failures from encrypted outbox. |
+| File delivery | Upload bounded temporary media and send the resulting three-day `media_id`; M0.6 live probe verifies one file without changing Work Artifact mode. |
+| Operations | Add production preflight checks and a default-off member/department/tag/file live probe. |
+
+### Boundaries
+
+| Boundary | Behavior |
+| --- | --- |
+| AI Bot mode | Each AI Bot still chooses Callback or long connection. The common application coexists and is not a third robot mode. |
+| Source identity | Every proactive send names an allowlisted `digital_employee_id`; AgentID is a channel credential, not the business identity. |
+| Streaming | The application callback is acknowledged immediately; terminal Agent output is a new application message and is not streamed. |
+| Broadcast | `@all` is intentionally unsupported. Partial recipient acceptance becomes `blocked` for reconciliation. |
+| Shared application | One application may serve several digital employees, but current example runtime still loads one Profile; multi-Profile routing remains later work. |
+| Work Artifact | `AGENTSEEK_WORK_ARTIFACT_DELIVERY_MODE=direct_file` remains unsupported until Work composition explicitly routes through the application outbox. |
+
+## v0.1.2 M0.5 — production complete
+
+Status — PASS. Linux validated all transport, recovery, memory, and clean-group
+Oracles. GitHub and GitLab `production` plus both feature refs were fast-forwarded
+to `2cff5c0e609695349286cea9e10ceeca17f93792` without merge commits, force push,
+runtime changes, or a release tag. The six historical BLOCKED records remain as
+an audit trail.
 
 ### Added
 
