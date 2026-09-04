@@ -5,7 +5,7 @@ audience: [A3, A4]
 runs: no
 verified_on: 2026-09-04
 sources:
-  - examples/enterprise_wecom_digital_employee/ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
+  - docs/concepts/enterprise-wecom-architecture.md
   - contrib/agentseek-files/src/agentseek_files
   - contrib/agentseek-wecom/src/agentseek_wecom
   - contrib/agentseek-contextseek/src/agentseek_contextseek/plugin.py
@@ -21,7 +21,8 @@ sources:
 
 ## Post-GA architecture clarification — 2026-09-04
 
-Added `ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md` and a versioned architecture
+Added the repository-level `docs/concepts/enterprise-wecom-architecture.md`
+explanation and a versioned architecture
 diagram. The product model is now explicit: one logical deployment represents
 one digital employee; that employee owns one Profile, one capability pool, and
 zero or more Playbooks. A department may deploy several digital employees as

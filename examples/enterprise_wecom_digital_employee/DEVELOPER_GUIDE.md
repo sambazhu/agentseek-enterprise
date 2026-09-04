@@ -9,7 +9,7 @@ sources:
   - ../../contrib/README.md
   - ../../templates/deepagents/enterprise-wecom/README.md
   - ROADMAP.md
-  - ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
+  - docs/concepts/enterprise-wecom-architecture.zh.md
   - V0.1.2_M0_PLATFORM_FREEZE.md
   - src/enterprise_wecom_digital_employee/agent.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
@@ -26,7 +26,7 @@ sources:
 配套文档：
 
 - [当前基线、限制与后续路线](ROADMAP.md)
-- [数字员工架构、概念与部署边界](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
+- [数字员工架构、概念与部署边界](../../docs/concepts/enterprise-wecom-architecture.zh.md)
 - [原平台边界与第二部门冻结（v0.1.3 输入）](V0.1.2_M0_PLATFORM_FREEZE.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
@@ -78,10 +78,10 @@ Skill / 文件 / 知识 / MCP         同一能力池 + WorkItem + 合同 + 状�
 
 ### 完整架构图
 
-[![Enterprise WeCom v0.1.2 完整架构](assets/enterprise-wecom-v0.1.2-architecture.svg)](assets/enterprise-wecom-v0.1.2-architecture.svg)
+[![Enterprise WeCom v0.1.2 完整架构](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
 
-- [查看可缩放 SVG 原图](assets/enterprise-wecom-v0.1.2-architecture.svg)
-- [下载 4096 × 2880 PNG 高清图](assets/enterprise-wecom-v0.1.2-architecture-4k.png)
+- [查看可缩放 SVG 原图](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
+- [下载 4096 × 2880 PNG 高清图](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture-4k.png)
 
 ### 各层职责
 
@@ -124,7 +124,7 @@ Multi-Playbook 而混合部门。
 
 当前一个部署单元由一个进程运行。未来同一逻辑数字员工可以增加多个高可用副本，
 但这些副本仍共享同一个 `digital_employee_id` 和一致性边界。完整定义和数据隔离
-要求见 `ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md`。
+要求见[企业微信数字员工架构](../../docs/concepts/enterprise-wecom-architecture.zh.md)。
 
 v0.1.3 计划的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
 “信息系统需求评审与立项评估”。它与战略发展部数字员工复用同一套 SDK 和

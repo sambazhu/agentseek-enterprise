@@ -16,14 +16,19 @@ commit 获取。
 ## 企业微信数字员工部署
 
 本 fork 同时维护已经内部验收的企业微信数字员工方案。最新说明以 `production`
-分支为准；需要不可变运行基线时固定到 `enterprise-wecom-v0.1.1-ga`。企业部署不要
+分支为准；需要不可变运行基线时固定到 `enterprise-wecom-v0.1.2-ga`。企业部署不要
 直接使用上游 `main`。
 
 ```bash
 git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.1.1-ga
+git checkout enterprise-wecom-v0.1.2-ga
 ```
+
+[![Enterprise WeCom v0.1.2 架构](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
+
+阅读[架构、概念与部署边界](docs/concepts/enterprise-wecom-architecture.zh.md)，
+或下载 [4096 × 2880 高清架构图](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture-4k.png)。
 
 公司 GitLab 镜像维护相同的生产分支和标签。部署密钥、本地 MCP 配置、模型文件、
 运行数据和数据库凭证均不得提交到任一仓库。

@@ -3,11 +3,12 @@ title: Enterprise WeCom Template
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-08-03
+verified_on: 2026-09-04
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
   - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
+  - docs/concepts/enterprise-wecom-architecture.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
 ---
@@ -20,22 +21,28 @@ layered memory.
 
 ## Current Status
 
-`enterprise-wecom-v0.1.1-ga` is the current GA baseline.
+`enterprise-wecom-v0.1.2-ga` is the current immutable GA baseline. The
+`production` branch carries later documentation clarifications without moving
+that tag.
 
 It was verified in two forms:
 
 1. the in-repository `examples/enterprise_wecom_digital_employee` deployment;
 2. a standalone project rendered by `agentseek create deepagents/enterprise-wecom`.
 
-Both passed the same live WeCom smoke tests: identity, short-term memory,
-explicit durable memory, semantic memory, MCP tools, sidecar stability, and
-WeCom retry deduplication.
+The v0.1.2 M0.1–M0.6 verification also covers Callback and long-connection AI
+Bots, the supplementary self-built application, durable messaging, group
+isolation, media, cards, proactive delivery, and restart recovery.
+
+Read [Enterprise WeCom architecture](enterprise-wecom-architecture.md) for the
+digital employee, Playbook, Transport, deployment, and data boundaries.
 
 ## Runtime Shape
 
 ```text
-WeCom intelligent robot
--> agentseek-wecom channel
+WeCom AI Bot: Callback or long connection
+Optional self-built application
+-> agentseek-wecom Transports and channel
 -> bub gateway
 -> agentseek-enterprise employee identity
 -> agentseek-langchain RunnableSpec
@@ -45,7 +52,7 @@ WeCom intelligent robot
 
 The generated project owns its runtime details through a Lifecycle v2
 `.agentseek/lifecycle.toml` and `scripts/run_gateway.sh`. Lifecycle discovery
-models the callback gateway as one primary advanced API service, binds it to
+models the WeCom gateway as one primary advanced API service, binds it to
 the gateway process, and checks its local `/health` endpoint. It intentionally
 does not publish the callback path, Bot ID, or credentials as discovery data.
 
@@ -113,11 +120,7 @@ small, local approval and audit surface.
 
 ## Production Baseline
 
-Use the GA tag for deployments:
+Use `enterprise-wecom-v0.1.2-ga` when you need the immutable deployment and
+audit baseline. Use `production` for the latest approved documentation.
 
-```bash
-git checkout enterprise-wecom-v0.1.1-ga
-```
-
-The detailed freeze record lives in
-`examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`.
+See the [detailed production freeze record](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md).

@@ -3,11 +3,12 @@ title: 企业微信模板
 type: explanation
 audience: [A2, A4]
 runs: no
-verified_on: 2026-08-03
+verified_on: 2026-09-04
 sources:
   - templates/deepagents/enterprise-wecom/README.md
   - templates/deepagents/enterprise-wecom/{{cookiecutter.project_slug}}/.env.example
   - contrib/agentseek-enterprise/src/agentseek_enterprise/mcp_policy.py
+  - docs/concepts/enterprise-wecom-architecture.zh.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
   - examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md
 ---
@@ -19,21 +20,26 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 
 ## 当前状态
 
-`enterprise-wecom-v0.1.1-ga` 是当前 GA 基线。
+`enterprise-wecom-v0.1.2-ga` 是当前不可变 GA 基线。`production` 分支可以继续
+收录文档澄清，但不会移动该标签。
 
 它已经完成两类验证：
 
 1. 仓库内 `examples/enterprise_wecom_digital_employee` 部署。
 2. 通过 `agentseek create deepagents/enterprise-wecom` 渲染出的独立项目。
 
-两个维度都通过了同一套企业微信 live smoke test：身份、短期记忆、显式长期记忆、
-语义长期记忆、MCP 工具、sidecar 稳定性和企微重试去重。
+v0.1.2 M0.1–M0.6 验证还覆盖 Callback 与长连接 AI Bot、补充自建应用、持久化
+消息、群聊隔离、媒体、卡片、主动投递和重启恢复。
+
+数字员工、Playbook、Transport、部署和数据边界见
+[企业微信数字员工架构](enterprise-wecom-architecture.md)。
 
 ## Runtime 形态
 
 ```text
-企业微信智能机器人
--> agentseek-wecom channel
+企微 AI Bot：Callback 或长连接
+可选自建应用
+-> agentseek-wecom Transport 与 channel
 -> bub gateway
 -> agentseek-enterprise 员工身份
 -> agentseek-langchain RunnableSpec
@@ -42,7 +48,7 @@ MCP 工具和多层记忆，生成一个企业微信数字员工项目。
 ```
 
 生成项目通过 Lifecycle v2 `.agentseek/lifecycle.toml` 和
-`scripts/run_gateway.sh` 管理自己的 runtime 细节。Lifecycle 服务发现将回调
+`scripts/run_gateway.sh` 管理自己的 runtime 细节。Lifecycle 服务发现将企微
 gateway 建模为唯一主服务，绑定 gateway 进程并检查本机 `/health` 端点；
 企微回调路径、Bot ID 和凭据不会进入可发现元数据。
 
@@ -101,10 +107,7 @@ reason 和脱敏后的 arguments。它不是下游业务系统日志，也不能
 
 ## 生产基线
 
-生产部署使用 GA tag：
+需要不可变的部署和审计基线时使用 `enterprise-wecom-v0.1.2-ga`；需要最新已批准
+文档时使用 `production`。
 
-```bash
-git checkout enterprise-wecom-v0.1.1-ga
-```
-
-详细冻结记录在 `examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md`。
+参阅[生产冻结记录](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md)。

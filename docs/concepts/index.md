@@ -3,7 +3,7 @@ title: Concepts
 type: explanation
 audience: [A2, A5]
 runs: no
-verified_on: 2026-06-22
+verified_on: 2026-09-04
 sources:
   - README.md
 ---
@@ -16,3 +16,4 @@ Use these pages to understand the design behind the workflow.
 | --- | --- |
 | [Lifecycle Toolkit](lifecycle-toolkit.md) | Why is AgentSeek organized around lifecycle commands? |
 | [Enterprise WeCom Template](enterprise-wecom-template.md) | How is the enterprise WeCom digital employee template structured? |
+| [Enterprise WeCom Architecture](enterprise-wecom-architecture.md) | What represents one digital employee, and where are its deployment and data boundaries? |

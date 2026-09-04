@@ -6,7 +6,7 @@ runs: no
 verified_on: 2026-09-04
 sources:
   - CHANGELOG.md
-  - ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
+  - docs/concepts/enterprise-wecom-architecture.md
   - ROADMAP.md
   - V0.1.2_M0_1_WECOM_PROTOCOL_BASELINE.md
   - V0.1.2_M0_2_WECOM_TRANSPORT_VERIFICATION_RECORD.md

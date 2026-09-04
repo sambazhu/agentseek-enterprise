@@ -10,7 +10,7 @@ The current verified baseline is `enterprise-wecom-v0.1.2-ga`. Developers who
 deploy or extend this framework should start with:
 
 - [企业数字员工框架研发指南](DEVELOPER_GUIDE.md)
-- [数字员工架构、概念与部署边界](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
+- [数字员工架构、概念与部署边界](../../docs/concepts/enterprise-wecom-architecture.zh.md)
 - [快速部署与创建企业数字员工](DEVELOPER_QUICKSTART.md)
 - [扩展数字员工的 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [数字员工研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
@@ -19,11 +19,11 @@ deploy or extend this framework should start with:
 
 ## Complete Architecture Diagram
 
-[![Enterprise WeCom v0.1.2 complete architecture](assets/enterprise-wecom-v0.1.2-architecture.svg)](assets/enterprise-wecom-v0.1.2-architecture.svg)
+[![Enterprise WeCom v0.1.2 complete architecture](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
 
-- [Open the scalable SVG diagram](assets/enterprise-wecom-v0.1.2-architecture.svg)
-- [Download the 4096 × 2880 PNG diagram](assets/enterprise-wecom-v0.1.2-architecture-4k.png)
-- [Read the concepts, boundaries, and deployment decisions](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
+- [Open the scalable SVG diagram](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
+- [Download the 4096 × 2880 PNG diagram](../../docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture-4k.png)
+- [Read the concepts, boundaries, and deployment decisions](../../docs/concepts/enterprise-wecom-architecture.md)
 
 The sections below retain detailed implementation and historical rollout notes.
 When a version reference conflicts, the v0.1.2 release documents and immutable

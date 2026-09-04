@@ -18,14 +18,19 @@ template content at the exact locked commit.
 
 This fork also carries the internally verified Enterprise WeCom digital
 employee solution. Use the `production` branch for the latest documentation or
-pin `enterprise-wecom-v0.1.1-ga` for the immutable runtime baseline. Do not use
+pin `enterprise-wecom-v0.1.2-ga` for the immutable runtime baseline. Do not use
 upstream `main` as the deployment ref for that solution.
 
 ```bash
 git clone -b production https://github.com/sambazhu/agentseek-enterprise.git
 cd agentseek-enterprise
-git checkout enterprise-wecom-v0.1.1-ga
+git checkout enterprise-wecom-v0.1.2-ga
 ```
+
+[![Enterprise WeCom v0.1.2 architecture](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture.svg)
+
+Read the [architecture and deployment boundaries](docs/concepts/enterprise-wecom-architecture.md),
+or download the [4096 × 2880 diagram](docs/assets/enterprise-wecom/enterprise-wecom-v0.1.2-architecture-4k.png).
 
 The company GitLab mirror carries the same production refs. Deployment secrets,
 local MCP configuration, model files, runtime data, and database credentials do
