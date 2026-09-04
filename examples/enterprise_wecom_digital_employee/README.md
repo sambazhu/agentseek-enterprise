@@ -17,6 +17,14 @@ deploy or extend this framework should start with:
 - [v0.1.2 GA readiness](GA_READINESS_V0.1.2.md)
 - [v0.1.2 production freeze](PRODUCTION_FREEZE.md)
 
+## Complete Architecture Diagram
+
+[![Enterprise WeCom v0.1.2 complete architecture](assets/enterprise-wecom-v0.1.2-architecture.svg)](assets/enterprise-wecom-v0.1.2-architecture.svg)
+
+- [Open the scalable SVG diagram](assets/enterprise-wecom-v0.1.2-architecture.svg)
+- [Download the 4096 × 2880 PNG diagram](assets/enterprise-wecom-v0.1.2-architecture-4k.png)
+- [Read the concepts, boundaries, and deployment decisions](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
+
 The sections below retain detailed implementation and historical rollout notes.
 When a version reference conflicts, the v0.1.2 release documents and immutable
 GA tag are authoritative.

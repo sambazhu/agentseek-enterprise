@@ -46,6 +46,10 @@ current direct-message session key is compatible with `wecom:<userid>` and does
 not itself contain `digital_employee_id`, so separate database/schema/table
 prefixes or storage paths remain part of the deployment boundary.
 
+The complete v0.1.2 reference diagram is available as a
+[scalable SVG](../../../examples/enterprise_wecom_digital_employee/assets/enterprise-wecom-v0.1.2-architecture.svg)
+or a [4096 × 2880 PNG](../../../examples/enterprise_wecom_digital_employee/assets/enterprise-wecom-v0.1.2-architecture-4k.png).
+
 ## Inputs
 
 | Variable | Description |

@@ -76,6 +76,13 @@ Skill / 文件 / 知识 / MCP         同一能力池 + WorkItem + 合同 + 状�
        agentseek-work / 文件与业务账本 / Artifact
 ```
 
+### 完整架构图
+
+[![Enterprise WeCom v0.1.2 完整架构](assets/enterprise-wecom-v0.1.2-architecture.svg)](assets/enterprise-wecom-v0.1.2-architecture.svg)
+
+- [查看可缩放 SVG 原图](assets/enterprise-wecom-v0.1.2-architecture.svg)
+- [下载 4096 × 2880 PNG 高清图](assets/enterprise-wecom-v0.1.2-architecture-4k.png)
+
 ### 各层职责
 
 | 层 | 负责 | 不负责 |

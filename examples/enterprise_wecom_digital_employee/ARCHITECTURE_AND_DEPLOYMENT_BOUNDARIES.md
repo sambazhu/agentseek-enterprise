@@ -41,6 +41,9 @@ sources:
 
 ![Enterprise WeCom v0.1.2 当前架构](assets/enterprise-wecom-v0.1.2-architecture.svg)
 
+- [查看可缩放 SVG 原图](assets/enterprise-wecom-v0.1.2-architecture.svg)
+- [下载 4096 × 2880 PNG 高清图](assets/enterprise-wecom-v0.1.2-architecture-4k.png)
+
 ## 核心概念
 
 | 概念 | 含义 | 基数关系 |
