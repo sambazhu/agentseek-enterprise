@@ -6,6 +6,35 @@ It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent
 
 The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context, plus ContextSeek semantic recall across the same employee's sessions.
 
+## Deployment and digital employee boundary
+
+This generated project is one logical deployment unit for one digital employee.
+The employee has one stable `digital_employee_id`, one active Profile and
+capability pool, and may own zero or more Playbooks. A Playbook is one business
+workflow of this employee; it is not a separate digital employee or deployment.
+One employee may serve many people and group chats, while one department may
+deploy several separate digital employees.
+
+Create another generated project and deployment whenever the role, owner,
+authorization, capability pool, data boundary, or audit responsibility differs.
+The current template does not route multiple digital employees or Profiles
+inside one runtime. One process per deployment is the verified v0.1.2 topology;
+future replicas of the same employee would still share one logical identity and
+must add multi-replica coordination rather than becoming new employees.
+
+For one WeCom AI Bot, configure Callback or long connection, never both. A
+self-built WeCom application may supplement it with targeted proactive delivery.
+Several employees may share that application's outbound capability only when
+source identity, visibility, idempotency, and audit context stay explicit;
+application inbound callbacks need a separate routing layer before they can be
+shared safely.
+
+Keep runtime files, durable messaging, short-term memory, semantic memory, Work
+state, files, and audit data isolated per `digital_employee_id`. The compatible
+direct-message session key `wecom:<userid>` does not contain the employee id, so
+separate database/schema/table prefixes or storage paths are required between
+digital employees.
+
 ## Setup
 
 ```bash

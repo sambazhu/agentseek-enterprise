@@ -193,11 +193,16 @@ def _assert_enterprise_wecom_template(
     assert 'excluded_middleware=frozenset({"SummarizationMiddleware"})' in agent_source
     assert "GeneralPurposeSubagentProfile" not in agent_source
     env_example = (generated / ".env.example").read_text(encoding="utf-8")
+    readme_text = (generated / "README.md").read_text(encoding="utf-8")
     assert "AGENTSEEK_MODEL=deepseek-v4-flash-0731" in env_example
     assert "AGENTSEEK_WORK_ENABLED=false" in env_example
     assert f"AGENTSEEK_WORK_BINDING={generated.name}.work_composition:build_work_binding" in env_example
     assert "AGENTSEEK_DEPARTMENT_KNOWLEDGE_POSTGRES_URL=" in env_example
     assert "AGENTSEEK_LANGCHAIN_MODEL_START_TIMEOUT_SECONDS=60" in env_example
+    assert "one logical deployment unit for one digital employee" in readme_text
+    assert "zero or more Playbooks" in readme_text
+    assert "Callback or long connection, never both" in readme_text
+    assert "does not contain the employee id" in readme_text
     assert lifecycle_data["env"]["AGENTSEEK_WORK_ENABLED"]["default"] == "false"
     assert lifecycle_data["env"]["AGENTSEEK_MODEL"]["default"] == "deepseek-v4-flash-0731"
     assert lifecycle_data["version"] == 2

@@ -3,9 +3,10 @@ title: Enterprise WeCom v0.1.2 production freeze
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-09-02
+verified_on: 2026-09-04
 sources:
   - CHANGELOG.md
+  - ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
   - ROADMAP.md
   - V0.1.2_M0_1_WECOM_PROTOCOL_BASELINE.md
   - V0.1.2_M0_2_WECOM_TRANSPORT_VERIFICATION_RECORD.md
@@ -82,7 +83,8 @@ it is not a third robot mode and does not provide streamed responses.
 
 | Boundary | v0.1.2 status |
 | --- | --- |
-| Multi-Profile gateway | Not delivered. One deployment still loads one Profile and one digital employee. |
+| Multi-Profile gateway | Outside the current product model. One logical deployment deliberately loads one Profile and one digital employee; one employee may own multiple Playbooks. |
+| Multi-replica employee | Not delivered. v0.1.2 verifies one process on one host for each logical digital employee deployment. |
 | Second department digital employee | Deferred to v0.1.3 with organization authorization and the extension SDK. |
 | Multi-host durable store | Not delivered. The verified durable database is local encrypted SQLite. |
 | Application Work routing | Not delivered. Work composition cannot infer an application recipient; `direct_file` remains disabled. |

@@ -1,0 +1,279 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1800" viewBox="0 0 2560 1800" role="img" aria-labelledby="title desc">
+  <title id="title">Enterprise WeCom v0.1.2 architecture</title>
+  <desc id="desc">The current five-layer architecture from WeCom transports through the gateway, runtime plugins, digital employee composition, and persistent stores.</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      text { font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #526075; }
+      .lane-title { font-size: 23px; font-weight: 700; }
+      .node-title { font-size: 20px; font-weight: 700; text-anchor: middle; }
+      .node-text { font-size: 16px; text-anchor: middle; fill: #445067; }
+      .small { font-size: 14px; text-anchor: middle; fill: #64748b; }
+      .edge-label { font-size: 14px; font-weight: 600; text-anchor: middle; fill: #526075; }
+      .lane { stroke-width: 2; rx: 24; }
+      .node { stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .edge { fill: none; stroke: #2563eb; stroke-width: 4; marker-end: url(#arrow-blue); }
+      .outbound { fill: none; stroke: #059669; stroke-width: 4; marker-end: url(#arrow-green); }
+      .data-edge { fill: none; stroke: #64748b; stroke-width: 3; stroke-dasharray: 10 8; marker-end: url(#arrow-gray); }
+      .optional { fill: none; stroke: #7c3aed; stroke-width: 4; stroke-dasharray: 12 9; marker-end: url(#arrow-gray); }
+    </style>
+  </defs>
+
+  <rect width="2560" height="1800" fill="#f8fafc"/>
+  <text class="title" x="80" y="72">Enterprise WeCom v0.1.2 当前架构</text>
+  <text class="subtitle" x="80" y="108">一个逻辑部署单元代表一名数字员工；一名数字员工可拥有多个 Playbook，AI Bot 的 Callback 与长连接二选一</text>
+
+  <g transform="translate(1880,46)">
+    <line x1="0" y1="8" x2="70" y2="8" class="edge"/>
+    <text class="edge-label" x="120" y="14">消息主链路</text>
+    <line x1="250" y1="8" x2="320" y2="8" class="outbound"/>
+    <text class="edge-label" x="380" y="14">回复链路</text>
+    <line x1="480" y1="8" x2="550" y2="8" class="data-edge"/>
+    <text class="edge-label" x="610" y="14">数据依赖</text>
+  </g>
+
+  <!-- WeCom layer -->
+  <rect class="lane" x="50" y="140" width="2460" height="245" fill="#eff6ff" stroke="#93c5fd"/>
+  <text class="lane-title" x="85" y="181" fill="#1d4ed8">1. 企业微信接入层</text>
+
+  <rect class="node" x="95" y="220" width="245" height="105" fill="#ffffff" stroke="#60a5fa"/>
+  <text class="node-title" x="218" y="260">员工</text>
+  <text class="node-text" x="218" y="290">单聊 · 群聊 · 文件 · 卡片</text>
+
+  <rect class="node" x="390" y="220" width="220" height="105" fill="#ffffff" stroke="#60a5fa"/>
+  <text class="node-title" x="500" y="260">AI Bot</text>
+  <text class="node-text" x="500" y="290">一名数字员工的会话入口</text>
+
+  <polygon points="785,212 930,272 785,332 640,272" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+  <text class="node-title" x="785" y="263">同一 Bot</text>
+  <text class="node-text" x="785" y="289">二选一</text>
+
+  <rect class="node" x="990" y="205" width="300" height="135" fill="#ffffff" stroke="#60a5fa"/>
+  <text class="node-title" x="1140" y="245">Callback</text>
+  <text class="node-text" x="1140" y="275">加密 HTTP 回调 · 流式首包</text>
+  <text class="small" x="1140" y="304">6 分钟流 / 1 小时 response_url</text>
+
+  <rect class="node" x="1360" y="205" width="330" height="135" fill="#ffffff" stroke="#60a5fa"/>
+  <text class="node-title" x="1525" y="245">AI Bot 长连接</text>
+  <text class="node-text" x="1525" y="275">WebSocket · 心跳 · 重连 · 流式</text>
+  <text class="small" x="1525" y="304">24 小时已交互会话主动消息</text>
+
+  <rect class="node" x="1835" y="205" width="390" height="135" fill="#faf5ff" stroke="#a78bfa"/>
+  <text class="node-title" x="2030" y="245">企微自建应用</text>
+  <text class="node-text" x="2030" y="275">成员 / 部门子树 / 标签 / 文件</text>
+  <text class="small" x="2030" y="304">可并行启用 · 不支持流式</text>
+
+  <path class="edge" d="M340 272 H390"/>
+  <path class="edge" d="M610 272 H640"/>
+  <path class="edge" d="M930 250 H990"/>
+  <path class="edge" d="M785 332 V365 H1525 V340"/>
+  <path class="optional" d="M218 325 V355 H2030 V340"/>
+  <text class="edge-label" x="1820" y="370">独立应用会话 / 补充主动通知</text>
+
+  <!-- Gateway layer -->
+  <rect class="lane" x="50" y="420" width="2460" height="270" fill="#ecfeff" stroke="#67e8f9"/>
+  <text class="lane-title" x="85" y="461" fill="#0e7490">2. Gateway 与企微可靠性内核</text>
+
+  <rect class="node" x="95" y="510" width="390" height="115" fill="#ffffff" stroke="#22d3ee"/>
+  <text class="node-title" x="290" y="548">WeComChannel</text>
+  <text class="node-text" x="290" y="578">Transport 编排 · 协议适配</text>
+  <text class="small" x="290" y="603">媒体、卡片与出站分派中心</text>
+
+  <rect class="node" x="570" y="510" width="390" height="115" fill="#ffffff" stroke="#22d3ee"/>
+  <text class="node-title" x="765" y="548">ConversationAddress</text>
+  <text class="node-text" x="765" y="578">tenant · Bot/Agent · transport</text>
+  <text class="small" x="765" y="603">chat_type · chat_id · userid · deadline</text>
+
+  <rect class="node" x="1045" y="500" width="420" height="135" fill="#ffffff" stroke="#22d3ee"/>
+  <text class="node-title" x="1255" y="538">Durable Messaging</text>
+  <text class="node-text" x="1255" y="570">inbox / outbox · msgid 去重 · lease</text>
+  <text class="small" x="1255" y="598">优雅释放 · 周期恢复 · 受控对账</text>
+
+  <rect class="node" x="1550" y="510" width="390" height="115" fill="#ffffff" stroke="#22d3ee"/>
+  <text class="node-title" x="1745" y="548">会话队列与媒体</text>
+  <text class="node-text" x="1745" y="578">同会话串行 · 跨会话并行</text>
+  <text class="small" x="1745" y="603">首包后下载 / 解密 / OCR</text>
+
+  <rect class="node" x="2025" y="510" width="390" height="115" fill="#ffffff" stroke="#22d3ee"/>
+  <text class="node-title" x="2220" y="548">Bub Hook Pipeline</text>
+  <text class="node-text" x="2220" y="578">Channel Manager · Turn 调度</text>
+  <text class="small" x="2220" y="603">load / enrich / save / send</text>
+
+  <path class="edge" d="M1140 340 V405 H290 V510"/>
+  <path class="edge" d="M1525 340 V395 H290 V510"/>
+  <path class="optional" d="M2030 340 V405 H390 V510"/>
+  <path class="edge" d="M485 568 H570"/>
+  <path class="edge" d="M960 568 H1045"/>
+  <path class="edge" d="M1465 568 H1550"/>
+  <path class="edge" d="M1940 568 H2025"/>
+
+  <!-- Plugin layer -->
+  <rect class="lane" x="50" y="725" width="2460" height="280" fill="#fff7ed" stroke="#fdba74"/>
+  <text class="lane-title" x="85" y="766" fill="#c2410c">3. 运行时插件与聚合状态</text>
+
+  <rect class="node" x="90" y="815" width="390" height="125" fill="#ffffff" stroke="#fb923c"/>
+  <text class="node-title" x="285" y="852">agentseek-enterprise</text>
+  <text class="node-text" x="285" y="883">身份 · 组织 · 短期记忆</text>
+  <text class="small" x="285" y="912">同会话串行 · MCP Policy · 审计</text>
+
+  <rect class="node" x="535" y="815" width="350" height="125" fill="#ffffff" stroke="#fb923c"/>
+  <text class="node-title" x="710" y="852">agentseek-files</text>
+  <text class="node-text" x="710" y="883">文件存储与 CurrentFiles</text>
+  <text class="small" x="710" y="912">本地解析 / MinerU</text>
+
+  <rect class="node" x="940" y="815" width="380" height="125" fill="#ffffff" stroke="#fb923c"/>
+  <text class="node-title" x="1130" y="852">agentseek-contextseek</text>
+  <text class="node-text" x="1130" y="883">语义记忆检索与保存</text>
+  <text class="small" x="1130" y="912">单聊员工域 / 群聊 conversation 域</text>
+
+  <rect class="node" x="1375" y="815" width="360" height="125" fill="#fff7ed" stroke="#fb923c" stroke-dasharray="10 7"/>
+  <text class="node-title" x="1555" y="852">agentseek-work</text>
+  <text class="node-text" x="1555" y="883">WorkItem · 合同 · 状态机</text>
+  <text class="small" x="1555" y="912">可选启用 · 审批 / 发布 / 交付</text>
+
+  <rect class="node" x="1900" y="805" width="455" height="145" fill="#fffbeb" stroke="#f59e0b"/>
+  <text class="node-title" x="2128" y="844">聚合 Turn State</text>
+  <text class="node-text" x="2128" y="875">员工上下文 · Profile · Work</text>
+  <text class="node-text" x="2128" y="901">短期 / 语义记忆 · CurrentFiles</text>
+  <text class="small" x="2128" y="926">路由字段与敏感能力不进入模型正文</text>
+
+  <path class="edge" d="M2220 625 V790 H285 V815"/>
+  <path class="edge" d="M2220 625 V780 H710 V815"/>
+  <path class="edge" d="M2220 625 V770 H1130 V815"/>
+  <path class="optional" d="M2220 625 V760 H1555 V815"/>
+  <path class="edge" d="M480 878 H500 V975 H1860 V878 H1900"/>
+  <path class="edge" d="M885 878 H910 V965 H1860 V878"/>
+  <path class="edge" d="M1320 878 H1345 V955 H1860 V878"/>
+  <path class="optional" d="M1735 878 H1860"/>
+
+  <!-- Digital employee layer -->
+  <rect class="lane" x="50" y="1040" width="2460" height="320" fill="#faf5ff" stroke="#c4b5fd"/>
+  <text class="lane-title" x="85" y="1081" fill="#6d28d9">4. 数字员工业务组合层（设计：一个逻辑部署单元对应一名数字员工）</text>
+
+  <rect class="node" x="90" y="1135" width="325" height="105" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="253" y="1173">Profile / Job Charter</text>
+  <text class="node-text" x="253" y="1204">身份 · 职责 · 服务 · 权限上限</text>
+
+  <rect class="node" x="90" y="1255" width="325" height="80" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="253" y="1287">Pack</text>
+  <text class="node-text" x="253" y="1316">Skill · Playbook · Policy · Asset</text>
+
+  <rect class="node" x="500" y="1235" width="340" height="100" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="670" y="1272">Capability Registry</text>
+  <text class="node-text" x="670" y="1303">Profile 所属统一能力池</text>
+
+  <polygon points="980,1125 1150,1190 980,1255 810,1190" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2" filter="url(#shadow)"/>
+  <text class="node-title" x="980" y="1182">确定性路由</text>
+  <text class="node-text" x="980" y="1208">服务发现 / 当前任务 / Playbook</text>
+
+  <rect class="node" x="1225" y="1100" width="305" height="100" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="1378" y="1137">DirectTurn</text>
+  <text class="node-text" x="1378" y="1168">问答 · 知识 · 文件分析</text>
+
+  <rect class="node" x="1225" y="1225" width="305" height="110" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="1378" y="1262">Playbook Agent</text>
+  <text class="node-text" x="1378" y="1293">正式任务 · 版本 · 审批</text>
+  <text class="small" x="1378" y="1318">业务状态由服务端账本决定</text>
+
+  <rect class="node" x="1635" y="1140" width="330" height="120" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="1800" y="1178">DeepAgents / LangChain</text>
+  <text class="node-text" x="1800" y="1209">模型推理 · 受限工具调用</text>
+  <text class="small" x="1800" y="1236">StateBackend + StoreBackend</text>
+
+  <rect class="node" x="2070" y="1140" width="335" height="120" fill="#ffffff" stroke="#a78bfa"/>
+  <text class="node-title" x="2238" y="1178">输出解析与业务守卫</text>
+  <text class="node-text" x="2238" y="1209">确定性响应 · Playbook Guard</text>
+  <text class="small" x="2238" y="1236">流事件聚合为通道输出</text>
+
+  <path class="edge" d="M2128 950 V1020 H980 V1125"/>
+  <path class="edge" d="M415 1188 H810"/>
+  <path class="edge" d="M415 1295 H500"/>
+  <path class="edge" d="M840 1285 H980 V1255"/>
+  <path class="edge" d="M1150 1165 H1225"/>
+  <path class="edge" d="M1150 1215 H1190 V1280 H1225"/>
+  <path class="edge" d="M1530 1150 H1635"/>
+  <path class="edge" d="M1530 1280 H1580 V1200 H1635"/>
+  <path class="edge" d="M1965 1200 H2070"/>
+
+  <!-- Store layer -->
+  <rect class="lane" x="50" y="1395" width="2460" height="320" fill="#f0fdf4" stroke="#86efac"/>
+  <text class="lane-title" x="85" y="1436" fill="#15803d">5. 数据、能力与外部依赖</text>
+
+  <g>
+    <path d="M95 1500 C95 1475 355 1475 355 1500 V1600 C355 1625 95 1625 95 1600 Z" fill="#ffffff" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    <ellipse cx="225" cy="1500" rx="130" ry="25" fill="#dcfce7" stroke="#4ade80" stroke-width="2"/>
+    <text class="node-title" x="225" y="1540">企微 Durable</text>
+    <text class="node-text" x="225" y="1572">加密单机 SQLite</text>
+    <text class="small" x="225" y="1597">inbox / outbox / conversations</text>
+  </g>
+
+  <g>
+    <path d="M410 1500 C410 1475 670 1475 670 1500 V1600 C670 1625 410 1625 410 1600 Z" fill="#ffffff" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    <ellipse cx="540" cy="1500" rx="130" ry="25" fill="#dcfce7" stroke="#4ade80" stroke-width="2"/>
+    <text class="node-title" x="540" y="1540">员工运行数据</text>
+    <text class="node-text" x="540" y="1572">身份库 · 短期 / 长期记忆</text>
+    <text class="small" x="540" y="1597">SQLite 或 SQLAlchemy Store</text>
+  </g>
+
+  <g>
+    <path d="M725 1500 C725 1475 985 1475 985 1500 V1600 C985 1625 725 1625 725 1600 Z" fill="#ffffff" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    <ellipse cx="855" cy="1500" rx="130" ry="25" fill="#dcfce7" stroke="#4ade80" stroke-width="2"/>
+    <text class="node-title" x="855" y="1540">语义记忆</text>
+    <text class="node-text" x="855" y="1572">PostgreSQL pgvector</text>
+    <text class="small" x="855" y="1597">或单线程 SeekDB</text>
+  </g>
+
+  <g>
+    <path d="M1040 1500 C1040 1475 1300 1475 1300 1500 V1600 C1300 1625 1040 1625 1040 1600 Z" fill="#ffffff" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    <ellipse cx="1170" cy="1500" rx="130" ry="25" fill="#dcfce7" stroke="#4ade80" stroke-width="2"/>
+    <text class="node-title" x="1170" y="1540">Work 业务账本</text>
+    <text class="node-text" x="1170" y="1572">任务 · 合同 · 审批 · 发布</text>
+    <text class="small" x="1170" y="1597">权威业务事实源</text>
+  </g>
+
+  <g>
+    <path d="M1355 1500 C1355 1475 1615 1475 1615 1500 V1600 C1615 1625 1355 1625 1355 1600 Z" fill="#ffffff" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    <ellipse cx="1485" cy="1500" rx="130" ry="25" fill="#dcfce7" stroke="#4ade80" stroke-width="2"/>
+    <text class="node-title" x="1485" y="1540">文件与 Artifact</text>
+    <text class="node-text" x="1485" y="1572">按作用域存储 · MinerU</text>
+    <text class="small" x="1485" y="1597">DOCX / 一次性签名交付</text>
+  </g>
+
+  <rect class="node" x="1690" y="1480" width="340" height="135" fill="#ffffff" stroke="#4ade80"/>
+  <text class="node-title" x="1860" y="1522">统一业务能力</text>
+  <text class="node-text" x="1860" y="1553">部门知识 MCP · Gildata</text>
+  <text class="small" x="1860" y="1580">员工文件 · 经授权公开检索</text>
+
+  <rect class="node" x="2090" y="1480" width="330" height="135" fill="#ffffff" stroke="#4ade80"/>
+  <text class="node-title" x="2255" y="1522">模型与可观测性</text>
+  <text class="node-text" x="2255" y="1553">OpenAI-compatible Model</text>
+  <text class="small" x="2255" y="1580">JSONL / Langfuse / Audit</text>
+
+  <path class="data-edge" d="M225 1475 V1380 H1255 V635"/>
+  <path class="data-edge" d="M540 1475 V1370 H285 V940"/>
+  <path class="data-edge" d="M855 1475 V1365 H1130 V940"/>
+  <path class="data-edge" d="M1170 1475 V1350 H1555 V940"/>
+  <path class="data-edge" d="M1485 1475 V1375 H710 V940"/>
+  <path class="data-edge" d="M1860 1480 V1350 H670 V1335"/>
+  <path class="data-edge" d="M2255 1480 V1280 H1800 V1260"/>
+
+  <!-- Outbound loop and constraints -->
+  <path class="outbound" d="M2405 1200 H2470 V665 H1255 V635"/>
+  <text class="edge-label" x="2370" y="702" fill="#047857">输出持久化后按原地址投递</text>
+
+  <rect x="50" y="1740" width="2460" height="38" rx="12" fill="#e2e8f0"/>
+  <text x="1280" y="1766" text-anchor="middle" font-size="16" font-weight="600" fill="#475569">设计边界：每个部署单元独立身份与数据域 · 同一数字员工当前仅单机单副本 · 公共应用的多数字员工入站路由尚未中心化</text>
+</svg>

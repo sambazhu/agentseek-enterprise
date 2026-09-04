@@ -3,7 +3,7 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-09-02
+verified_on: 2026-09-04
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
@@ -14,6 +14,7 @@ sources:
   - examples/enterprise_wecom_digital_employee/V0.1.1_M4_IMPLEMENTATION.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_PLATFORM_FREEZE.md
   - examples/enterprise_wecom_digital_employee/GA_READINESS_V0.1.2.md
+  - examples/enterprise_wecom_digital_employee/ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/profile.yaml
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/pack.yaml
   - docs/concepts/enterprise-wecom-template.zh.md
@@ -66,6 +67,11 @@ v0.1.0 和 v0.1.1 在此基础上进一步完成：
 -> 一个已上线的证券行业报告 Playbook
 可选共用自建应用 -> 指定成员/部门/标签主动通知与文件投递
 ```
+
+这里的“一名数字员工”对应一个独立逻辑部署单元，不限制它只能有一个
+Playbook。一个数字员工拥有一个 Profile、一个统一能力池和零个或多个同岗位边界
+内的 Playbook；同一部门也可以通过多个独立部署单元拥有多名数字员工。完整概念、
+团队责任和数据隔离边界见 `ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md`。
 
 Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具，尚未完成
 第二个真实部门数字员工与业务服务的生产验证。原 v0.1.2 M0

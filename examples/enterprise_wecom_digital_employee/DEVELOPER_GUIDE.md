@@ -3,12 +3,13 @@ title: 企业数字员工框架研发指南
 type: explanation
 audience: [A1, A2, A3]
 runs: no
-verified_on: 2026-09-02
+verified_on: 2026-09-04
 sources:
   - ../../README.md
   - ../../contrib/README.md
   - ../../templates/deepagents/enterprise-wecom/README.md
   - ROADMAP.md
+  - ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md
   - V0.1.2_M0_PLATFORM_FREEZE.md
   - src/enterprise_wecom_digital_employee/agent.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
@@ -25,6 +26,7 @@ sources:
 配套文档：
 
 - [当前基线、限制与后续路线](ROADMAP.md)
+- [数字员工架构、概念与部署边界](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
 - [原平台边界与第二部门冻结（v0.1.3 输入）](V0.1.2_M0_PLATFORM_FREEZE.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
@@ -86,22 +88,36 @@ Skill / 文件 / 知识 / MCP         同一能力池 + WorkItem + 合同 + 状�
 | Capability Registry | 向普通协助和 Playbook 提供同一组业务能力 | 允许模型任意拼 MCP server/tool |
 | Playbook | 正式任务、合同、检查点、审批、发布和交付 | 承担所有普通问答 |
 
-## 一名 Bot 对应一名部门数字员工
+## 一个逻辑部署单元对应一名数字员工
 
-v0.1.1 采用以下产品模型：
+当前采用以下产品模型：
 
 ```text
-一个企微 Bot
-  -> 一名部门数字员工
+一个逻辑部署单元
+  -> 一名数字员工
   -> 一个 Job Charter / Profile
   -> 一个统一能力池
   -> 零个或多个正式 Playbook
+
+一个 AI Bot（Callback 或长连接二选一）
+  -> 作为这名数字员工的主要企微入口
+
+可选公共自建应用
+  -> 作为主动通知和文件投递的补充出口
 ```
 
 同一名数字员工可以逐步增加同一岗位边界内的服务。例如战略发展部数字员工可以
 在证券行业正式报告之外增加属于战略发展岗位的正式服务。岗位、业务 Owner、
 组织授权或知识边界不同，就应新建另一个 Bot 和数字员工，不能为了展示
 Multi-Playbook 而混合部门。
+
+这里的“一名数字员工”不是一名使用企微的人类员工，也不是一个 Playbook。
+它可以同时服务多名员工、多个群聊和多个同岗位边界内的 Playbook。一个部门也可以
+部署多名职责不同的数字员工；每名数字员工使用独立部署单元。
+
+当前一个部署单元由一个进程运行。未来同一逻辑数字员工可以增加多个高可用副本，
+但这些副本仍共享同一个 `digital_employee_id` 和一致性边界。完整定义和数据隔离
+要求见 `ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md`。
 
 v0.1.3 计划的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
 “信息系统需求评审与立项评估”。它与战略发展部数字员工复用同一套 SDK 和

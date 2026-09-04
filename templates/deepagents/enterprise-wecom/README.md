@@ -19,6 +19,33 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 - an executable WeCom outbound capability probe that keeps callback-mode
   Artifact delivery fail-closed until a signed HTTPS download endpoint exists.
 
+## Deployment Model
+
+One generated project is one logical deployment unit for one digital employee.
+The digital employee has one business identity (`digital_employee_id`), one
+active Profile and capability pool, and may own zero or more Playbooks. A
+Playbook is a workflow owned by that employee; it is not a separate employee or
+deployment by itself.
+
+One employee may serve many people and group chats. A department may also own
+several digital employees, but each employee should be generated and deployed
+as a separate logical unit when its role, owner, authorization, capability pool,
+or audit boundary differs. Do not load several digital employees or Profiles
+into one generated runtime.
+
+For each WeCom AI Bot, choose exactly one inbound mode: Callback or long
+connection. A self-built WeCom application can supplement the Bot with targeted
+proactive delivery. If several employees share one application for outbound
+delivery, keep the source employee, visibility, idempotency, and audit context
+explicit; application inbound callbacks require an external router before they
+can be shared safely.
+
+Keep runtime files, durable messaging, short-term memory, semantic memory, Work
+state, files, and audit data isolated per digital employee. In particular, the
+current direct-message session key is compatible with `wecom:<userid>` and does
+not itself contain `digital_employee_id`, so separate database/schema/table
+prefixes or storage paths remain part of the deployment boundary.
+
 ## Inputs
 
 | Variable | Description |

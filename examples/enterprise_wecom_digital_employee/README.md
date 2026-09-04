@@ -10,6 +10,7 @@ The current verified baseline is `enterprise-wecom-v0.1.2-ga`. Developers who
 deploy or extend this framework should start with:
 
 - [企业数字员工框架研发指南](DEVELOPER_GUIDE.md)
+- [数字员工架构、概念与部署边界](ARCHITECTURE_AND_DEPLOYMENT_BOUNDARIES.md)
 - [快速部署与创建企业数字员工](DEVELOPER_QUICKSTART.md)
 - [扩展数字员工的 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [数字员工研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
