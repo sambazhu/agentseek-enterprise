@@ -199,6 +199,7 @@ v0.1.2 已验证一个部署单元、一个进程、一名数字员工的单主�
 ## 相关文档
 
 - [企业微信模板](enterprise-wecom-template.md)
+- [执行隔离与沙箱](execution-isolation.md)
 - [企业数字员工框架研发指南](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/DEVELOPER_GUIDE.md)
 - [快速部署与创建企业数字员工](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/DEVELOPER_QUICKSTART.md)
 - [扩展数字员工的 Skill、MCP 和 Playbook](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/EXTENDING_DIGITAL_EMPLOYEE.md)

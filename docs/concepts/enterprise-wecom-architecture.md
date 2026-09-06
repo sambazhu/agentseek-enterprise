@@ -211,6 +211,7 @@ employee's business identity and deployment boundary.
 ## Related documentation
 
 - [Enterprise WeCom template](enterprise-wecom-template.md)
+- [Execution isolation and sandboxes](execution-isolation.md)
 - [Digital employee developer guide](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/DEVELOPER_GUIDE.md)
 - [Deployment quickstart](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/DEVELOPER_QUICKSTART.md)
 - [Extending Skills, MCP, and Playbooks](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/EXTENDING_DIGITAL_EMPLOYEE.md)

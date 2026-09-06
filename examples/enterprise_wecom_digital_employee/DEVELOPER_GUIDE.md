@@ -10,7 +10,9 @@ sources:
   - ../../templates/deepagents/enterprise-wecom/README.md
   - ROADMAP.md
   - docs/concepts/enterprise-wecom-architecture.zh.md
+  - docs/concepts/execution-isolation.zh.md
   - V0.1.2_M0_PLATFORM_FREEZE.md
+  - V0.1.3_EXECUTION_ISOLATION_PLAN.md
   - src/enterprise_wecom_digital_employee/agent.py
   - src/enterprise_wecom_digital_employee/capability_registry.py
   - src/enterprise_wecom_digital_employee/playbook_registry.py
@@ -27,7 +29,9 @@ sources:
 
 - [当前基线、限制与后续路线](ROADMAP.md)
 - [数字员工架构、概念与部署边界](../../docs/concepts/enterprise-wecom-architecture.zh.md)
-- [原平台边界与第二部门冻结（v0.1.3 输入）](V0.1.2_M0_PLATFORM_FREEZE.md)
+- [执行隔离与沙箱边界](../../docs/concepts/execution-isolation.zh.md)
+- [v0.1.3 执行隔离实施计划](V0.1.3_EXECUTION_ISOLATION_PLAN.md)
+- [原平台边界与第二部门冻结（v0.1.4 输入）](V0.1.2_M0_PLATFORM_FREEZE.md)
 - [快速部署与创建项目](DEVELOPER_QUICKSTART.md)
 - [扩展 Skill、MCP 和 Playbook](EXTENDING_DIGITAL_EMPLOYEE.md)
 - [研发分支、验证与合并流程](DEVELOPMENT_WORKFLOW.md)
@@ -126,7 +130,7 @@ Multi-Playbook 而混合部门。
 但这些副本仍共享同一个 `digital_employee_id` 和一致性边界。完整定义和数据隔离
 要求见[企业微信数字员工架构](../../docs/concepts/enterprise-wecom-architecture.zh.md)。
 
-v0.1.3 计划的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
+v0.1.4 计划的第二个真实部署采用独立的信息技术部 Bot、Profile 和 Pack，服务为
 “信息系统需求评审与立项评估”。它与战略发展部数字员工复用同一套 SDK 和
 Capability 接口，但不共享部门身份、任务账本或审批边界。同 Bot Multi-Playbook
 继续由测试 fixture 验证。
@@ -298,7 +302,7 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 示例目录是已经持续验证的参考实现。凡是希望后续新项目自动获得的能力，都要
 同步修改 Cookiecutter 模板，并运行模板渲染测试；只改示例不会自动更新脚手架。
 当前模板尚未生成与示例工程等价的 Profile、权限、路由和 Playbook 单测骨架，
-该项已进入 v0.1.3 M2。
+该项已进入 v0.1.4 M2。
 
 ## 安全和治理底线
 
@@ -314,10 +318,12 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
 
 ## 当前平台限制
 
-在 v0.1.3 完成对应平台化切片前，部署和扩展时必须接受以下边界：
+在 v0.1.3 执行隔离和 v0.1.4 对应平台化切片完成前，部署和扩展时必须接受以下边界：
 
 - 跨部门授权仍有展示名称匹配遗留；第二个部门服务必须等稳定组织 ID 和成员关系
   校验完成后再上线生产。
+- Custom Tool、本地脚本、文件解析器和原生库尚未获得进程级沙箱边界；在
+  v0.1.3 完成前，不得把 Gateway 内执行描述为安全沙箱，也不应接入任意不可信脚本。
 - 会话队列默认是一条 active turn 加三条 pending；只有已接纳消息承诺
   exactly-once，超出容量的 burst 会明确拒绝，不进入 Agent。
 - 队列和 durable inbox/outbox 已支持单实例重启恢复；多主机共享
@@ -328,7 +334,7 @@ Skill、文件能力、部门知识和 MCP 不再分成“普通对话专用”�
   正式归档和另建同类任务尚未实现。
 - Evidence/Claim 绑定提供可追溯性，不等于独立事实审查；当前正式产物只支持 DOCX。
 
-完整业务边界和 v0.1.3 实施顺序以
+完整业务边界、v0.1.3 执行隔离和 v0.1.4 平台化实施顺序以
 [Roadmap](ROADMAP.md) 为准；原 M0 冻结文档保留为范围转移记录。
 
 下一步请根据目标选择：
