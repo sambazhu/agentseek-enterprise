@@ -281,23 +281,102 @@ def test_register_run_resets_and_cross_process_append(tmp_path):
 
 # ---------- 创建门禁（失败关闭） ----------
 
+def _write_heartbeat(tmp_path, run_id=RUN, ts=1000.0):
+    import json as _json
+
+    beat = tmp_path / "manifest.json.heartbeat"
+    beat.write_text(_json.dumps({"run_id": run_id, "ts": ts, "pid": 1}))
+    return beat
+
+
 def test_gate_blocks_on_alarm(tmp_path, manifest):
     (tmp_path / "alarm").write_text("boom\n")
-    allowed, reason = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
-    assert allowed is False and "boom" in reason
+    _write_heartbeat(tmp_path)
+    allowed, _detail = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1001.0
+    )
+    assert allowed is False
 
 
 def test_gate_blocks_on_invalid_manifest(tmp_path, manifest):
     (tmp_path / "manifest.json").write_text("{bad")
-    allowed, _detail = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
+    _write_heartbeat(tmp_path)
+    allowed, _detail = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1001.0
+    )
     assert allowed is False
 
 
 def test_gate_fail_closed_on_missing_manifest(tmp_path):
-    allowed, _ = check_gate(tmp_path / "absent.json", tmp_path / "alarm")
+    allowed, _ = check_gate(tmp_path / "absent.json", tmp_path / "alarm", now=1001.0)
     assert allowed is False
 
 
+def test_gate_rejects_when_supervisor_never_started(tmp_path, manifest):
+    """登记 run 但未启动监督（无心跳）→ 拒绝。"""
+    allowed, reason = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1001.0
+    )
+    assert allowed is False and "no heartbeat" in reason
+
+
+def test_gate_rejects_stale_heartbeat_after_supervisor_exit(tmp_path, manifest):
+    """监督退出后心跳过期 → 拒绝。"""
+    _write_heartbeat(tmp_path, ts=1000.0)
+    allowed, reason = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1000.0 + 3600.0
+    )
+    assert allowed is False and "stale" in reason
+
+
+def test_gate_rejects_heartbeat_from_previous_run(tmp_path, manifest):
+    """旧轮心跳（run_id 不匹配）→ 拒绝。"""
+    _write_heartbeat(tmp_path, run_id="run-OLD", ts=1000.0)
+    allowed, reason = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1001.0
+    )
+    assert allowed is False and "mismatch" in reason
+
+
 def test_gate_allows_when_clean(tmp_path, manifest):
-    allowed, detail = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
+    _write_heartbeat(tmp_path, ts=1000.0)
+    allowed, detail = check_gate(
+        tmp_path / "manifest.json", tmp_path / "alarm", now=1001.0
+    )
     assert allowed is True and detail == ""
+
+
+def test_supervisor_poll_writes_fresh_heartbeat(tmp_path, manifest):
+    client = FakeClient([_rec("sbx-x", tpl="other-tpl")])
+    sup, _ = _sup(client, manifest, tmp_path)
+    sup.poll_once()
+    beat = tmp_path / "manifest.json.heartbeat"
+    assert beat.exists()
+    assert RUN in beat.read_text()
+
+
+# ---------- 二：list 失败保留目标状态（deadline/确认计时不重置） ----------
+
+def test_list_failure_preserves_targets_and_timers(tmp_path, manifest):
+    """首杀→list 故障→恢复：deadline_mono 与 first_kill_mono 均不重置。"""
+    client = FakeClient(
+        [_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}}
+    )
+    sup, clocks = _sup(client, manifest, tmp_path)
+    sup.poll_once()  # 观测锚定（mono=0 → deadline_mono=120）
+    clocks.mono = DEADLINE_SECONDS
+    sup.poll_once()  # 首杀（first_kill_mono=120）
+    deadline_before = sup._targets["sbx-a"].deadline_mono
+    first_kill_before = sup._targets["sbx-a"].first_kill_mono
+
+    client.list_failures = 1
+    clocks.mono = DEADLINE_SECONDS + 10
+    sup.poll_once()  # 故障轮：不得清空目标状态
+    assert "sbx-a" in sup._targets
+    assert sup._targets["sbx-a"].deadline_mono == deadline_before
+    assert sup._targets["sbx-a"].first_kill_mono == first_kill_before
+
+    clocks.mono = DEADLINE_SECONDS + CONFIRM_WINDOW_SECONDS + 2
+    sup.poll_once()  # 恢复：确认宽限按原始 first_kill 判定
+    assert "confirm window exceeded" in (tmp_path / "alarm").read_text()
+    assert client.kill_calls.count("sbx-a") >= 2

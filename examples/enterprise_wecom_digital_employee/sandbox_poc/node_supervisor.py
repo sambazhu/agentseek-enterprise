@@ -32,13 +32,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import http.client
 import json
 import logging
 import math
 import os
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -52,6 +52,9 @@ POLL_INTERVAL_SECONDS = 2  # 轮询间隔
 CONFIRM_WINDOW_SECONDS = 30  # 终止确认宽限（仅确认，不执行新命令）
 REQUEST_TIMEOUT_SECONDS = 10  # 单次控制面请求硬超时（HTTP 层生效）
 RUN_MARKER_KEY = "agentseek_run_id"  # create metadata 随请求携带的本轮标识
+HEARTBEAT_MAX_AGE_SECONDS = (
+    3 * POLL_INTERVAL_SECONDS + 2 * REQUEST_TIMEOUT_SECONDS + 5
+)  # 心跳过期阈值（3 轮 + 2 次请求上限 + 余量）
 TERMINAL_STATES = ("terminated", "removed")
 
 
@@ -83,13 +86,23 @@ class SandboxClient(Protocol):
 # --------------------------------------------------------------------------
 # 有界超时 HTTP 客户端（替代 SDK 控制面调用：SDK v0.7.0 不传 timeout）
 # --------------------------------------------------------------------------
-class HttpCubeClient:
-    """极薄 CubeAPI 客户端：每个请求带硬超时（urllib timeout）。
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024  # 响应体上限（列表/信息均为小 JSON）
 
-    线协议与 v0.7.0 SDK 一致（sdk/python/cubesandbox/sandbox.py 源码核对）：
-    GET /sandboxes -> [{"sandboxID","templateID","state"}]；
-    GET /sandboxes/{id} -> {"startedAt": ISO|null, "metadata": {...}}；
-    DELETE /sandboxes/{id} -> 204/200；404 -> NotFoundError。
+
+def _deadline_exceeded(path: str) -> TimeoutError:
+    return TimeoutError(f"request total deadline exceeded: {path}")
+
+
+class HttpCubeClient:
+    """极薄 CubeAPI 客户端：单调钟总截止覆盖连接/响应头/响应体。
+
+    urllib 的 timeout 只约束单个阻塞操作，慢滴流可绕过；本实现用
+    http.client + 每 chunk 重设剩余预算的 socket timeout，保证单请求
+    总耗时 <= timeout + eps，并对响应体设大小上限。
+
+    线协议与 v0.7.0 SDK 一致（源码核对）：GET /sandboxes -> JSON 列表；
+    GET /sandboxes/{id} -> {"startedAt","metadata"}；DELETE -> 204/200；
+    404 -> NotFoundError。非法响应显式抛错，不静默解释为空集合。
     """
 
     def __init__(
@@ -98,46 +111,89 @@ class HttpCubeClient:
         *,
         api_key: str | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.max_response_bytes = max_response_bytes
+        parts = urllib.parse.urlsplit(self.api_url)
+        self._scheme = parts.scheme or "http"
+        self._host = parts.hostname or "127.0.0.1"
+        self._port = parts.port or (443 if self._scheme == "https" else 80)
+        self._base_path = parts.path.rstrip("/")
 
     def _request(self, method: str, path: str) -> object:
         # 受控端点：URL 仅由本组件拼接（loopback/内网 api_url + 白名单路径）。
-        req = urllib.request.Request(  # noqa: S310
-            f"{self.api_url}{path}", method=method
+        deadline = time.monotonic() + self.timeout
+        conn_cls = (
+            http.client.HTTPSConnection
+            if self._scheme == "https"
+            else http.client.HTTPConnection
         )
+        conn = conn_cls(self._host, self._port, timeout=self.timeout)
+        headers = {"Accept": "application/json"}
         if self.api_key:
-            req.add_header("X-API-Key", self.api_key)
+            headers["X-API-Key"] = self.api_key
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
-                body = resp.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                err = NotFoundError(path)
-                raise err from exc
-            raise
+            conn.request(method, f"{self._base_path}{path}", headers=headers)
+            self._apply_remaining_timeout(conn, deadline, path)
+            resp = conn.getresponse()
+            if resp.status == 404:
+                raise NotFoundError(path)
+            if resp.status >= 400:
+                raise RuntimeError(f"http {resp.status}: {path}")
+            body = self._read_bounded(conn, resp, deadline, path)
+        finally:
+            conn.close()
         if not body:
             return None
         return json.loads(body)
 
+    def _apply_remaining_timeout(self, conn, deadline: float, path: str) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _deadline_exceeded(path)
+        if conn.sock is not None:
+            conn.sock.settimeout(remaining)
+
+    def _read_bounded(self, conn, resp, deadline: float, path: str) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            self._apply_remaining_timeout(conn, deadline, path)
+            # read1：单次底层读即返回（read(amt) 会等待凑满 amt 字节，
+            # 慢滴流下永不返回，绕过 socket 超时）。
+            chunk = resp.read1(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > self.max_response_bytes:
+                raise RuntimeError(f"response body exceeds limit: {path}")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     def list(self) -> list[SandboxRecord]:
         items = self._request("GET", "/sandboxes")
-        return [
-            SandboxRecord(
-                sandbox_id=str(it.get("sandboxID", "")),
-                template_id=str(it.get("templateID", "")),
-                state=str(it.get("state", "")),
+        if not isinstance(items, list):
+            raise TypeError("malformed /sandboxes response: not a list")
+        records = []
+        for it in items:
+            if not isinstance(it, dict) or not it.get("sandboxID"):
+                raise TypeError("malformed /sandboxes entry: missing sandboxID")
+            records.append(
+                SandboxRecord(
+                    sandbox_id=str(it.get("sandboxID", "")),
+                    template_id=str(it.get("templateID", "")),
+                    state=str(it.get("state", "")),
+                )
             )
-            for it in (items or [])
-            if isinstance(it, dict)
-        ]
+        return records
 
     def hydrate(self, record: SandboxRecord) -> SandboxRecord:
         info = self._request("GET", f"/sandboxes/{record.sandbox_id}")
         if not isinstance(info, dict):
-            return replace(record, started_at=None, run_marker=None)
+            raise TypeError(f"malformed sandbox info: {record.sandbox_id}")
         started_raw = info.get("startedAt")
         metadata = info.get("metadata") or {}
         return replace(
@@ -320,12 +376,16 @@ class NodeSupervisor:
         manifest: ManifestStore,
         *,
         alarm_file: Path,
+        heartbeat_file: Path | None = None,
         epoch_clock: Callable[[], float] = time.time,
         mono_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
         self.manifest = manifest
         self.alarm_file = alarm_file
+        self.heartbeat_file = heartbeat_file or manifest.path.with_suffix(
+            manifest.path.suffix + ".heartbeat"
+        )
         self.epoch_clock = epoch_clock
         self.mono_clock = mono_clock
         self._targets: dict[str, _Target] = {}
@@ -366,8 +426,10 @@ class NodeSupervisor:
             reasons.append(f"manifest invalid: {exc}")
 
         records: list[SandboxRecord] = []
+        list_ok = False
         try:
             records = self.client.list()
+            list_ok = True  # 仅"成功且通过 schema 校验"的列表可作为消失依据
         except Exception as exc:
             reasons.append(f"control plane unreachable; cannot guarantee termination: {type(exc).__name__}")
 
@@ -384,15 +446,32 @@ class NodeSupervisor:
                 killed.append(killed_id)
 
         # 先清理已消失目标，再计算待确认状态（否则消失后多挂一轮告警）。
-        for sid in set(self._targets) - seen:
-            del self._targets[sid]
+        # list 失败/畸形时保留全部已知目标（deadline 与确认计时不重置）。
+        if list_ok:
+            for sid in set(self._targets) - seen:
+                del self._targets[sid]
         pending = any(t.first_kill_mono is not None for t in self._targets.values())
         if reasons or pending:
             parts = list(reasons) + (["termination pending confirmation"] if pending else [])
             self._write_alarm("; ".join(parts))
         else:
             self._clear_alarm()
+        self._write_heartbeat()
         return killed
+
+    def _write_heartbeat(self) -> None:
+        """监督存活心跳：与 run_id 关联；门禁据此验活（过期即拒绝新建）。"""
+        payload = {
+            "run_id": self.manifest.run_id,
+            "ts": self.epoch_clock(),
+            "pid": os.getpid(),
+        }
+        tmp = self.heartbeat_file.with_name(f"{self.heartbeat_file.name}.tmp")
+        with open(tmp, "w") as out:
+            json.dump(payload, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, self.heartbeat_file)
 
     def _process_record(self, record: SandboxRecord, reasons: list[str]) -> str | None:
         record = self._hydrate_if_needed(record, reasons)
@@ -467,8 +546,20 @@ class NodeSupervisor:
 # --------------------------------------------------------------------------
 # 创建门禁（.171 PoC 客户端建前调用；失败关闭）
 # --------------------------------------------------------------------------
-def check_gate(manifest_path: Path, alarm_file: Path) -> tuple[bool, str]:
-    """返回 (是否允许新建, 原因)。任何异常/不可达 → 拒绝（失败关闭）。"""
+def check_gate(
+    manifest_path: Path,
+    alarm_file: Path,
+    *,
+    heartbeat_path: Path | None = None,
+    now: float | None = None,
+    max_age: float = HEARTBEAT_MAX_AGE_SECONDS,
+) -> tuple[bool, str]:
+    """创建门禁（失败关闭）。
+
+    允许新建的必要条件：无告警 + manifest 有效且有 run_id + **监督存活**
+    （心跳存在、可读、run_id 匹配、足够新鲜）。监督未启动/已退出/心跳
+    过期/旧轮心跳/状态不可读 → 一律拒绝。
+    """
     try:
         if alarm_file.exists():
             return False, alarm_file.read_text().strip()
@@ -485,6 +576,30 @@ def check_gate(manifest_path: Path, alarm_file: Path) -> tuple[bool, str]:
         return False, f"gate check failed: {type(exc).__name__}"
     if not store.run_id:
         return False, "manifest has no active run_id"
+
+    beat_path = heartbeat_path or manifest_path.with_suffix(
+        manifest_path.suffix + ".heartbeat"
+    )
+    return _heartbeat_gate(beat_path, store.run_id, now, max_age)
+
+
+def _heartbeat_gate(
+    beat_path: Path, expected_run: str, now: float | None, max_age: float
+) -> tuple[bool, str]:
+    try:
+        beat = json.loads(beat_path.read_text())
+    except FileNotFoundError:
+        return False, "supervisor not alive (no heartbeat)"
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, "heartbeat unreadable"
+    if beat.get("run_id") != expected_run:
+        return False, f"heartbeat run mismatch: {beat.get('run_id')!r}"
+    ts = beat.get("ts")
+    if not isinstance(ts, (int, float)) or not math.isfinite(ts):
+        return False, "heartbeat ts invalid"
+    age = (now if now is not None else time.time()) - ts
+    if age > max_age or age < -max_age:
+        return False, f"heartbeat stale (age {age:.0f}s)"
     return True, ""
 
 

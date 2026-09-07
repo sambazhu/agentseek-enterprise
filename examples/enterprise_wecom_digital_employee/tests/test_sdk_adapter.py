@@ -38,6 +38,22 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "MockCubeAPI/0.7.0"
     hits: ClassVar[list[tuple[str, str]]] = []
 
+    def _send_raw(self, status_line: bytes, headers: bytes, body=b""):
+        self.wfile.write(status_line + headers + body)
+
+    def _drip_body(self, seconds: float = 5.0, interval: float = 0.05):
+        """发完响应头后每 interval 发 1 字节，持续 seconds（慢滴流）。"""
+        self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\n")
+        self.wfile.flush()
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.wfile.write(b"x")
+            self.wfile.flush()
+            time.sleep(interval)
+
+    def _send_raw(self, status_line: bytes, headers: bytes, body=b""):
+        self.wfile.write(status_line + headers + body)
+
     def _json(self, payload, code=200):
         body = json.dumps(payload).encode()
         self.send_response(code)
@@ -50,8 +66,19 @@ class _Handler(BaseHTTPRequestHandler):
         _Handler.hits.append(("GET", self.path))
         if self.path == "/sandboxes":
             self._json(SANDBOXES)
+        elif self.path == "/sandboxes?malformed=notalist":
+            self._json({"unexpected": "object"})
         elif self.path == "/sandboxes/sbx-slow":
-            time.sleep(30)  # 接受连接但不返回（P1-2 场景）
+            time.sleep(30)  # 接受连接但不返回（静默挂起）
+        elif self.path == "/sandboxes/sbx-drip":
+            self._drip_body()  # 持续滴流（每次发送都小于 socket 超时）
+        elif self.path == "/sandboxes/sbx-late-headers":
+            time.sleep(2.0)  # 慢响应头
+            self._json({"sandboxID": "sbx-late-headers", "startedAt": None, "metadata": {}})
+        elif self.path == "/sandboxes/sbx-huge":
+            self._send_raw(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n", b"", b"z" * 65536
+            )
         elif self.path.startswith("/sandboxes/"):
             sid = self.path.rsplit("/", 1)[-1]
             info = INFOS.get(sid)
@@ -119,3 +146,47 @@ def test_hang_server_bounded_by_request_timeout(mock_api):
         client.hydrate(record)
     elapsed = time.monotonic() - start
     assert elapsed < 3.0  # 远小于服务端 30s 挂起：HTTP 层硬超时生效
+
+def test_slow_drip_body_bounded_by_total_deadline(mock_api):
+    """一：慢滴流（每 0.05s 发 1 字节，单次发送均小于 socket 超时）。"""
+    client = HttpCubeClient(mock_api, timeout=0.4)
+    record = SandboxRecord("sbx-drip", "t", "running")
+    start = time.monotonic()
+    with pytest.raises((TimeoutError, OSError)):
+        client.hydrate(record)
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.5  # 总截止生效（滴流可持续 5s）
+
+
+def test_slow_response_headers_bounded(mock_api):
+    """一：响应头延迟 2s → 0.3s 总截止内失败。"""
+    client = HttpCubeClient(mock_api, timeout=0.3)
+    record = SandboxRecord("sbx-late-headers", "t", "running")
+    start = time.monotonic()
+    with pytest.raises((TimeoutError, OSError)):
+        client.hydrate(record)
+    assert time.monotonic() - start < 1.0
+
+
+def test_response_body_size_capped(mock_api):
+    """一：响应体超上限 → 显式失败（不无限读取）。"""
+    client = HttpCubeClient(mock_api, timeout=5.0, max_response_bytes=1024)
+    record = SandboxRecord("sbx-huge", "t", "running")
+    with pytest.raises(RuntimeError, match="exceeds limit"):
+        client.hydrate(record)
+
+
+def test_malformed_list_response_raises_not_silent_empty():
+    """二：列表响应为对象（非法）→ 抛错，绝不静默解释为空集合。"""
+    client = HttpCubeClient("http://127.0.0.1:1", timeout=0.1)
+
+    class FakeConn:
+        pass  # 直接驱动解析层：以私有方法注入响应
+
+
+    def fake_request(method, path):
+        return {"unexpected": "object"}  # 模拟 _request 返回非法形状
+
+    client._request = fake_request  # type: ignore[assignment]
+    with pytest.raises(TypeError, match="not a list"):
+        client.list()
