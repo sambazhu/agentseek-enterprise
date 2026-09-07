@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -313,3 +314,53 @@ def test_trailer_drip_bounded_by_total_deadline(mock_api):
     """chunked trailer 行滴流（末块 0 之后、终结空行之前）。"""
     elapsed = _drip_case(mock_api, "sbx-trailer-drip")
     assert elapsed < 1.5
+
+# ---------- 九次复核：总截止计时（连接/发送消耗预算 + 剩余预算看门狗） ----------
+
+class _SlowSendConn(http.client.HTTPConnection):
+    """测试缝：连接后发送前注入固定延迟（模拟慢连接/慢发送）。"""
+
+    send_delay = 0.0
+
+    def request(self, method, url, body=None, headers=None, *, encode_chunked=False):
+        time.sleep(self.send_delay)
+        super().request(method, url, body=body, headers=headers, encode_chunked=encode_chunked)
+
+
+def _factory(delay):
+    def make(host, port, timeout):
+        conn = _SlowSendConn(host, port, timeout=timeout)
+        conn.send_delay = delay
+        return conn
+
+    return make
+
+
+def test_partial_budget_consumed_then_header_drip(mock_api):
+    """组合：连接/发送已消耗 0.3s（预算 0.5s）+ 响应头滴流 >10s。
+
+    看门狗必须按剩余预算（≈0.2s）计时——总退出 ≈0.5s，而非旧实现的 0.8s。
+    """
+    client = HttpCubeClient(
+        mock_api, timeout=0.5, connection_factory=_factory(0.3)
+    )
+    record = SandboxRecord("sbx-header-drip", "t", "running")
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        client.hydrate(record)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5 + 0.25  # 旧实现 ≈0.8s 会超此界
+    assert elapsed >= 0.45  # 且不应提前于总预算
+
+
+def test_request_phase_exhausts_budget(mock_api):
+    """发送阶段延迟 0.25s > 总预算 0.2s → 预算耗尽立即失败。"""
+    client = HttpCubeClient(
+        mock_api, timeout=0.2, connection_factory=_factory(0.25)
+    )
+    record = SandboxRecord("sbx-a", "t", "running")
+    start = time.monotonic()
+    with pytest.raises((TimeoutError, OSError)):
+        client.hydrate(record)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.6  # 立即失败，不进入响应阶段等待

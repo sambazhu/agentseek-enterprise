@@ -114,11 +114,15 @@ class HttpCubeClient:
         api_key: str | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        connection_factory: Callable[..., http.client.HTTPConnection] | None = None,
     ) -> None:
+        # connection_factory 仅测试注入用（模拟慢连接/慢发送）；默认按
+        # scheme 选择 HTTP(S)Connection。
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
+        self._conn_factory = connection_factory
         parts = urllib.parse.urlsplit(self.api_url)
         self._scheme = parts.scheme or "http"
         self._host = parts.hostname or "127.0.0.1"
@@ -127,17 +131,18 @@ class HttpCubeClient:
 
     def _request(self, method: str, path: str) -> object:
         # 受控端点：URL 仅由本组件拼接（loopback/内网 api_url + 白名单路径）。
-        # 总截止由独立看门狗保证；关键：**请求时捕获裸 socket 引用**——
-        # http.client 在 Connection: close 等分支会把 conn.sock 置 None
-        # （连接与响应脱钩，HTTPResponse 仍持有同一 socket 的文件对象），
-        # 看门狗握裸引用才能在请求全生命周期内真正 shutdown 传输 socket。
+        # 单一绝对单调 deadline 贯穿全请求：连接（conn.timeout=总预算上限，
+        # 显式 connect 后立即核对剩余）→ 发送（socket 剩余预算）→ 响应头/体
+        # （看门狗以"剩余预算"计时 + read1 剩余预算）。看门狗持有裸 socket
+        # 引用：http.client 在 will_close 分支会把 conn.sock 置 None 而响应
+        # 仍读同一 socket；到点 shutdown 可中断一切内部阻塞读。
         deadline = time.monotonic() + self.timeout
-        conn_cls = (
+        factory = self._conn_factory or (
             http.client.HTTPSConnection
             if self._scheme == "https"
             else http.client.HTTPConnection
         )
-        conn = conn_cls(self._host, self._port, timeout=self.timeout)
+        conn = factory(self._host, self._port, timeout=self.timeout)
         fired = threading.Event()
         sock_ref: socket.socket | None = None
         watchdog: threading.Timer | None = None
@@ -152,12 +157,9 @@ class HttpCubeClient:
                         target.shutdown(socket.SHUT_RDWR)
 
         try:
-            conn.request(method, f"{self._base_path}{path}", headers=self._headers())
-            sock_ref = conn.sock  # 请求后 socket 必已建立；此后不依赖 conn.sock
-            watchdog = threading.Timer(self.timeout, _kill)
-            watchdog.daemon = True
-            watchdog.start()
-            self._apply_remaining_timeout(sock_ref, deadline, path)
+            sock_ref = self._connect_bounded(conn, deadline, path)
+            watchdog = self._arm_watchdog(deadline, _kill)
+            self._send_request(conn, sock_ref, method, path, deadline)
             resp = conn.getresponse()
             body = self._checked_body(sock_ref, resp, deadline, path)
         except (TimeoutError, OSError, http.client.HTTPException) as exc:
@@ -181,6 +183,30 @@ class HttpCubeClient:
         if not body:
             return None
         return json.loads(body)
+
+    def _connect_bounded(
+        self, conn: http.client.HTTPConnection, deadline: float, path: str
+    ) -> socket.socket:
+        conn.connect()  # 连接阶段：conn.timeout=总预算（单操作上限）
+        sock = conn.sock
+        self._apply_remaining_timeout(sock, deadline, path)
+        return sock
+
+    def _arm_watchdog(self, deadline: float, kill: Callable[[], None]) -> threading.Timer:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _deadline_exceeded("request phase exhausted budget")  # 预算耗尽
+        timer = threading.Timer(remaining, kill)  # 剩余预算，非全额
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def _send_request(
+        self, conn: http.client.HTTPConnection, sock: socket.socket | None,
+        method: str, path: str, deadline: float,
+    ) -> None:
+        self._apply_remaining_timeout(sock, deadline, path)  # 发送预算
+        conn.request(method, f"{self._base_path}{path}", headers=self._headers())
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
