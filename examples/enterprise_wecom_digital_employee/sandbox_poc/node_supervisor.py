@@ -127,10 +127,10 @@ class HttpCubeClient:
 
     def _request(self, method: str, path: str) -> object:
         # 受控端点：URL 仅由本组件拼接（loopback/内网 api_url + 白名单路径）。
-        # 总截止由独立看门狗保证：到点对连接 shutdown(SHUT_RDWR)，可中断
-        # getresponse 内部的状态行/响应头/chunk 控制行读取（这些内部 readline
-        # 在持续滴流下永远不会触发单次 socket 超时）；body 循环另以剩余预算
-        # 快速失败。
+        # 总截止由独立看门狗保证；关键：**请求时捕获裸 socket 引用**——
+        # http.client 在 Connection: close 等分支会把 conn.sock 置 None
+        # （连接与响应脱钩，HTTPResponse 仍持有同一 socket 的文件对象），
+        # 看门狗握裸引用才能在请求全生命周期内真正 shutdown 传输 socket。
         deadline = time.monotonic() + self.timeout
         conn_cls = (
             http.client.HTTPSConnection
@@ -139,29 +139,30 @@ class HttpCubeClient:
         )
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
         fired = threading.Event()
+        sock_ref: socket.socket | None = None
+        watchdog: threading.Timer | None = None
+        resp: http.client.HTTPResponse | None = None
 
         def _kill() -> None:
             fired.set()
-            with contextlib.suppress(Exception):
-                if conn.sock is not None:
-                    conn.sock.shutdown(socket.SHUT_RDWR)
+            # 裸引用优先；conn.sock 若仍在也一并 shutdown（同一对象时幂等）。
+            for target in (sock_ref, conn.sock):
+                with contextlib.suppress(Exception):
+                    if target is not None:
+                        target.shutdown(socket.SHUT_RDWR)
 
-        watchdog = threading.Timer(self.timeout, _kill)
-        watchdog.daemon = True
         try:
-            watchdog.start()
             headers = {"Accept": "application/json"}
             if self.api_key:
                 headers["X-API-Key"] = self.api_key
             conn.request(method, f"{self._base_path}{path}", headers=headers)
-            self._apply_remaining_timeout(conn, deadline, path)
+            sock_ref = conn.sock  # 请求后 socket 必已建立；此后不依赖 conn.sock
+            watchdog = threading.Timer(self.timeout, _kill)
+            watchdog.daemon = True
+            watchdog.start()
+            self._apply_remaining_timeout(sock_ref, deadline, path)
             resp = conn.getresponse()
-            if resp.status == 404:
-                raise NotFoundError(path)
-            if resp.status >= 400:
-                err = RuntimeError(f"http {resp.status}: {path}")
-                raise err
-            body = self._read_bounded(conn, resp, deadline, path)
+            body = self._checked_body(sock_ref, resp, deadline, path)
         except (TimeoutError, OSError, http.client.HTTPException) as exc:
             # 看门狗中断后 http.client 可能将损坏流翻译为 HTTPException 家族
             # （BadStatusLine/IncompleteRead/LineTooLong/RemoteDisconnected），
@@ -170,26 +171,48 @@ class HttpCubeClient:
                 raise _deadline_exceeded(path) from exc
             raise
         finally:
-            watchdog.cancel()  # 完成即取消，不遗留后台任务
-            conn.close()  # 超时/成功均关闭连接
+            # 成功/失败/超时路径均显式回收：看门狗收尾、独立响应对象、连接。
+            if watchdog is not None:
+                watchdog.cancel()
+                watchdog.join(0.5)
+            if resp is not None:
+                with contextlib.suppress(Exception):
+                    resp.close()
+            conn.close()
         if fired.is_set() and time.monotonic() > deadline:
             raise _deadline_exceeded(path)
         if not body:
             return None
         return json.loads(body)
 
-    def _apply_remaining_timeout(self, conn, deadline: float, path: str) -> None:
+    def _checked_body(
+        self, sock: socket.socket | None, resp: http.client.HTTPResponse,
+        deadline: float, path: str,
+    ) -> bytes:
+        if resp.status == 404:
+            raise NotFoundError(path)
+        if resp.status >= 400:
+            err = RuntimeError(f"http {resp.status}: {path}")
+            raise err
+        return self._read_bounded(sock, resp, deadline, path)
+
+    def _apply_remaining_timeout(self, sock: socket.socket | None, deadline: float, path: str) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _deadline_exceeded(path)
-        if conn.sock is not None:
-            conn.sock.settimeout(remaining)
+        if sock is not None:
+            # fd 可能已被 http.client 在响应读尽时自关闭（will_close 分支）；
+            # settimeout 仅快速路径优化，失败由看门狗兜底，不在此抛错。
+            with contextlib.suppress(OSError):
+                sock.settimeout(remaining)
 
-    def _read_bounded(self, conn, resp, deadline: float, path: str) -> bytes:
+    def _read_bounded(self, sock: socket.socket | None, resp, deadline: float, path: str) -> bytes:
         chunks: list[bytes] = []
         total = 0
         while True:
-            self._apply_remaining_timeout(conn, deadline, path)
+            if resp.isclosed():
+                break  # 响应读尽：http.client 可能已自关闭 socket（fd=-1）
+            self._apply_remaining_timeout(sock, deadline, path)
             # read1：单次底层读即返回（read(amt) 会等待凑满 amt 字节，
             # 慢滴流下永不返回，绕过 socket 超时）。
             chunk = resp.read1(65536)

@@ -94,6 +94,19 @@ class _Handler(BaseHTTPRequestHandler):
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1",
                 b"234567890abcdef",
             ),
+            # 八次复核复现：Connection: close + chunked 控制行滴流
+            # （该分支 http.client 会把 conn.sock 置 None，响应仍持有 socket 文件对象）
+            "/sandboxes/sbx-close-chunk-drip": (
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n1",
+                b"234567890abcdef",
+            ),
+            # trailer 滴流：末块 0 后的 trailer 行永不终结
+            "/sandboxes/sbx-trailer-drip": (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                b"4\r\nabcd\r\n0\r\nX-Trail: ",
+                b"0123456789abcdef",
+            ),
         }
         if self.path == "/sandboxes/sbx-slow":
             time.sleep(30)  # 接受连接但不返回（静默挂起）
@@ -289,3 +302,14 @@ def test_normal_request_still_succeeds_with_watchdog(mock_api):
     client = HttpCubeClient(mock_api, timeout=5.0)
     records = client.list()
     assert len(records) == 2
+
+def test_connection_close_chunk_drip_bounded_by_total_deadline(mock_api):
+    """八次复核复现：Connection: close 分支（conn.sock 被置 None）+ chunk 控制行滴流。"""
+    elapsed = _drip_case(mock_api, "sbx-close-chunk-drip")
+    assert elapsed < 1.5  # timeout=0.3s，滴流可持续 >10s
+
+
+def test_trailer_drip_bounded_by_total_deadline(mock_api):
+    """chunked trailer 行滴流（末块 0 之后、终结空行之前）。"""
+    elapsed = _drip_case(mock_api, "sbx-trailer-drip")
+    assert elapsed < 1.5
