@@ -37,6 +37,7 @@ import json
 import logging
 import math
 import os
+import re
 import socket
 import threading
 import time
@@ -287,13 +288,19 @@ class HttpCubeClient:
 
 
 def _parse_epoch(value: object) -> float | None:
-    """ISO8601（含 Z 后缀）→ epoch；非法/缺失 → None（不得默认 0）。"""
+    """ISO8601（含 Z 后缀）→ epoch；非法/缺失 → None（不得默认 0）。
+
+    平台实测 startedAt 为纳秒精度（9 位小数）；Python 3.10 的
+    fromisoformat 仅支持 3/6 位小数会抛 ValueError（3.11+ 才接受任意
+    位数）——先归一到 6 位再解析，避免按 Python 版本出现行为分叉。
+    """
     if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
     if not isinstance(value, str) or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        text = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
         return parsed.timestamp()
     except ValueError:
         return None

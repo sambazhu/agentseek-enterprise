@@ -9,6 +9,7 @@ import pytest
 from sandbox_poc.node_supervisor import (
     CONFIRM_WINDOW_SECONDS,
     DEADLINE_SECONDS,
+    RUN_MARKER_KEY,
     ManifestError,
     ManifestStore,
     NodeSupervisor,
@@ -148,6 +149,48 @@ def test_wall_clock_backward_jump_does_not_extend(tmp_path, manifest):
     # 墙钟回拨到 1021（epoch 年龄仅 21s）但 mono=121 已过截止 → 仍须终止
     clocks.mono, clocks.epoch = 121.0, 1021.0
     assert sup.poll_once() == ["sbx-a"]
+
+
+# ---------- 安装轮实测缺陷：平台 startedAt 纳秒精度 × Python 3.10 ----------
+
+def test_parse_epoch_nanosecond_precision():
+    """平台实测 startedAt=…T15:22:14.258327917Z（9 位小数）。
+
+    py3.10 fromisoformat 只认 3/6 位小数（3.11+ 任意位）——归一化后
+    任一版本都必须解析成功（安装轮 O7 曾因此无法锚定 deadline）。
+    """
+    from sandbox_poc.node_supervisor import _parse_epoch
+
+    got = _parse_epoch("2026-09-07T15:22:14.258327917Z")
+    assert got is not None
+    from datetime import datetime as _dt
+
+    expected = _dt.fromisoformat("2026-09-07T15:22:14.258327+00:00").timestamp()
+    assert abs(got - expected) < 2e-6  # 截断到 6 位（亚微秒误差）
+    # 常规格式回归
+    assert _parse_epoch("2026-09-08T00:00:00Z") is not None
+    assert _parse_epoch("2026-09-08T00:00:00.123456Z") is not None
+    assert _parse_epoch("not-a-time") is None
+    assert _parse_epoch(None) is None
+
+
+def test_hydrate_with_nanosecond_startedat_anchors_deadline(tmp_path, manifest):
+    """端到端：纳秒精度 startedAt 经真实解析路径锚定 deadline 并到时终止。"""
+    from sandbox_poc.node_supervisor import HttpCubeClient
+
+    info = {"startedAt": "2026-09-07T15:22:14.258327917Z",
+            "metadata": {RUN_MARKER_KEY: RUN}}
+    real_client = HttpCubeClient("http://127.0.0.1:1", timeout=0.1)
+    real_client._request = lambda method, path: info  # type: ignore[assignment]
+    real_client.list = lambda: [SandboxRecord("sbx-nano", TPL, "running")]  # type: ignore[assignment]
+    out = real_client.hydrate(SandboxRecord("sbx-nano", TPL, "running"))
+    assert out.started_at is not None and out.run_marker == RUN
+    # 首观时钟对齐 startedAt → deadline_mono = +120；到时必须终止
+    sup, clocks = _sup(real_client, manifest, tmp_path)
+    clocks.epoch = out.started_at
+    sup.poll_once()  # 观测锚定
+    clocks.mono = DEADLINE_SECONDS
+    assert sup.poll_once() == ["sbx-nano"]
 
 
 def test_deadline_not_fired_before_mono_deadline(tmp_path, manifest):
