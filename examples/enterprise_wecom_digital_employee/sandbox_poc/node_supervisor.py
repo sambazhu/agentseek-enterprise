@@ -37,6 +37,8 @@ import json
 import logging
 import math
 import os
+import socket
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -125,6 +127,10 @@ class HttpCubeClient:
 
     def _request(self, method: str, path: str) -> object:
         # 受控端点：URL 仅由本组件拼接（loopback/内网 api_url + 白名单路径）。
+        # 总截止由独立看门狗保证：到点对连接 shutdown(SHUT_RDWR)，可中断
+        # getresponse 内部的状态行/响应头/chunk 控制行读取（这些内部 readline
+        # 在持续滴流下永远不会触发单次 socket 超时）；body 循环另以剩余预算
+        # 快速失败。
         deadline = time.monotonic() + self.timeout
         conn_cls = (
             http.client.HTTPSConnection
@@ -132,20 +138,42 @@ class HttpCubeClient:
             else http.client.HTTPConnection
         )
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers = {"Accept": "application/json"}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
+        fired = threading.Event()
+
+        def _kill() -> None:
+            fired.set()
+            with contextlib.suppress(Exception):
+                if conn.sock is not None:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+
+        watchdog = threading.Timer(self.timeout, _kill)
+        watchdog.daemon = True
         try:
+            watchdog.start()
+            headers = {"Accept": "application/json"}
+            if self.api_key:
+                headers["X-API-Key"] = self.api_key
             conn.request(method, f"{self._base_path}{path}", headers=headers)
             self._apply_remaining_timeout(conn, deadline, path)
             resp = conn.getresponse()
             if resp.status == 404:
                 raise NotFoundError(path)
             if resp.status >= 400:
-                raise RuntimeError(f"http {resp.status}: {path}")
+                err = RuntimeError(f"http {resp.status}: {path}")
+                raise err
             body = self._read_bounded(conn, resp, deadline, path)
+        except (TimeoutError, OSError, http.client.HTTPException) as exc:
+            # 看门狗中断后 http.client 可能将损坏流翻译为 HTTPException 家族
+            # （BadStatusLine/IncompleteRead/LineTooLong/RemoteDisconnected），
+            # 过截止或看门狗已触发时一律归一为总截止超时。
+            if fired.is_set() or time.monotonic() > deadline:
+                raise _deadline_exceeded(path) from exc
+            raise
         finally:
-            conn.close()
+            watchdog.cancel()  # 完成即取消，不遗留后台任务
+            conn.close()  # 超时/成功均关闭连接
+        if fired.is_set() and time.monotonic() > deadline:
+            raise _deadline_exceeded(path)
         if not body:
             return None
         return json.loads(body)

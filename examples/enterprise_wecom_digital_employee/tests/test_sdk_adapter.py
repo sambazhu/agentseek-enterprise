@@ -37,19 +37,40 @@ INFOS = {
 class _Handler(BaseHTTPRequestHandler):
     server_version = "MockCubeAPI/0.7.0"
     hits: ClassVar[list[tuple[str, str]]] = []
+    live_conns: ClassVar[int] = 0
 
-    def _send_raw(self, status_line: bytes, headers: bytes, body=b""):
-        self.wfile.write(status_line + headers + body)
+    def setup(self):
+        _Handler.live_conns += 1
+        super().setup()
+
+    def finish(self):
+        _Handler.live_conns -= 1
+        super().finish()
+
+    def _drip_raw(self, tail: bytes, interval: float, rounds: int):
+        """循环发送 tail 首字节（共 rounds 轮），永不发终结符。"""
+        try:
+            for _ in range(rounds):
+                self.wfile.write(tail[:1])
+                self.wfile.flush()
+                time.sleep(interval)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # 客户端按总截止断开属预期
+        finally:
+            self.close_connection = True
 
     def _drip_body(self, seconds: float = 5.0, interval: float = 0.05):
         """发完响应头后每 interval 发 1 字节，持续 seconds（慢滴流）。"""
         self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\n")
         self.wfile.flush()
         end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            self.wfile.write(b"x")
-            self.wfile.flush()
-            time.sleep(interval)
+        try:
+            while time.monotonic() < end:
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(interval)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # 客户端按总截止断开属预期
 
     def _send_raw(self, status_line: bytes, headers: bytes, body=b""):
         self.wfile.write(status_line + headers + body)
@@ -62,27 +83,58 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _drip_path(self) -> bool:
+        """滴流/挂起故障路径；命中返回 True。"""
+        table = {
+            "/sandboxes/sbx-status-drip": (b"HTTP/1.", b"1 200 OK\r\n"),
+            "/sandboxes/sbx-header-drip": (
+                b"HTTP/1.1 200 OK\r\nX-Slow: ", b"1234567890abcdef",
+            ),
+            "/sandboxes/sbx-chunk-drip": (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1",
+                b"234567890abcdef",
+            ),
+        }
+        if self.path == "/sandboxes/sbx-slow":
+            time.sleep(30)  # 接受连接但不返回（静默挂起）
+            return True
+        if self.path == "/sandboxes/sbx-drip":
+            self._drip_body()  # 响应体持续滴流
+            return True
+        prefix_tail = table.get(self.path)
+        if prefix_tail is not None:
+            prefix, tail = prefix_tail
+            self.wfile.write(prefix)
+            self.wfile.flush()
+            self._drip_raw(tail, interval=0.05, rounds=200)
+            return True
+        return False
+
+    def _slow_or_info_path(self):
+        if self.path == "/sandboxes/sbx-late-headers":
+            time.sleep(2.0)  # 慢响应头
+            self._json({"sandboxID": "sbx-late-headers", "startedAt": None, "metadata": {}})
+            return True
+        if self.path == "/sandboxes/sbx-huge":
+            self._send_raw(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n", b"", b"z" * 65536
+            )
+            return True
+        if self.path.startswith("/sandboxes/"):
+            sid = self.path.rsplit("/", 1)[-1]
+            info = INFOS.get(sid)
+            self._json(info, 200) if info else self._json({"error": "not found"}, 404)
+            return True
+        return False
+
     def do_GET(self):
         _Handler.hits.append(("GET", self.path))
+        if self._drip_path() or self._slow_or_info_path():
+            return
         if self.path == "/sandboxes":
             self._json(SANDBOXES)
         elif self.path == "/sandboxes?malformed=notalist":
             self._json({"unexpected": "object"})
-        elif self.path == "/sandboxes/sbx-slow":
-            time.sleep(30)  # 接受连接但不返回（静默挂起）
-        elif self.path == "/sandboxes/sbx-drip":
-            self._drip_body()  # 持续滴流（每次发送都小于 socket 超时）
-        elif self.path == "/sandboxes/sbx-late-headers":
-            time.sleep(2.0)  # 慢响应头
-            self._json({"sandboxID": "sbx-late-headers", "startedAt": None, "metadata": {}})
-        elif self.path == "/sandboxes/sbx-huge":
-            self._send_raw(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n", b"", b"z" * 65536
-            )
-        elif self.path.startswith("/sandboxes/"):
-            sid = self.path.rsplit("/", 1)[-1]
-            info = INFOS.get(sid)
-            self._json(info, 200) if info else self._json({"error": "not found"}, 404)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -190,3 +242,50 @@ def test_malformed_list_response_raises_not_silent_empty():
     client._request = fake_request  # type: ignore[assignment]
     with pytest.raises(TypeError, match="not a list"):
         client.list()
+
+# ---------- 一（七次复核）：头部/chunk 控制行滴流 + 资源回收 ----------
+
+def _drip_case(mock_api, sandbox_id, timeout=0.3):
+    client = HttpCubeClient(mock_api, timeout=timeout)
+    record = SandboxRecord(sandbox_id, "t", "running")
+    start = time.monotonic()
+    with pytest.raises((TimeoutError, OSError)):
+        client.hydrate(record)
+    return time.monotonic() - start
+
+
+def test_status_line_drip_bounded_by_total_deadline(mock_api):
+    """状态行滴流（>10s 可持续）→ 0.3s 总截止内退出。"""
+    elapsed = _drip_case(mock_api, "sbx-status-drip")
+    assert elapsed < 1.5
+
+
+def test_header_drip_bounded_by_total_deadline(mock_api):
+    """响应头滴流（Codex 复现场景：未终结 X-Slow 头逐字节）。"""
+    elapsed = _drip_case(mock_api, "sbx-header-drip")
+    assert elapsed < 1.5
+
+
+def test_chunked_control_line_drip_bounded(mock_api):
+    """chunked chunk-size 控制行滴流（read1 保护不到的内部读取）。"""
+    elapsed = _drip_case(mock_api, "sbx-chunk-drip")
+    assert elapsed < 1.5
+
+
+def test_timeout_reaps_connection_and_threads(mock_api):
+    """超时后连接与看门狗线程均回收，不遗留后台请求。"""
+    import threading as _threading
+
+    _Handler.live_conns = 0
+    baseline_threads = _threading.active_count()
+    _drip_case(mock_api, "sbx-header-drip", timeout=0.3)
+    time.sleep(0.3)  # 看门狗/服务端收尾容差
+    assert _Handler.live_conns <= 1  # 服务端连接已关闭（≤1 为收尾中的余量）
+    assert _threading.active_count() <= baseline_threads + 1  # 看门狗已退出
+
+
+def test_normal_request_still_succeeds_with_watchdog(mock_api):
+    """看门狗存在不影响正常短请求。"""
+    client = HttpCubeClient(mock_api, timeout=5.0)
+    records = client.list()
+    assert len(records) == 2
