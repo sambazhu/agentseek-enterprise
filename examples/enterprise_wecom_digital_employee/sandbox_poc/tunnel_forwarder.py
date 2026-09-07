@@ -66,9 +66,11 @@ class Forwarder:
                 await writer.drain()
                 total += len(chunk)
         finally:
-            with contextlib.suppress(ConnectionError, OSError):
-                writer.close()
-                await writer.wait_closed()
+            # 半关闭：write_eof 立即向对端发 FIN（隧道语义必需）；
+            # 不等待 wait_closed——优雅关闭会等对端 EOF，双向隧道会互等。
+            with contextlib.suppress(RuntimeError, ConnectionError, OSError):
+                writer.write_eof()
+            writer.close()
         return total
 
     async def _handle(self, c_reader, c_writer) -> None:
@@ -89,9 +91,9 @@ class Forwarder:
                 )
         except Exception as exc:  # 失败关闭：不回退明文，直接断开
             LOG.warning("upstream connect failed (fail-closed): %s", type(exc).__name__)
+            with contextlib.suppress(RuntimeError, ConnectionError, OSError):
+                c_writer.write_eof()
             c_writer.close()
-            with contextlib.suppress(ConnectionError, OSError):
-                await c_writer.wait_closed()
             return
         sent, recv = await asyncio.gather(
             self._pipe(c_reader, u_writer), self._pipe(u_reader, c_writer)
@@ -126,6 +128,33 @@ class Forwarder:
             await self._server.wait_closed()
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _assert_loopback(host: str) -> None:
+    # 部署合同：仅允许 loopback 监听（生产入口拒绝任意地址）。
+    if host not in _LOOPBACK_HOSTS:
+        LOG.error("refusing non-loopback listen host: %r (contract: loopback only)", host)
+        raise SystemExit(2)
+
+
+async def _amain(args: argparse.Namespace) -> None:
+    forwarder = Forwarder(
+        args.listen_host,
+        args.listen_port,
+        args.upstream_host,
+        args.upstream_port,
+        ca_file=args.ca_file,
+        server_hostname=args.server_hostname,
+        require_tls=True,  # CLI 恒为 TLS；明文仅测试经构造函数注入
+    )
+    await forwarder.start()
+    try:
+        await forwarder.serve_forever()
+    finally:
+        await forwarder.stop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--listen-host", default="127.0.0.1")
@@ -137,24 +166,14 @@ def main() -> None:
         "--server-hostname",
         help="TLS 名称校验值（默认=upstream host；须与证书 SAN 一致）",
     )
-    parser.add_argument("--allow-plain", action="store_true", help="仅限测试")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    forwarder = Forwarder(
-        args.listen_host,
-        args.listen_port,
-        args.upstream_host,
-        args.upstream_port,
-        ca_file=args.ca_file,
-        server_hostname=args.server_hostname,
-        require_tls=not args.allow_plain,
-    )
-    asyncio.run(forwarder.start())
+    _assert_loopback(args.listen_host)
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(forwarder.serve_forever())
+        asyncio.run(_amain(args))  # 单一事件循环：start/serve/清理同一循环
 
 
 if __name__ == "__main__":
