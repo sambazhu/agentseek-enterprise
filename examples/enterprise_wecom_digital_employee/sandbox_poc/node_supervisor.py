@@ -152,10 +152,7 @@ class HttpCubeClient:
                         target.shutdown(socket.SHUT_RDWR)
 
         try:
-            headers = {"Accept": "application/json"}
-            if self.api_key:
-                headers["X-API-Key"] = self.api_key
-            conn.request(method, f"{self._base_path}{path}", headers=headers)
+            conn.request(method, f"{self._base_path}{path}", headers=self._headers())
             sock_ref = conn.sock  # 请求后 socket 必已建立；此后不依赖 conn.sock
             watchdog = threading.Timer(self.timeout, _kill)
             watchdog.daemon = True
@@ -184,6 +181,12 @@ class HttpCubeClient:
         if not body:
             return None
         return json.loads(body)
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        return headers
 
     def _checked_body(
         self, sock: socket.socket | None, resp: http.client.HTTPResponse,
