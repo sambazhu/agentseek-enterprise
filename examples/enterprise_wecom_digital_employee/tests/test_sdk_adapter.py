@@ -1,26 +1,26 @@
-"""真实 SDK 适配测试（F2）：cubesandbox==0.7.0 + 模拟 CubeAPI HTTP 服务。
+"""CubeAPI 线协议客户端测试（P1-2 修复：HTTP 层真实超时）。
 
-需在装有 SDK 的环境运行（其余测试不依赖）：
-  /path/to/venv-with-sdk/bin/python -m pytest tests/test_sdk_adapter.py
-未安装 SDK 时跳过（importorskip），不阻塞常规门禁。
+监督组件不再经 SDK（v0.7.0 SDK 控制面调用不传 timeout，源码核对），改用
+自带硬超时的 HttpCubeClient；本测试用模拟 CubeAPI HTTP 服务验证线协议
+（与 SDK v0.7.0 源码字段一致）与"服务端接受连接但不返回"的有界超时。
+纯标准库实现，任意 venv 可跑（无需安装 SDK）。
 """
 
 from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
 import pytest
-
-pytest.importorskip("cubesandbox", reason="SDK 适配测试需 cubesandbox==0.7.0")
-
 from sandbox_poc.node_supervisor import (
     RUN_MARKER_KEY,
+    HttpCubeClient,
     NotFoundError,
-    build_sdk_client,
+    SandboxRecord,
 )
 
 NOW = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
@@ -50,6 +50,8 @@ class _Handler(BaseHTTPRequestHandler):
         _Handler.hits.append(("GET", self.path))
         if self.path == "/sandboxes":
             self._json(SANDBOXES)
+        elif self.path == "/sandboxes/sbx-slow":
+            time.sleep(30)  # 接受连接但不返回（P1-2 场景）
         elif self.path.startswith("/sandboxes/"):
             sid = self.path.rsplit("/", 1)[-1]
             info = INFOS.get(sid)
@@ -71,17 +73,17 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def mock_api():
+    _Handler.hits = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
 
 
-def test_list_maps_real_dict_shape(mock_api):
-    client = build_sdk_client(mock_api)
+def test_list_maps_wire_dict_shape(mock_api):
+    client = HttpCubeClient(mock_api)
     records = client.list()
     assert {(r.sandbox_id, r.template_id, r.state) for r in records} == {
         ("sbx-a", "tpl-1", "running"),
@@ -89,19 +91,31 @@ def test_list_maps_real_dict_shape(mock_api):
     }
 
 
-def test_hydrate_reads_started_at_and_marker(mock_api):
-    client = build_sdk_client(mock_api)
+def test_hydrate_parses_iso_z_and_metadata(mock_api):
+    client = HttpCubeClient(mock_api)
     base = client.list()
     a = client.hydrate(next(r for r in base if r.sandbox_id == "sbx-a"))
     assert a.run_marker == "run-1"
-    assert a.started_at == NOW.timestamp()  # ISO → epoch
+    assert a.started_at == NOW.timestamp()  # ISO(UTC) → epoch
     b = client.hydrate(next(r for r in base if r.sandbox_id == "sbx-b"))
-    assert b.started_at is None and b.run_marker is None  # 缺失不得默认 0
+    assert b.started_at is None and b.run_marker is None  # 缺失 → None（非 0）
 
 
 def test_kill_issues_delete_and_404_maps_notfound(mock_api):
-    client = build_sdk_client(mock_api)
+    client = HttpCubeClient(mock_api)
     client.kill("sbx-a")
     assert ("DELETE", "/sandboxes/sbx-a") in _Handler.hits
     with pytest.raises(NotFoundError):
         client.kill("sbx-missing")
+
+
+def test_hang_server_bounded_by_request_timeout(mock_api):
+    """P1-2 验证：服务端接受连接但不返回 → 客户端在超时上限内失败。"""
+    client = HttpCubeClient(mock_api, timeout=0.5)
+    record = SandboxRecord("sbx-slow", "t", "running")
+    start = time.monotonic()
+    # 超时类异常（socket TimeoutError 或 urllib 包装），均属预期
+    with pytest.raises((TimeoutError, OSError)):
+        client.hydrate(record)
+    elapsed = time.monotonic() - start
+    assert elapsed < 3.0  # 远小于服务端 30s 挂起：HTTP 层硬超时生效

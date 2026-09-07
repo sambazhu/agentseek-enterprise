@@ -217,6 +217,8 @@ ignore = [
 # Generated example code keeps direct, user-facing validation errors simple.
 "examples/enterprise_wecom_digital_employee/src/**/*.py" = ["TRY003", "TRY004"]
 "examples/enterprise_wecom_digital_employee/tests/*.py" = ["S101", "TRY003"]
+# PoC 监督/转发组件：运维告警与失败关闭消息需携带可操作细节（TRY003 豁免）。
+"examples/enterprise_wecom_digital_employee/sandbox_poc/*.py" = ["TRY003"]
 # Probe scripts intentionally call configured endpoints and exit with concise diagnostics.
 "scripts/probe_staff_identity.py" = ["S310"]
 "scripts/probe_wecom_callback.py" = ["S310", "TRY003"]

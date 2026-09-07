@@ -198,7 +198,8 @@ def test_cli_subprocess_tls_roundtrip(ca_pair, tmp_path):
     """F1 回归：真实 CLI 子进程（单事件循环）+ TLS 正向 + 请求→响应双向流。"""
     upstream = TlsUpstream(ca_pair["leaf"], ca_pair["leaf_key"]).start()
     listen_port = _free_port()
-    proc = subprocess.Popen(  # noqa: S603 受信输入：本仓库内 CLI
+    # 受信输入：sys.executable 执行本仓库内 CLI 文件。
+    proc = subprocess.Popen(  # noqa: S603
         [
             sys.executable, str(CLI),
             "--listen-port", str(listen_port),
@@ -298,8 +299,9 @@ def test_wrong_server_name_fails_closed(ca_pair):
 
 
 def test_cli_refuses_non_loopback_listen_host(tmp_path):
-    proc = subprocess.run(  # noqa: S603 受信输入：本仓库内 CLI
-        [sys.executable, str(CLI), "--listen-host", "0.0.0.0",  # noqa: S104 测试 CLI 拒绝该绑定
+    # 断言 CLI 拒绝该绑定（0.0.0.0 仅为被测入参）。
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, str(CLI), "--listen-host", "0.0.0.0",  # noqa: S104
          "--ca-file", str(tmp_path / "any.pem")],
         cwd=EXAMPLE_DIR, capture_output=True, timeout=15,
     )
@@ -308,7 +310,8 @@ def test_cli_refuses_non_loopback_listen_host(tmp_path):
 
 
 def test_cli_has_no_plain_mode_flag(tmp_path):
-    proc = subprocess.run(  # noqa: S603 受信输入：本仓库内 CLI
+    # 受信输入：本仓库内 CLI。
+    proc = subprocess.run(  # noqa: S603
         [sys.executable, str(CLI), "--allow-plain"],
         cwd=EXAMPLE_DIR, capture_output=True, timeout=15,
     )

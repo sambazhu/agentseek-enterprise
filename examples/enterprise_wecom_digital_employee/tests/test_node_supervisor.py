@@ -1,9 +1,9 @@
-"""node_supervisor 定向测试（v2：epoch 时钟 / marker 归属 / manifest 闭环 / 异常韧性）。"""
+"""node_supervisor 定向测试（v3：P1×4/P2 修复的故障路径全覆盖）。"""
 
 from __future__ import annotations
 
 import json
-import time
+import threading
 
 import pytest
 from sandbox_poc.node_supervisor import (
@@ -14,6 +14,7 @@ from sandbox_poc.node_supervisor import (
     NodeSupervisor,
     NotFoundError,
     SandboxRecord,
+    check_gate,
 )
 
 RUN = "run-20260908-abc"
@@ -21,15 +22,28 @@ ALIAS = "agentseek-m0-poc"
 TPL = "tpl-m0-poc"
 
 
-class FakeClient:
-    """按真实 SDK 适配器语义实现协议：list → 粗记录；hydrate → 补 marker/started。"""
+class Clocks:
+    """可注入双时钟：epoch 可回拨，monotonic 单调。"""
 
+    def __init__(self, epoch: float = 1000.0, mono: float = 0.0) -> None:
+        self.epoch = epoch
+        self.mono = mono
+
+    def epoch_now(self) -> float:
+        return self.epoch
+
+    def mono_now(self) -> float:
+        return self.mono
+
+
+class FakeClient:
     def __init__(self, listing, *, hydrate_map=None, kill_mode="ok"):
         self.records = {r.sandbox_id: r for r in listing}
         self.hydrate_map = hydrate_map or {}
         self.kill_mode = kill_mode
         self.kill_calls: list[str] = []
         self.list_failures = 0
+        self.hydrate_failures: set[str] = set()
 
     def list(self):
         if self.list_failures > 0:
@@ -38,6 +52,8 @@ class FakeClient:
         return list(self.records.values())
 
     def hydrate(self, record):
+        if record.sandbox_id in self.hydrate_failures:
+            raise RuntimeError("info timeout")
         extra = self.hydrate_map.get(record.sandbox_id, {})
         return SandboxRecord(
             sandbox_id=record.sandbox_id,
@@ -62,154 +78,226 @@ def manifest(tmp_path) -> ManifestStore:
     return m
 
 
-def _sup(client, manifest, tmp_path):
-    return NodeSupervisor(client, manifest, alarm_file=tmp_path / "alarm")
+def _sup(client, manifest, tmp_path, clocks=None):
+    clocks = clocks or Clocks()
+    return (
+        NodeSupervisor(
+            client,
+            manifest,
+            alarm_file=tmp_path / "alarm",
+            epoch_clock=clocks.epoch_now,
+            mono_clock=clocks.mono_now,
+        ),
+        clocks,
+    )
 
 
 def _rec(sid, tpl=TPL, state="running", started=None, marker=None):
     return SandboxRecord(sid, tpl, state, started_at=started, run_marker=marker)
 
 
-# ---------- 时间语义（F3）：epoch 基准，--once 与常驻一致 ----------
+# ---------- P1-1：终止授权仅两级（marker / 登记），无模板兜底 ----------
 
-def test_epoch_deadline_not_before_at_and_not_after(tmp_path, manifest):
-    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
-    sup = _sup(client, manifest, tmp_path)
-
-    assert sup.poll_once(now=1000.0 + DEADLINE_SECONDS - 1) == []  # 截止前
-    assert sup.poll_once(now=1000.0 + DEADLINE_SECONDS) == ["sbx-a"]  # 到时即杀
-    assert client.kill_calls == ["sbx-a"]
-
-
-def test_real_epoch_and_iso_equivalence(tmp_path, manifest):
-    started = time.time() - (DEADLINE_SECONDS + 5)
-    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": started, "run_marker": RUN}})
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=time.time()) == ["sbx-a"]  # 真实 epoch 超截止
-
-    # 常驻与 --once 同一入口 poll_once（同用 epoch），行为一致由本用例与上用例共同覆盖
-
-
-# ---------- 归属判定（F4）：marker 一级 / 登记 二级 / 窗口兜底 ----------
-
-def test_marker_primary_and_other_run_never_killed(tmp_path, manifest):
+def test_marker_ours_killed_other_run_marker_excluded(tmp_path, manifest):
     client = FakeClient(
-        [_rec("sbx-ours"), _rec("sbx-other-run")],
+        [_rec("sbx-ours"), _rec("sbx-other")],
         hydrate_map={
             "sbx-ours": {"started_at": 1000.0, "run_marker": RUN},
-            "sbx-other-run": {"started_at": 1000.0, "run_marker": "run-OTHER"},
+            "sbx-other": {"started_at": 1000.0, "run_marker": "run-OTHER"},
         },
     )
-    sup = _sup(client, manifest, tmp_path)
-    killed = sup.poll_once(now=1000.0 + DEADLINE_SECONDS + 1)
-    assert killed == ["sbx-ours"]
-    assert "sbx-other-run" not in client.kill_calls
+    sup, clocks = _sup(client, manifest, tmp_path)
+    sup.poll_once()  # 首次观测（mono=0）锚定 deadline_mono=120
+    clocks.mono = DEADLINE_SECONDS
+    assert sup.poll_once() == ["sbx-ours"]
+    assert client.kill_calls == ["sbx-ours"]
 
 
-def test_registered_id_marker_conflict_marker_wins(tmp_path, manifest):
-    manifest.register_sandbox("sbx-conflict")
-    client = FakeClient([_rec("sbx-conflict")], hydrate_map={
-        "sbx-conflict": {"started_at": 1000.0, "run_marker": "run-OTHER"}
-    })
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=1000.0 + DEADLINE_SECONDS + 1) == []  # 平台 marker 优先
+def test_same_template_markerless_unregistered_NEVER_killed(tmp_path, manifest):
+    """P1-1 负向：同模板、无 marker、未登记 → 只告警，绝不删除。"""
+    client = FakeClient(
+        [_rec("sbx-stranger", started=None)],
+        hydrate_map={"sbx-stranger": {"started_at": 1000.0}},  # 同模板无标记
+    )
+    sup, clocks = _sup(client, manifest, tmp_path)
+    clocks.mono = 10_000.0  # 远超任何截止
+    assert sup.poll_once() == []
+    assert client.kill_calls == []
+    assert (tmp_path / "alarm").exists()  # 告警阻断新建
 
 
-def test_registered_fallback_with_registered_at_clock(tmp_path, manifest):
-    # marker 缺失、started_at 缺失，但已登记 → 用登记时刻计时
+def test_registered_id_killed_via_registered_at(tmp_path, manifest):
     manifest.register_sandbox("sbx-reg")
     reg_at = manifest.registered_at("sbx-reg")
-    client = FakeClient([_rec("sbx-reg")], hydrate_map={"sbx-reg": {}})
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=reg_at + DEADLINE_SECONDS + 1) == ["sbx-reg"]
+    client = FakeClient([_rec("sbx-reg")], hydrate_map={"sbx-reg": {}})  # 无 marker
+    sup, clocks = _sup(client, manifest, tmp_path)
+    clocks.epoch = reg_at  # 首观时墙钟对齐登记时刻 → deadline_mono=120
+    sup.poll_once()  # 观测锚定（start=registered_at）
+    clocks.mono = DEADLINE_SECONDS + 1
+    assert sup.poll_once() == ["sbx-reg"]
 
 
-def test_window_fallback_bounds_to_this_run(tmp_path, manifest):
-    # 同模板但创建于本轮开始之前（上一轮遗留）→ 不杀；本轮窗口内 → 杀（告警兜底）
+# ---------- P2：单调钟 deadline，墙钟回拨不延长 ----------
+
+def test_wall_clock_backward_jump_does_not_extend(tmp_path, manifest):
+    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
+    sup, clocks = _sup(client, manifest, tmp_path)
+    sup.poll_once()  # 首观：epoch=1000, mono=0 → deadline_mono=120
+    clocks.mono, clocks.epoch = 60.0, 1060.0
+    assert sup.poll_once() == []
+    # 墙钟回拨到 1021（epoch 年龄仅 21s）但 mono=121 已过截止 → 仍须终止
+    clocks.mono, clocks.epoch = 121.0, 1021.0
+    assert sup.poll_once() == ["sbx-a"]
+
+
+def test_deadline_not_fired_before_mono_deadline(tmp_path, manifest):
+    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
+    sup, clocks = _sup(client, manifest, tmp_path)
+    clocks.mono = DEADLINE_SECONDS - 1
+    assert sup.poll_once() == []
+
+
+# ---------- P1-3：告警状态机（显式状态 + 可测试恢复条件） ----------
+
+def test_manifest_corrupt_alarm_not_cleared_same_poll(tmp_path, manifest):
+    """P1-3 复现用例：损坏告警不得在列表为空的同一轮被清除。"""
+    (tmp_path / "manifest.json").write_text("{not-json")
+    client = FakeClient([])  # 列表为空
+    sup, _ = _sup(client, manifest, tmp_path)
+    sup.poll_once()
+    assert (tmp_path / "alarm").exists()  # 修复前此文件会被同轮清除
+    content = (tmp_path / "alarm").read_text()
+    assert "manifest invalid" in content
+
+
+def test_alarm_recovers_when_all_states_resolve(tmp_path, manifest):
     client = FakeClient(
-        [_rec("sbx-old", started=900.0), _rec("sbx-new", started=1100.0)],
-        hydrate_map={"sbx-old": {"started_at": 900.0}, "sbx-new": {"started_at": 1100.0}},
+        [_rec("sbx-x", tpl="other-tpl")], hydrate_map={}  # 非本轮模板，无告警
     )
-    sup = _sup(client, manifest, tmp_path)
-    killed = sup.poll_once(now=1100.0 + DEADLINE_SECONDS + 1)
-    assert "sbx-old" not in killed
-    assert "sbx-new" in killed
-
-
-def test_unknown_start_time_never_killed_but_alarmed(tmp_path, manifest):
-    # F2/F5：字段缺失不得以 0 判断 → 不删除 + 告警
-    client = FakeClient([_rec("sbx-unknown")], hydrate_map={"sbx-unknown": {}})
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=99999.0) == []
-    assert (tmp_path / "alarm").exists()
-
-
-# ---------- 异常韧性（F5） ----------
-
-def test_list_failure_alarms_and_survives(tmp_path, manifest):
-    client = FakeClient([], hydrate_map={})
+    sup, _ = _sup(client, manifest, tmp_path)
     client.list_failures = 1
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=1.0) == []  # 第一轮 list 抛错
-    assert (tmp_path / "alarm").exists()
-    assert sup.poll_once(now=2.0) == []  # 循环不退出，下一轮恢复
-
-
-def test_kill_notfound_confirms_generic_error_retries(tmp_path, manifest):
-    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
-
-    client.kill_mode = "error"
-    sup = _sup(client, manifest, tmp_path)
-    assert sup.poll_once(now=1000.0 + DEADLINE_SECONDS) == []  # 失败不丢目标、不计已杀
-    client.kill_mode = "notfound"
-    # 404 → 视为已发起并确认消失（计入本轮动作）
-    assert sup.poll_once(now=1000.0 + DEADLINE_SECONDS + 1) == ["sbx-a"]
-    # 已确认消失（下轮不再列出的场景由 seen 集合处理；此处状态仍列但已确认）
-
-
-def test_confirm_window_exceeded_raises_alarm_and_clears(tmp_path, manifest):
-    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
-    sup = _sup(client, manifest, tmp_path)
-    t0 = 1000.0 + DEADLINE_SECONDS
-    sup.poll_once(now=t0)
+    sup.poll_once()
+    assert (tmp_path / "alarm").exists()  # 控制面不可达 → 告警
+    sup.poll_once()  # 恢复且无待确认 → 清除
     assert not (tmp_path / "alarm").exists()
-    sup.poll_once(now=t0 + CONFIRM_WINDOW_SECONDS + 1)  # 仍存活 → 报警（阻止新建）
-    assert (tmp_path / "alarm").exists()
-    del client.records["sbx-a"]  # 目标消失
-    sup.poll_once(now=t0 + CONFIRM_WINDOW_SECONDS + 2)
-    assert not (tmp_path / "alarm").exists()  # 确认后清报警
 
 
-# ---------- manifest 闭环（F4） ----------
+def test_kill_failure_and_confirm_window_are_alarm_states(tmp_path, manifest):
+    client = FakeClient([_rec("sbx-a")], hydrate_map={"sbx-a": {"started_at": 1000.0, "run_marker": RUN}})
+    client.kill_mode = "error"
+    sup, clocks = _sup(client, manifest, tmp_path)
+    sup.poll_once()  # 观测锚定
+    clocks.mono = DEADLINE_SECONDS
+    assert sup.poll_once() == []  # kill 失败 → 不计已杀
+    assert "kill failed" in (tmp_path / "alarm").read_text()
 
-def test_register_run_resets_and_cross_process_append_visible(tmp_path):
+    client.kill_mode = "ok"
+    clocks.mono = DEADLINE_SECONDS + CONFIRM_WINDOW_SECONDS + 1
+    sup.poll_once()  # 重试成功但确认宽限已超 → 宽限告警
+    assert "confirm window exceeded" in (tmp_path / "alarm").read_text()
+
+    del client.records["sbx-a"]  # 目标消失 → 全部解除 → 清除
+    sup.poll_once()
+    assert not (tmp_path / "alarm").exists()
+
+
+def test_hydrate_failure_is_alarm_state_and_skips_only_target(tmp_path, manifest):
+    client = FakeClient(
+        [_rec("sbx-bad"), _rec("sbx-ok")],
+        hydrate_map={
+            "sbx-bad": {},
+            "sbx-ok": {"started_at": 1000.0, "run_marker": RUN},
+        },
+    )
+    client.hydrate_failures = {"sbx-bad"}
+    sup, clocks = _sup(client, manifest, tmp_path)
+    sup.poll_once()  # 观测锚定（sbx-bad 的 hydrate 失败也在此轮记录）
+    clocks.mono = DEADLINE_SECONDS
+    killed = sup.poll_once()  # 单目标查询失败不拖累其他目标
+    assert killed == ["sbx-ok"]
+    assert "query error: sbx-bad" in (tmp_path / "alarm").read_text()
+
+
+# ---------- P1-4：manifest 原子性 / schema / 旧轮拒绝 ----------
+
+def test_manifest_atomic_replace_no_partial_reads(tmp_path):
+    m = ManifestStore(tmp_path / "manifest.json")
+    m.register_run(RUN, ALIAS, TPL, started_at=1000.0)
+    stop = threading.Event()
+    parse_errors = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                ManifestStore(tmp_path / "manifest.json").reload()
+            except ManifestError as exc:
+                parse_errors.append(str(exc))
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    for i in range(50):
+        m.register_sandbox(f"sbx-{i}")
+    stop.set()
+    thread.join()
+    assert not parse_errors  # 并发读写全程只见过完整 JSON
+    assert not list(tmp_path.glob("manifest.json.tmp-*"))  # 无残留临时文件
+
+
+def test_manifest_rejects_invalid_schema(tmp_path, manifest):
+    for bad in (
+        {"run_id": 123},
+        {"run_started_at": "not-a-number"},
+        {"sandboxes": {"x": {"registered_at": "nope"}}},
+        {"sandboxes": [1, 2]},
+        "not-a-dict",
+    ):
+        (tmp_path / "manifest.json").write_text(json.dumps(bad))
+        with pytest.raises(ManifestError):
+            manifest.reload()
+
+
+def test_stale_run_registration_rejected(tmp_path):
+    m1 = ManifestStore(tmp_path / "manifest.json")
+    m1.register_run("run-1", ALIAS, TPL, started_at=1000.0)
+    m2 = ManifestStore(tmp_path / "manifest.json")  # 另一进程读到 run-1
+    m2.register_run("run-2", ALIAS, TPL, started_at=2000.0)  # 新轮覆盖
+    # m1 仍是旧轮上下文：延迟登记必须被拒（run_id 不匹配）
+    with pytest.raises(ManifestError, match="stale run"):
+        m1.register_sandbox("sbx-late")
+
+
+def test_register_run_resets_and_cross_process_append(tmp_path):
     m1 = ManifestStore(tmp_path / "manifest.json")
     m1.register_run(RUN, ALIAS, TPL, started_at=1000.0)
-    m1.register_sandbox("sbx-old-run")
-    m1.register_run("run-2", ALIAS, TPL, started_at=2000.0)  # 新轮重置
+    m1.register_sandbox("sbx-old")
+    m1.register_run("run-2", ALIAS, TPL, started_at=2000.0)
     assert m1.registered_ids() == set()
-
-    m2 = ManifestStore(tmp_path / "manifest.json")  # 另一 CLI 进程追加
+    m2 = ManifestStore(tmp_path / "manifest.json")
     m2.register_sandbox("sbx-appended")
-
-    m1.reload()  # 常驻监督每轮 reload → 可见
+    m1.reload()
     assert m1.registered_ids() == {"sbx-appended"}
     assert m1.run_id == "run-2"
 
 
-def test_manifest_corrupt_raises_and_does_not_widen(tmp_path, manifest):
-    (tmp_path / "manifest.json").write_text("{not-json")
-    with pytest.raises(ManifestError):
-        manifest.reload()
-    # 监督侧：损坏 → 告警一次，沿用最后已知（不扩大）
-    client = FakeClient([_rec("sbx-x")], hydrate_map={"sbx-x": {"started_at": 1000.0}})
-    sup = _sup(client, manifest, tmp_path)
-    sup.poll_once(now=99999.0)
-    assert (tmp_path / "alarm").exists()
+# ---------- 创建门禁（失败关闭） ----------
+
+def test_gate_blocks_on_alarm(tmp_path, manifest):
+    (tmp_path / "alarm").write_text("boom\n")
+    allowed, reason = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
+    assert allowed is False and "boom" in reason
 
 
-def test_manifest_atomic_no_partial_write(tmp_path, manifest):
-    manifest.register_sandbox("sbx-a")
-    manifest.register_sandbox("sbx-b")
-    data = json.loads((tmp_path / "manifest.json").read_text())
-    assert set(data["sandboxes"]) == {"sbx-a", "sbx-b"}  # 每次都是完整 JSON
+def test_gate_blocks_on_invalid_manifest(tmp_path, manifest):
+    (tmp_path / "manifest.json").write_text("{bad")
+    allowed, _detail = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
+    assert allowed is False
+
+
+def test_gate_fail_closed_on_missing_manifest(tmp_path):
+    allowed, _ = check_gate(tmp_path / "absent.json", tmp_path / "alarm")
+    assert allowed is False
+
+
+def test_gate_allows_when_clean(tmp_path, manifest):
+    allowed, detail = check_gate(tmp_path / "manifest.json", tmp_path / "alarm")
+    assert allowed is True and detail == ""
