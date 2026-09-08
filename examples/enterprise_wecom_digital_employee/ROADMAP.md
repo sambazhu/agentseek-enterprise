@@ -1242,6 +1242,10 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 
 ### M2：Cube 执行接入
 
+进度：基于 M1 收官 `4a7e76f` 启动 `enterprise/v0.1.3-execution-broker`。
+[M2 切片与验收合同](V0.1.3_M2_BROKER_PLAN.md) 登记实现进度；
+当前仅 M2.1 授权核心离线实现，不是完整 Broker，不计 O4b/M2 PASS，尚不部署。
+
 - 增加 `.171` 测试驱动模拟 DirectTurn / Work 请求的真实沙箱冒烟，提前验证 Broker 接缝；
   不经过真实 Agent/企微，不替代 M4 的业务活体验证；进入 Turn 或创建 WorkItem 本身不启动 VM。
 
