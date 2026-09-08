@@ -1,4 +1,6 @@
-"""preflight（R2 硬化版）定向测试：专用链结构校验、负向绕过、活动值解析。"""
+"""preflight（R2/R3/R4 硬化版）定向测试：专用链结构校验、负向绕过、活动值解析。
+
+portguard.sh 的状态化测试（有效保护不变量）见 test_portguard.py。"""
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ from pathlib import Path
 from sandbox_poc.preflight import (
     check_container_limits,
     check_egress_alive,
+    check_firewall6,
     check_firewall_structure,
     check_master_refs,
     check_port_convergence,
@@ -38,6 +41,13 @@ GOOD_GUARD_S = "\n".join([
     "-A CUBE_POC_GUARD -p tcp -m tcp --dport 8082 -j REJECT --reject-with tcp-reset",
 ])
 GOOD_INPUT_S = "-P INPUT ACCEPT\n-A INPUT -j CUBE_POC_GUARD\n-A INPUT -j ufw-before-input\n"
+GOOD_GUARD6_S = "\n".join([
+    "-A CUBE_POC_GUARD -s ::1/128 -p tcp -m tcp --dport 9999 -j ACCEPT",
+    "-A CUBE_POC_GUARD -p tcp -m tcp --dport 9999 -j REJECT --reject-with tcp-reset",
+    "-A CUBE_POC_GUARD -s ::1/128 -p tcp -m tcp --dport 8082 -j ACCEPT",
+    "-A CUBE_POC_GUARD -p tcp -m tcp --dport 8082 -j REJECT --reject-with tcp-reset",
+])
+GOOD_INPUT6_S = "-P INPUT ACCEPT\n-A INPUT -j CUBE_POC_GUARD\n"
 
 
 def _read(files: dict[str, str]):
@@ -173,66 +183,32 @@ def test_port_convergence_nonloopback_bind():
     assert not ok and "80=非loopback" in detail
 
 
-# ---------- portguard.sh 换链顺序与失败保留（R3） ----------
+# ---------- 防火墙 v6（R4：[::]:9999 双栈监听 → 等效 v6 保护） ----------
 
-import subprocess  # noqa: E402
-import tempfile  # noqa: E402
-
-PORTGUARD = str(Path(__file__).resolve().parent.parent / "sandbox_poc" / "portguard.sh")
-
-
-def _run_portguard_with_stub(fail_at: int | None):
-    """stub iptables：记录调用序列，第 fail_at 次调用返回非零。"""
-    with tempfile.TemporaryDirectory() as td:
-        log = Path(td) / "calls.log"
-        stub = Path(td) / "iptables"
-        stub.write_text(
-            "#!/bin/bash\n"
-            f"echo \"$*\" >> {log}\n"
-            f"[ -f {td}/failat ] && [ \"$(wc -l < {log})\" = \"$(cat {td}/failat)\" ] && exit 1\n"
-            "exit 0\n"
-        )
-        stub.chmod(0o755)
-        if fail_at is not None:
-            Path(td, "failat").write_text(str(fail_at))
-        # 受控 stub PATH（tempdir 前置），仅本测试内生效；bash 用绝对路径
-        proc = subprocess.run(  # noqa: S603
-            ["/bin/bash", PORTGUARD, "apply"],
-            capture_output=True, text=True, timeout=30,
-            env={"PATH": f"{td}:/usr/bin:/bin"},
-        )
-        calls = log.read_text().splitlines() if log.exists() else []
-    return proc.returncode, calls
+def test_firewall6_good():
+    ok, detail = check_firewall6((0, GOOD_INPUT6_S), (0, GOOD_GUARD6_S))
+    assert ok, detail
 
 
-def test_portguard_reapply_order_no_window():
-    """重应用：新跳转插入必须先于旧跳转删除（无暴露窗口）。"""
-    rc, calls = _run_portguard_with_stub(fail_at=None)
-    assert rc == 0, calls
-    insert_new = next(i for i, c in enumerate(calls) if c.startswith("-I INPUT 1 -j"))
-    delete_old = next(i for i, c in enumerate(calls) if c == "-D INPUT -j CUBE_POC_GUARD")
-    assert insert_new < delete_old, calls
-    # 旧链清空/删除更后
-    flush_old = next(i for i, c in enumerate(calls) if c == "-F CUBE_POC_GUARD")
-    assert delete_old < flush_old
+def test_firewall6_conditional_jump_and_limited_reject_rejected():
+    """v6 条件跳转（仅 ::1 进守卫）= 同链路客户端绕过 → 拒绝。"""
+    bad = "-P INPUT ACCEPT\n-A INPUT -s ::1/128 -j CUBE_POC_GUARD\n"
+    ok, detail = check_firewall6((0, bad), (0, GOOD_GUARD6_S))
+    assert not ok and "无条件跳转" in detail
+    # REJECT 带 -s 限缩（link-local 客户端不被拒）→ 形态不等拒绝
+    limited = GOOD_GUARD6_S.replace(
+        "-A CUBE_POC_GUARD -p tcp -m tcp --dport 9999 -j REJECT",
+        "-A CUBE_POC_GUARD -s fe80::/10 -p tcp -m tcp --dport 9999 -j REJECT",
+    )
+    ok, detail = check_firewall6((0, GOOD_INPUT6_S), (0, limited))
+    assert not ok and "形态不等" in detail
 
 
-def test_portguard_midway_failure_keeps_old_jump():
-    """中途失败（建链/加规则阶段）：绝不能出现删除旧跳转的调用。"""
-    # 前 3 次调用是 cleanup_new 的 || true 保护清理（不致中断）；
-    # 硬失败位：4=建新链、7=加规则中途、11=插入新跳转
-    for fail_at in (4, 7, 11):
-        rc, calls = _run_portguard_with_stub(fail_at=fail_at)
-        assert rc != 0, (fail_at, calls)
-        assert not any(c == "-D INPUT -j CUBE_POC_GUARD" for c in calls), (fail_at, calls)
-
-
-def test_portguard_double_apply_idempotent_structure():
-    """连续两次 apply：调用序列等价（幂等），顺序约束仍成立。"""
-    rc1, calls1 = _run_portguard_with_stub(fail_at=None)
-    rc2, calls2 = _run_portguard_with_stub(fail_at=None)
-    assert rc1 == rc2 == 0
-    assert calls1 == calls2
+def test_firewall6_command_failure_and_missing_chain_refused():
+    ok, detail = check_firewall6((1, "iptables: command fail"), (0, GOOD_GUARD6_S))
+    assert not ok and "命令失败" in detail
+    ok, detail = check_firewall6((0, GOOD_INPUT6_S), (0, ""))
+    assert not ok  # 链缺失/无规则 → 拒绝
 
 
 # ---------- egress ----------

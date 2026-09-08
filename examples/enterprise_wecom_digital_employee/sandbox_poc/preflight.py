@@ -1,4 +1,4 @@
-"""PoC 创建前预检（.172 侧，失败关闭）——R2 评审硬化版。
+"""PoC 创建前预检（.172 侧，失败关闭）——R2/R3/R4 评审硬化版。
 
 每次新建沙箱前与 gate-check 一并调用（exit 0=放行 / 3=阻断）。检查项：
 1. master 活动引用：dynamicconf `cubemaster_http_addr` 与 LCM compose
@@ -11,8 +11,11 @@
    校验（R3）：INPUT 首条必须为**无条件**跳转（条件跳转=绕过）、链内
    每条规则 token 级全等（REJECT 带 -s 限缩/ACCEPT 带 -d 限缩均拒绝）；
    **命令 returncode≠0 一律拒绝**；
-4. egress 存活：127.0.0.1:9091 可达；
-5. 监督心跳门禁（复用 check_gate）。
+4. 防火墙 v6（R4）：cubelet 于 [::]:9999 双栈监听，实测同链路客户端可经
+   link-local 绕过 v4 守卫 → `ip6tables -S` 同构完整形态校验
+   （9999/8082 各两条：::1 ACCEPT + 无条件 REJECT）；
+5. egress 存活：127.0.0.1:9091 可达；
+6. 监督心跳门禁（复用 check_gate）。
 
 读取器/执行器全部可注入；纯标准库。R1 版教训：文本出现≠规则有效。
 """
@@ -54,6 +57,13 @@ GUARD_RULES: list[list[str]] = [
     _rule(9999, None, "REJECT"),
     _rule(8082, "127.0.0.1/32", "ACCEPT"),
     _rule(8082, "192.10.50.172/32", "ACCEPT"),
+    _rule(8082, None, "REJECT"),
+]
+# v6 期望规则（R4）：节点无全局 v6、平台自连走 v4，仅放行 ::1
+GUARD6_RULES: list[list[str]] = [
+    _rule(9999, "::1/128", "ACCEPT"),
+    _rule(9999, None, "REJECT"),
+    _rule(8082, "::1/128", "ACCEPT"),
     _rule(8082, None, "REJECT"),
 ]
 # INPUT 首条必须为**无条件**跳转（无 -s/-d/-i/-o/-p 等任何匹配项）
@@ -135,10 +145,28 @@ def check_container_limits(docker_inspect: Callable[[str], tuple[int, str]]) -> 
     return True, "8 容器限额=冻结值"
 
 
+def _firewall_tokens(
+    input_s: str, guard_s: str, rules: list[list[str]]
+) -> tuple[bool, str]:
+    """iptables -S 完整形态 token 全等（v4/v6 共用内核逻辑）。"""
+    input_rules = [ln.split() for ln in input_s.splitlines() if ln.startswith("-A INPUT ")]
+    if not input_rules:
+        return False, "INPUT 无规则（跳转缺失）"
+    if input_rules[0] != INPUT_JUMP:
+        return False, f"INPUT 首条非无条件跳转（={input_rules[0]}）"
+    guard_rules = [ln.split() for ln in guard_s.splitlines() if ln.startswith(f"-A {GUARD_CHAIN} ")]
+    if len(guard_rules) != len(rules):
+        return False, f"{GUARD_CHAIN} 规则数 {len(guard_rules)}≠{len(rules)}"
+    for idx, (expect, got) in enumerate(zip(rules, guard_rules, strict=True), start=1):
+        if expect != got:
+            return False, f"规则{idx} 形态不等：期望 {' '.join(expect)} 实得 {' '.join(got)}"
+    return True, f"{GUARD_CHAIN} 完整形态全等（{len(rules)} 条）"
+
+
 def check_firewall_structure(
     input_s: str, guard_s: str
 ) -> tuple[bool, str]:
-    """iptables -S 完整形态全等校验（R3：条件跳转/附加条件均拒绝）。
+    """iptables（v4）-S 完整形态全等校验（R3：条件跳转/附加条件均拒绝）。
 
     - INPUT 第 1 条必须是**无条件**跳转（token 全等于
       ["-A","INPUT","-j",GUARD]）——带 -s/-d/-i/-o/-p 的条件跳转会让
@@ -146,18 +174,21 @@ def check_firewall_structure(
     - 链内规则逐条**完整 token 全等**：REJECT 带 -s 限缩、ACCEPT 带 -d
       限缩、多任何匹配项或动作修饰都视为结构漂移 → 拒绝。
     """
-    input_rules = [ln.split() for ln in input_s.splitlines() if ln.startswith("-A INPUT ")]
-    if not input_rules:
-        return False, "INPUT 无规则（跳转缺失）"
-    if input_rules[0] != INPUT_JUMP:
-        return False, f"INPUT 首条非无条件跳转（={input_rules[0]}）"
-    guard_rules = [ln.split() for ln in guard_s.splitlines() if ln.startswith(f"-A {GUARD_CHAIN} ")]
-    if len(guard_rules) != len(GUARD_RULES):
-        return False, f"{GUARD_CHAIN} 规则数 {len(guard_rules)}≠{len(GUARD_RULES)}"
-    for idx, (expect, got) in enumerate(zip(GUARD_RULES, guard_rules, strict=True), start=1):
-        if expect != got:
-            return False, f"规则{idx} 形态不等：期望 {' '.join(expect)} 实得 {' '.join(got)}"
-    return True, f"{GUARD_CHAIN} 完整形态全等（{len(GUARD_RULES)} 条）"
+    return _firewall_tokens(input_s, guard_s, GUARD_RULES)
+
+
+def check_firewall6(
+    input6_result: tuple[int, str], guard6_result: tuple[int, str]
+) -> tuple[bool, str]:
+    """ip6tables 同构校验（R4）：[::]:9999 双栈监听 → v6 必须有等效保护。
+
+    9999/8082 在 v6 侧由同一专用链保护：INPUT 首条无条件跳转 + 链内
+    ::1 ACCEPT / 无条件 REJECT 完整形态全等；命令 rc≠0 一律拒绝。
+    """
+    for label, (rc, _out) in (("ip6tables", input6_result), ("ip6tables-guard", guard6_result)):
+        if rc != 0:
+            return False, f"{label} 命令失败 rc={rc}（拒绝，不解析输出）"
+    return _firewall_tokens(input6_result[1], guard6_result[1], GUARD6_RULES)
 
 
 def check_port_convergence(
@@ -209,6 +240,13 @@ def run_all(
             run_cmd(["ss", "-tln"]),
             run_cmd(["iptables", "-S", "INPUT"]),
             run_cmd(["iptables", "-S", GUARD_CHAIN]),
+        ),
+    ))
+    results.append((
+        "firewall_v6",
+        *check_firewall6(
+            run_cmd(["ip6tables", "-S", "INPUT"]),
+            run_cmd(["ip6tables", "-S", GUARD_CHAIN]),
         ),
     ))
 
