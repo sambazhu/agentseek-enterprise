@@ -44,7 +44,7 @@ import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -287,23 +287,49 @@ class HttpCubeClient:
         self._request("DELETE", f"/sandboxes/{sandbox_id}")
 
 
-def _parse_epoch(value: object) -> float | None:
-    """ISO8601（含 Z 后缀）→ epoch；非法/缺失 → None（不得默认 0）。
+_ISO_RX = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})"
+    r"(?:\.(\d{1,9}))?"
+    r"(Z|z|[+-]\d{2}:?\d{2})$"
+)
 
-    平台实测 startedAt 为纳秒精度（9 位小数）；Python 3.10 的
-    fromisoformat 仅支持 3/6 位小数会抛 ValueError（3.11+ 才接受任意
-    位数）——先归一到 6 位再解析，避免按 Python 版本出现行为分叉。
+
+def _parse_epoch(value: object) -> float | None:
+    """平台时间 → epoch 秒；非法/缺失 → None（不得默认 0）。
+
+    接受格式（显式定义，不依赖宿主时区/Python 版本）：
+    - 有限数值：原样视作 epoch；
+    - ISO8601：YYYY-MM-DD[T ]HH:MM:SS[.f{1..9}]，小数任意位（不足 6 位
+      右侧补零、超出 6 位截断，微秒精度）；**时区必填**（Z/z 或 ±HH:MM /
+      ±HHMM）——无时区的朴素时间一律拒绝（None，失败关闭由告警状态机
+      兜底），绝不按本地时区解释。
+    实现动机：平台 startedAt 实测纳秒精度（9 位小数），而 Python 3.10
+    的 fromisoformat 仅支持 3/6 位小数（3.11+ 才任意位）——改为显式
+    正则解析，保证 3.10/3.13 行为一致。
     """
     if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str):
         return None
+    m = _ISO_RX.match(value.strip())
+    if m is None:
+        return None
+    year, month, day, hour, minute, sec, frac, tz = m.groups()
+    micro = int(frac.ljust(6, "0")[:6]) if frac else 0
+    if tz in ("Z", "z"):
+        delta = timedelta(0)
+    else:
+        sign = 1 if tz[0] == "+" else -1
+        digits = tz[1:].replace(":", "")
+        delta = sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
     try:
-        text = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
-        parsed = datetime.fromisoformat(text)
-        return parsed.timestamp()
+        parsed = datetime(
+            int(year), int(month), int(day), int(hour), int(minute), int(sec),
+            micro, tzinfo=timezone(delta),
+        )
     except ValueError:
         return None
+    return parsed.timestamp()
 
 
 # --------------------------------------------------------------------------

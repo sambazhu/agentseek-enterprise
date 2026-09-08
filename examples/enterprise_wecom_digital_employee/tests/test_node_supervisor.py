@@ -153,25 +153,47 @@ def test_wall_clock_backward_jump_does_not_extend(tmp_path, manifest):
 
 # ---------- 安装轮实测缺陷：平台 startedAt 纳秒精度 × Python 3.10 ----------
 
-def test_parse_epoch_nanosecond_precision():
-    """平台实测 startedAt=…T15:22:14.258327917Z（9 位小数）。
+def test_parse_epoch_format_matrix():
+    """显式定义的平台时间接受格式（Codex 评审 R1-Q2 要求）。
 
-    py3.10 fromisoformat 只认 3/6 位小数（3.11+ 任意位）——归一化后
-    任一版本都必须解析成功（安装轮 O7 曾因此无法锚定 deadline）。
+    小数 0/1/2/3/4/5/6/9 位（右补零/超 6 位截断）、Z 与显式时区（含
+    紧凑 ±HHMM）、数值原样；朴素时间（无时区）一律拒绝，绝不按宿主
+    本地时区解释；非法/越界/None → None。期望值用 timezone.utc 构造，
+    本测试在 py3.10 与 py3.13 行为一致。
     """
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
     from sandbox_poc.node_supervisor import _parse_epoch
 
-    got = _parse_epoch("2026-09-07T15:22:14.258327917Z")
-    assert got is not None
-    from datetime import datetime as _dt
-
-    expected = _dt.fromisoformat("2026-09-07T15:22:14.258327+00:00").timestamp()
-    assert abs(got - expected) < 2e-6  # 截断到 6 位（亚微秒误差）
-    # 常规格式回归
-    assert _parse_epoch("2026-09-08T00:00:00Z") is not None
-    assert _parse_epoch("2026-09-08T00:00:00.123456Z") is not None
-    assert _parse_epoch("not-a-time") is None
-    assert _parse_epoch(None) is None
+    base = _dt(2026, 9, 7, 15, 22, 14, tzinfo=_tz.utc).timestamp()
+    # 小数位数矩阵：digits → 期望微秒（>6 位截断到微秒）
+    for digits, micro in [
+        ("1", 100_000), ("25", 250_000), ("123", 123_000), ("1234", 123_400),
+        ("12345", 123_450), ("123456", 123_456), ("123456789", 123_456),
+    ]:
+        got = _parse_epoch(f"2026-09-07T15:22:14.{digits}Z")
+        assert got == pytest.approx(base + micro / 1e6), digits
+    # 无小数
+    assert _parse_epoch("2026-09-07T15:22:14Z") == pytest.approx(base)
+    assert _parse_epoch("2026-09-07t15:22:14z") == pytest.approx(base)
+    assert _parse_epoch("2026-09-07 15:22:14Z") == pytest.approx(base)
+    # 显式时区
+    assert _parse_epoch("2026-09-07T15:22:14+00:00") == pytest.approx(base)
+    assert _parse_epoch("2026-09-07T23:22:14+08:00") == pytest.approx(base)
+    assert _parse_epoch("2026-09-07T23:22:14+0800") == pytest.approx(base)
+    assert _parse_epoch("2026-09-07T07:22:14-08:00") == pytest.approx(base)
+    # 数值原样 / 非有限 → None
+    assert _parse_epoch(1788794534.5) == 1788794534.5
+    assert _parse_epoch(float("nan")) is None
+    assert _parse_epoch(float("inf")) is None
+    # 拒绝：朴素（无时区）、非法、越界日期、非规范数字宽度
+    for bad in [
+        "2026-09-07T15:22:14", "2026-09-07 15:22:14", "not-a-time", "",
+        "2026-13-01T00:00:00Z", "2026-09-07T25:00:00Z", "2026-9-7T15:22:14Z",
+        "2026-09-07T15:22:14.1234567890Z", None, {"x": 1},
+    ]:
+        assert _parse_epoch(bad) is None, bad
 
 
 def test_hydrate_with_nanosecond_startedat_anchors_deadline(tmp_path, manifest):

@@ -12,7 +12,7 @@ import http.client
 import json
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
@@ -24,7 +24,7 @@ from sandbox_poc.node_supervisor import (
     SandboxRecord,
 )
 
-NOW = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 9, 8, 0, 0, 0, tzinfo=timezone.utc)
 SANDBOXES = [
     {"sandboxID": "sbx-a", "templateID": "tpl-1", "state": "running"},
     {"sandboxID": "sbx-b", "templateID": "tpl-2", "state": "running"},

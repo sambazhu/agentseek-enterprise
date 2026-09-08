@@ -196,6 +196,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+# sandbox PoC tests run on the py3.10 deployment matrix; datetime.UTC is 3.11+
+"examples/enterprise_wecom_digital_employee/tests/test_tunnel_forwarder.py" = ["UP017"]
+"examples/enterprise_wecom_digital_employee/tests/test_sdk_adapter.py" = ["UP017"]
+"examples/enterprise_wecom_digital_employee/tests/test_node_supervisor.py" = ["UP017"]
+
 "contrib/*/src/tests/*" = ["S101"]
 "contrib/*/tests/*" = ["S101", "S106"]
 "contrib/*/src/**/*.py" = ["TRY003"]

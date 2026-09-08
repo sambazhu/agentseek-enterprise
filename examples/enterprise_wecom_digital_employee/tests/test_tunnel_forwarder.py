@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -42,7 +42,7 @@ def _free_port() -> int:
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _make_ca(cn: str) -> tuple[x509.Certificate, rsa.RSAPrivateKey]:
