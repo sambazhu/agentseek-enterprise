@@ -1230,6 +1230,10 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 
 ### M1：执行与文件合同
 
+进度：已启动独立分支 `enterprise/v0.1.3-execution-contracts`（基线 M0 收官 5d79784）。
+初版合同与 Fake/SQLite 离线参考实现见 [M1 合同](V0.1.3_M1_EXECUTION_CONTRACTS.md)，
+复验见 [M1 工单](V0.1.3_M1_VERIFICATION.md)。待 Linux 复验及用户验收，不计 M1 PASS。
+
 - 定义 task_id、execution_id、attempt、InputManifest、OutputManifest、
   WorkspaceRevision、ExecutionOutput；
 - 服务端校验 tenant、digital_employee、conversation、requester、Work 与文件 grant；
@@ -1237,6 +1241,9 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 - 普通 Turn 不因文件持久化静默创建 WorkItem；合同确认后进入 M2。
 
 ### M2：Cube 执行接入
+
+- 增加 `.171` 测试驱动模拟 DirectTurn / Work 请求的真实沙箱冒烟，提前验证 Broker 接缝；
+  不经过真实 Agent/企微，不替代 M4 的业务活体验证；进入 Turn 或创建 WorkItem 本身不启动 VM。
 
 - 独立 Broker 使用 Cube 原生 SDK，受控 create、execute、cancel、delete；
 - 模板与资源策略由服务端固定，密钥留在 Broker/代理，不进入 VM；

@@ -1,0 +1,14 @@
+[project]
+name = "agentseek-execution"
+version = "0.1.0"
+description = "Offline execution contracts for AgentSeek (M1, no Cube integration)"
+requires-python = ">=3.10,<3.14"
+dependencies = []
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_execution"]
