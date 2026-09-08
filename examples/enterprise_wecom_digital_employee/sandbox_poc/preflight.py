@@ -1,17 +1,20 @@
-"""PoC 创建前预检（.172 侧，失败关闭）——Codex R1 评审 Q6/Q7 新增门禁。
+"""PoC 创建前预检（.172 侧，失败关闭）——R2 评审硬化版。
 
 每次新建沙箱前与 gate-check 一并调用（exit 0=放行 / 3=阻断）。检查项：
-1. master 活动引用不得回落 8089（dynamicconf cubemaster_http_addr、
-   LCM compose CUBE_LCM_CUBEMASTER_URL 均须显式 127.0.0.1:18089）；
-2. 容器限额核验：8 个容器 docker inspect Memory 必须等于冻结值——
-   容器重建（compose up）后限额未核验不得创建（LCM 曾被重建冲掉）；
-3. 端口收敛核验：ss 中 80/443/9090/9998/9966/8083 必须绑 127.0.0.1，
-   9999/8082 必须有 iptables 源收敛规则（本机源 ACCEPT + 其他 REJECT）；
-4. egress 存活：127.0.0.1:9091 可达（egress 曾静默退出 3 小时未自愈，
-   RestartPolicy 已改 unless-stopped，此处为检测兜底）；
-5. 监督心跳门禁（复用 check_gate：告警/manifest/心跳）。
+1. master 活动引用：dynamicconf `cubemaster_http_addr` 与 LCM compose
+   `CUBE_LCM_CUBEMASTER_URL` 的**活动值**（跳过注释行，多处活动出现视为
+   歧义拒绝）必须精确等于 127.0.0.1:18089——注释里的正确地址不能掩盖
+   活动值为空/错误（R2 复现缺陷）；
+2. 容器限额：8 容器 docker inspect Memory 必须等于冻结值；
+3. 端口收敛+防火墙结构：指定端口必须绑 127.0.0.1；9999/8082 必须由
+   **专用链 CUBE_POC_GUARD** 保护——校验 INPUT 首条即跳转该链（前置
+   放行绕过不可行）、链内规则**逐条按序**精确匹配（协议/来源/端口 token
+   全等比较，`dpt:80820` 不会误认 `dpt:8082`）；**命令 returncode≠0 一律
+   拒绝**（不解析输出就放行）；
+4. egress 存活：127.0.0.1:9091 可达；
+5. 监督心跳门禁（复用 check_gate）。
 
-全部读取器可注入（tests 用假内容），纯标准库。
+读取器/执行器全部可注入；纯标准库。R1 版教训：文本出现≠规则有效。
 """
 
 from __future__ import annotations
@@ -30,8 +33,17 @@ except ImportError:
     from node_supervisor import check_gate
 
 EXPECTED_MASTER_ADDR = "127.0.0.1:18089"
+GUARD_CHAIN = "CUBE_POC_GUARD"
+# 链内期望规则（有序，全等匹配）：(target, source, port)
+GUARD_RULES: list[tuple[str, str, int]] = [
+    ("ACCEPT", "127.0.0.1", 9999),
+    ("ACCEPT", "192.10.50.172", 9999),
+    ("REJECT", "0.0.0.0/0", 9999),
+    ("ACCEPT", "127.0.0.1", 8082),
+    ("ACCEPT", "192.10.50.172", 8082),
+    ("REJECT", "0.0.0.0/0", 8082),
+]
 EXPECTED_CONTAINER_MEMORY: dict[str, int] = {
-    # MiB → 字节（§9.4 冻结值）
     "cube-sandbox-mysql": 512,
     "cube-sandbox-redis": 128,
     "cube-sandbox-minio": 768,
@@ -42,46 +54,60 @@ EXPECTED_CONTAINER_MEMORY: dict[str, int] = {
     "cube-egress": 256,
 }
 LOOPBACK_BIND_PORTS = (80, 443, 9090, 9998, 9966, 8083)
-IPTABLES_GUARDED_PORTS = (9999, 8082)
 
 
-def _run(cmd: list[str]) -> str:
+def _run(cmd: list[str]) -> tuple[int, str]:
     # 固定白名单命令（本模块自有 ss/iptables/docker inspect），无外部输入拼接
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)  # noqa: S603
-    return proc.stdout + proc.stderr
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _active_value(text: str, key: str) -> list[str]:
+    """取配置中该键的活动值列表（跳过注释行；值去引号）。"""
+    values = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.match(rf"^\s*{re.escape(key)}\s*:", stripped):
+            raw = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            values.append(raw)
+    return values
 
 
 def check_master_refs(read_file: Callable[[Path], str], toolbox: Path) -> tuple[bool, str]:
-    """master 活动引用：dynamicconf + LCM compose 均须显式 18089（防 8089 回落）。"""
+    """master 活动引用必须精确等于 127.0.0.1:18089（活动值，非全文子串）。"""
     problems: list[str] = []
     dyn = read_file(toolbox / "Cubelet/dynamicconf/conf.yaml")
-    for line in dyn.splitlines():
-        if "cubemaster_http_addr" in line:
-            value = line.split(":", 1)[1].strip().strip('"')
-            if value != EXPECTED_MASTER_ADDR:
-                problems.append(f"dynamicconf={value!r}")
-            break
-    else:
-        problems.append("dynamicconf cubemaster_http_addr 缺失")
+    dyn_values = _active_value(dyn, "cubemaster_http_addr")
+    if len(dyn_values) != 1:
+        problems.append(f"dynamicconf 活动键 {len(dyn_values)} 处（歧义/缺失）")
+    elif dyn_values[0] != EXPECTED_MASTER_ADDR:
+        problems.append(f"dynamicconf={dyn_values[0]!r}")
+
     lcm = read_file(toolbox / "cube-lifecycle-manager/docker-compose.yaml")
-    # 8089 残留检查用数字边界（"18089" 不算——朴素子串会恒真）
-    has_8089 = re.search(r"(?<![0-9])8089(?![0-9])", lcm) is not None
-    if (
-        "CUBE_LCM_CUBEMASTER_URL" not in lcm
-        or EXPECTED_MASTER_ADDR not in lcm
-        or has_8089
-    ):
-        problems.append("LCM compose master URL 非 18089（或含 8089 残留）")
+    lcm_values = _active_value(lcm, "CUBE_LCM_CUBEMASTER_URL")
+    if len(lcm_values) != 1:
+        problems.append(f"LCM URL 活动键 {len(lcm_values)} 处")
+    elif lcm_values[0] != f"http://{EXPECTED_MASTER_ADDR}":
+        problems.append(f"LCM URL={lcm_values[0]!r}")
+    listen_values = _active_value(lcm, "CUBE_LCM_LISTEN_ADDR")
+    if len(listen_values) != 1 or not listen_values[0].startswith("127.0.0.1:"):
+        problems.append(f"LCM LISTEN={listen_values!r}")
+
     if problems:
         return False, "; ".join(problems)
-    return True, f"master 引用={EXPECTED_MASTER_ADDR}"
+    return True, f"master 活动引用={EXPECTED_MASTER_ADDR}（值级校验）"
 
 
-def check_container_limits(docker_inspect: Callable[[str], str]) -> tuple[bool, str]:
-    """8 容器限额=冻结值（容器重建后未核验不得创建）。"""
+def check_container_limits(docker_inspect: Callable[[str], tuple[int, str]]) -> tuple[bool, str]:
+    """8 容器限额=冻结值；inspect 执行失败/不可读一律拒绝。"""
     bad = []
     for name, mib in EXPECTED_CONTAINER_MEMORY.items():
-        out = docker_inspect(name)
+        rc, out = docker_inspect(name)
+        if rc != 0:
+            bad.append(f"{name}=cmd-fail(rc={rc})")
+            continue
         try:
             memory = int(out.strip().splitlines()[0])
         except (ValueError, IndexError):
@@ -94,24 +120,72 @@ def check_container_limits(docker_inspect: Callable[[str], str]) -> tuple[bool, 
     return True, "8 容器限额=冻结值"
 
 
-def check_port_convergence(ss_lines: str, iptables_list: str) -> tuple[bool, str]:
-    """监听收敛：指定端口必须 127.0.0.1；9999/8082 必须有源收敛规则。"""
+def _parse_chain_rules(iptables_lines: str) -> list[dict[str, str]]:
+    """把 `iptables -L <chain> -n --line-numbers` 输出解析为规则 dict 列表。"""
+    rules = []
+    for line in iptables_lines.splitlines():
+        tokens = line.split()
+        # 行格式：num target prot opt source destination [extras...]
+        if len(tokens) >= 6 and tokens[0].isdigit():
+            extras = " ".join(tokens[6:])
+            rules.append({
+                "target": tokens[1], "prot": tokens[2],
+                "source": tokens[4], "extras": extras,
+            })
+    return rules
+
+
+def check_firewall_structure(
+    input_listing: str, guard_listing: str
+) -> tuple[bool, str]:
+    """专用链结构校验：INPUT 首条=跳转 GUARD 链；链内规则逐条按序全等。
+
+    - 前置全放行必然把跳转挤到非首位（或在其前放行目标端口）→ 拒绝；
+    - 端口用 token 全等（"dpt:9999"），`dpt:80820`/`dpt:99991` 不误认；
+    - 规则数量必须恰为期望序列（多出的目标端口规则=结构漂移）。
+    """
+    # INPUT 首条必须是跳转专用链（首条之前不存在任何可绕过规则）
+    first = None
+    for line in input_listing.splitlines():
+        tokens = line.split()
+        if len(tokens) >= 6 and tokens[0].isdigit():
+            first = tokens
+            break
+    if first is None or first[1] != GUARD_CHAIN:
+        return False, f"INPUT 首条非 {GUARD_CHAIN} 跳转（首条={first[1] if first else '无规则'}）"
+
+    rules = _parse_chain_rules(guard_listing)
+    if len(rules) != len(GUARD_RULES):
+        return False, f"GUARD 链规则数 {len(rules)}≠{len(GUARD_RULES)}"
+    for idx, ((target, source, port), rule) in enumerate(zip(GUARD_RULES, rules, strict=True), start=1):
+        if rule["target"] != target or rule["source"] != source or rule["prot"] != "tcp":
+            return False, f"规则{idx} 不匹配: {rule}"
+        port_token = f"dpt:{port}"
+        tokens = rule["extras"].split()
+        if port_token not in tokens:
+            return False, f"规则{idx} 端口 token 不匹配（期望 {port_token}）"
+        if target == "REJECT" and "reject-with" not in rule["extras"] and "tcp-reset" not in rule["extras"]:
+            return False, f"规则{idx} REJECT 缺 tcp-reset"
+    return True, f"{GUARD_CHAIN} 链结构=期望序列（{len(GUARD_RULES)} 条）"
+
+
+def check_port_convergence(
+    ss_result: tuple[int, str], input_result: tuple[int, str], guard_result: tuple[int, str]
+) -> tuple[bool, str]:
+    """监听收敛 + 防火墙结构（命令 rc≠0 一律拒绝）。"""
+    for label, (rc, _out) in (("ss", ss_result), ("iptables", input_result), ("iptables-guard", guard_result)):
+        if rc != 0:
+            return False, f"{label} 命令失败 rc={rc}（拒绝，不解析输出）"
     problems: list[str] = []
     for port in LOOPBACK_BIND_PORTS:
-        hits = [ln for ln in ss_lines.splitlines() if f":{port} " in ln]
+        hits = [ln for ln in ss_result[1].splitlines() if f":{port} " in ln]
         if not hits:
             problems.append(f"{port}=未监听")
         elif not all(ln.split()[3].startswith("127.0.0.1:") for ln in hits):
             problems.append(f"{port}=非loopback")
-    for port in IPTABLES_GUARDED_PORTS:
-        block = [ln for ln in iptables_list.splitlines() if f"dpt:{port}" in ln]
-        has_accept = any("127.0.0.1" in ln and "ACCEPT" in ln for ln in block)
-        has_reject = any("REJECT" in ln for ln in block)
-        if not (has_accept and has_reject):
-            problems.append(f"{port}=无iptables源收敛")
     if problems:
         return False, "; ".join(problems)
-    return True, "端口收敛+iptables 规则在位"
+    return check_firewall_structure(input_result[1], guard_result[1])
 
 
 def check_egress_alive(connect: Callable[[str, int], bool]) -> tuple[bool, str]:
@@ -129,8 +203,8 @@ def run_all(
     toolbox: Path,
     *,
     read_file: Callable[[Path], str],
-    docker_inspect: Callable[[str], str],
-    run_cmd: Callable[[list[str]], str] = _run,
+    docker_inspect: Callable[[str], tuple[int, str]],
+    run_cmd: Callable[[list[str]], tuple[int, str]] = _run,
     connect: Callable[[str, int], bool] | None = None,
     manifest: Path | None = None,
     alarm_file: Path | None = None,
@@ -140,7 +214,11 @@ def run_all(
     results.append(("container_limits", *check_container_limits(docker_inspect)))
     results.append((
         "port_convergence",
-        *check_port_convergence(run_cmd(["ss", "-tln"]), run_cmd(["iptables", "-L", "INPUT", "-n"])),
+        *check_port_convergence(
+            run_cmd(["ss", "-tln"]),
+            run_cmd(["iptables", "-L", "INPUT", "-n", "--line-numbers"]),
+            run_cmd(["iptables", "-L", GUARD_CHAIN, "-n", "--line-numbers"]),
+        ),
     ))
 
     def _connect(host: str, port: int) -> bool:
