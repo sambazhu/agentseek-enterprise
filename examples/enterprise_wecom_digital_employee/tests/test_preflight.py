@@ -29,16 +29,15 @@ GOOD_SS = "\n".join([
     "LISTEN 0 511 *:9999 0.0.0.0:*",
     "LISTEN 0 511 192.10.50.172:8082 0.0.0.0:*",
 ])
-HDR = "Chain INPUT (policy ACCEPT)\nnum target prot opt source destination"
-GOOD_GUARD = HDR.replace("INPUT", "CUBE_POC_GUARD") + "\n" + "\n".join([
-    "1 ACCEPT tcp -- 127.0.0.1 0.0.0.0/0 tcp dpt:9999",
-    "2 ACCEPT tcp -- 192.10.50.172 0.0.0.0/0 tcp dpt:9999",
-    "3 REJECT tcp -- 0.0.0.0/0 0.0.0.0/0 reject-with tcp-reset tcp dpt:9999",
-    "4 ACCEPT tcp -- 127.0.0.1 0.0.0.0/0 tcp dpt:8082",
-    "5 ACCEPT tcp -- 192.10.50.172 0.0.0.0/0 tcp dpt:8082",
-    "6 REJECT tcp -- 0.0.0.0/0 0.0.0.0/0 reject-with tcp-reset tcp dpt:8082",
+GOOD_GUARD_S = "\n".join([
+    "-A CUBE_POC_GUARD -s 127.0.0.1/32 -p tcp -m tcp --dport 9999 -j ACCEPT",
+    "-A CUBE_POC_GUARD -s 192.10.50.172/32 -p tcp -m tcp --dport 9999 -j ACCEPT",
+    "-A CUBE_POC_GUARD -p tcp -m tcp --dport 9999 -j REJECT --reject-with tcp-reset",
+    "-A CUBE_POC_GUARD -s 127.0.0.1/32 -p tcp -m tcp --dport 8082 -j ACCEPT",
+    "-A CUBE_POC_GUARD -s 192.10.50.172/32 -p tcp -m tcp --dport 8082 -j ACCEPT",
+    "-A CUBE_POC_GUARD -p tcp -m tcp --dport 8082 -j REJECT --reject-with tcp-reset",
 ])
-GOOD_INPUT = HDR + "\n1 CUBE_POC_GUARD all -- 0.0.0.0/0 0.0.0.0/0\n2 ACCEPT all -- 0.0.0.0/0 0.0.0.0/0"
+GOOD_INPUT_S = "-P INPUT ACCEPT\n-A INPUT -j CUBE_POC_GUARD\n-A INPUT -j ufw-before-input\n"
 
 
 def _read(files: dict[str, str]):
@@ -114,50 +113,126 @@ def test_container_limits_exact_drift_and_cmdfail():
     assert not ok and "cmd-fail" in detail  # 命令失败必须拒绝
 
 
-# ---------- 防火墙结构（R2 核心） ----------
+# ---------- 防火墙结构（R3：iptables -S 完整形态全等） ----------
 
 def test_firewall_structure_good():
-    ok, detail = check_firewall_structure(GOOD_INPUT, GOOD_GUARD)
+    ok, detail = check_firewall_structure(GOOD_INPUT_S, GOOD_GUARD_S)
     assert ok, detail
 
 
-def test_firewall_structure_preceding_accept_all_rejected():
-    """R2 复现缺陷：INPUT 前置全放行把守卫挤到非首位 → 必须拒绝。"""
-    bad_input = HDR + "\n1 ACCEPT all -- 0.0.0.0/0 0.0.0.0/0\n2 CUBE_POC_GUARD all -- 0.0.0.0/0 0.0.0.0/0"
-    ok, detail = check_firewall_structure(bad_input, GOOD_GUARD)
-    assert not ok and "首条非 CUBE_POC_GUARD" in detail
-    ok, _ = check_firewall_structure(HDR + "\n", GOOD_GUARD)
-    assert not ok  # 无跳转
+def test_firewall_conditional_jump_bypass_rejected():
+    """R3 复现缺陷：INPUT 首条为**条件跳转**（仅 127.0.0.1 源进入守卫）。
+
+    外部流量不进守卫链——即便链内规则完全正确也必须拒绝。
+    """
+    bad = "-P INPUT ACCEPT\n-A INPUT -s 127.0.0.1/32 -j CUBE_POC_GUARD\n-A INPUT -j ACCEPT\n"
+    ok, detail = check_firewall_structure(bad, GOOD_GUARD_S)
+    assert not ok and "无条件跳转" in detail
+    # 跳转带接口/协议条件同样拒绝
+    bad2 = "-P INPUT ACCEPT\n-A INPUT -i ens192 -j CUBE_POC_GUARD\n"
+    ok, _ = check_firewall_structure(bad2, GOOD_GUARD_S)
+    assert not ok
 
 
-def test_firewall_structure_wrong_source_and_port_token():
-    """错误来源放行 / 端口 token 前缀相似（dpt:80820）都必须拒绝。"""
-    wrong_src = GOOD_GUARD.replace(
-        "4 ACCEPT tcp -- 127.0.0.1 0.0.0.0/0 tcp dpt:8082",
-        "4 ACCEPT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:8082",
+def test_firewall_extra_conditions_on_rules_rejected():
+    """REJECT 带 -s 限缩（拒绝不到外部）/ ACCEPT 带 -d 限缩 → 形态不等拒绝。"""
+    reject_limited = GOOD_GUARD_S.replace(
+        "-A CUBE_POC_GUARD -p tcp -m tcp --dport 9999 -j REJECT",
+        "-A CUBE_POC_GUARD -s 192.10.50.172/32 -p tcp -m tcp --dport 9999 -j REJECT",
     )
-    ok, _ = check_firewall_structure(GOOD_INPUT, wrong_src)
+    ok, detail = check_firewall_structure(GOOD_INPUT_S, reject_limited)
+    assert not ok and "形态不等" in detail
+    accept_dst = GOOD_GUARD_S.replace(
+        "-A CUBE_POC_GUARD -s 192.10.50.172/32 -p tcp -m tcp --dport 9999 -j ACCEPT",
+        "-A CUBE_POC_GUARD -s 192.10.50.172/32 -d 127.0.0.1/32 -p tcp -m tcp --dport 9999 -j ACCEPT",
+    )
+    ok, _ = check_firewall_structure(GOOD_INPUT_S, accept_dst)
     assert not ok
-    wrong_port = GOOD_GUARD.replace("dpt:8082", "dpt:80820").replace("dpt:80820 ", "dpt:80820 ")
-    ok, _ = check_firewall_structure(GOOD_INPUT, wrong_port)
+
+
+def test_firewall_preceding_rules_and_missing_jump():
+    """前置全放行（跳转非首条）/ 无跳转 → 拒绝。"""
+    bad = "-P INPUT ACCEPT\n-A INPUT -j ACCEPT\n-A INPUT -j CUBE_POC_GUARD\n"
+    ok, detail = check_firewall_structure(bad, GOOD_GUARD_S)
+    assert not ok and "无条件跳转" in detail
+    ok, _ = check_firewall_structure("-P INPUT ACCEPT\n-A INPUT -j ACCEPT\n", GOOD_GUARD_S)
     assert not ok
-    missing = "\n".join(GOOD_GUARD.splitlines()[:-1])  # 少末条 REJECT
-    ok, detail = check_firewall_structure(GOOD_INPUT, missing)
-    assert not ok and "规则数" in detail
 
 
 def test_port_convergence_command_failure_refuses():
     """读取失败（rc≠0）必须拒绝，不得解析输出放行。"""
-    ok, detail = check_port_convergence((1, GOOD_SS), (0, GOOD_INPUT), (0, GOOD_GUARD))
+    ok, detail = check_port_convergence((1, GOOD_SS), (0, GOOD_INPUT_S), (0, GOOD_GUARD_S))
     assert not ok and "ss 命令失败" in detail
-    ok, detail = check_port_convergence((0, GOOD_SS), (0, GOOD_INPUT), (2, "iptables: No chain"))
+    ok, detail = check_port_convergence((0, GOOD_SS), (0, GOOD_INPUT_S), (2, "iptables: No chain"))
     assert not ok and "iptables-guard 命令失败" in detail
 
 
 def test_port_convergence_nonloopback_bind():
     bad_ss = GOOD_SS.replace("127.0.0.1:80 ", "0.0.0.0:80 ")
-    ok, detail = check_port_convergence((0, bad_ss), (0, GOOD_INPUT), (0, GOOD_GUARD))
+    ok, detail = check_port_convergence((0, bad_ss), (0, GOOD_INPUT_S), (0, GOOD_GUARD_S))
     assert not ok and "80=非loopback" in detail
+
+
+# ---------- portguard.sh 换链顺序与失败保留（R3） ----------
+
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+PORTGUARD = str(Path(__file__).resolve().parent.parent / "sandbox_poc" / "portguard.sh")
+
+
+def _run_portguard_with_stub(fail_at: int | None):
+    """stub iptables：记录调用序列，第 fail_at 次调用返回非零。"""
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "calls.log"
+        stub = Path(td) / "iptables"
+        stub.write_text(
+            "#!/bin/bash\n"
+            f"echo \"$*\" >> {log}\n"
+            f"[ -f {td}/failat ] && [ \"$(wc -l < {log})\" = \"$(cat {td}/failat)\" ] && exit 1\n"
+            "exit 0\n"
+        )
+        stub.chmod(0o755)
+        if fail_at is not None:
+            Path(td, "failat").write_text(str(fail_at))
+        # 受控 stub PATH（tempdir 前置），仅本测试内生效；bash 用绝对路径
+        proc = subprocess.run(  # noqa: S603
+            ["/bin/bash", PORTGUARD, "apply"],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": f"{td}:/usr/bin:/bin"},
+        )
+        calls = log.read_text().splitlines() if log.exists() else []
+    return proc.returncode, calls
+
+
+def test_portguard_reapply_order_no_window():
+    """重应用：新跳转插入必须先于旧跳转删除（无暴露窗口）。"""
+    rc, calls = _run_portguard_with_stub(fail_at=None)
+    assert rc == 0, calls
+    insert_new = next(i for i, c in enumerate(calls) if c.startswith("-I INPUT 1 -j"))
+    delete_old = next(i for i, c in enumerate(calls) if c == "-D INPUT -j CUBE_POC_GUARD")
+    assert insert_new < delete_old, calls
+    # 旧链清空/删除更后
+    flush_old = next(i for i, c in enumerate(calls) if c == "-F CUBE_POC_GUARD")
+    assert delete_old < flush_old
+
+
+def test_portguard_midway_failure_keeps_old_jump():
+    """中途失败（建链/加规则阶段）：绝不能出现删除旧跳转的调用。"""
+    # 前 3 次调用是 cleanup_new 的 || true 保护清理（不致中断）；
+    # 硬失败位：4=建新链、7=加规则中途、11=插入新跳转
+    for fail_at in (4, 7, 11):
+        rc, calls = _run_portguard_with_stub(fail_at=fail_at)
+        assert rc != 0, (fail_at, calls)
+        assert not any(c == "-D INPUT -j CUBE_POC_GUARD" for c in calls), (fail_at, calls)
+
+
+def test_portguard_double_apply_idempotent_structure():
+    """连续两次 apply：调用序列等价（幂等），顺序约束仍成立。"""
+    rc1, calls1 = _run_portguard_with_stub(fail_at=None)
+    rc2, calls2 = _run_portguard_with_stub(fail_at=None)
+    assert rc1 == rc2 == 0
+    assert calls1 == calls2
 
 
 # ---------- egress ----------

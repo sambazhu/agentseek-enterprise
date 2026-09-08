@@ -7,10 +7,10 @@
    活动值为空/错误（R2 复现缺陷）；
 2. 容器限额：8 容器 docker inspect Memory 必须等于冻结值；
 3. 端口收敛+防火墙结构：指定端口必须绑 127.0.0.1；9999/8082 必须由
-   **专用链 CUBE_POC_GUARD** 保护——校验 INPUT 首条即跳转该链（前置
-   放行绕过不可行）、链内规则**逐条按序**精确匹配（协议/来源/端口 token
-   全等比较，`dpt:80820` 不会误认 `dpt:8082`）；**命令 returncode≠0 一律
-   拒绝**（不解析输出就放行）；
+   **专用链 CUBE_POC_GUARD** 保护——按 `iptables -S` **完整形态全等**
+   校验（R3）：INPUT 首条必须为**无条件**跳转（条件跳转=绕过）、链内
+   每条规则 token 级全等（REJECT 带 -s 限缩/ACCEPT 带 -d 限缩均拒绝）；
+   **命令 returncode≠0 一律拒绝**；
 4. egress 存活：127.0.0.1:9091 可达；
 5. 监督心跳门禁（复用 check_gate）。
 
@@ -34,15 +34,30 @@ except ImportError:
 
 EXPECTED_MASTER_ADDR = "127.0.0.1:18089"
 GUARD_CHAIN = "CUBE_POC_GUARD"
-# 链内期望规则（有序，全等匹配）：(target, source, port)
-GUARD_RULES: list[tuple[str, str, int]] = [
-    ("ACCEPT", "127.0.0.1", 9999),
-    ("ACCEPT", "192.10.50.172", 9999),
-    ("REJECT", "0.0.0.0/0", 9999),
-    ("ACCEPT", "127.0.0.1", 8082),
-    ("ACCEPT", "192.10.50.172", 8082),
-    ("REJECT", "0.0.0.0/0", 8082),
+
+
+def _rule(port: int, source: str | None, target: str) -> list[str]:
+    """构造 iptables -S 完整规则形态（与 portguard.sh 输出严格一致）。"""
+    tokens = ["-A", GUARD_CHAIN]
+    if source is not None:
+        tokens += ["-s", source]
+    tokens += ["-p", "tcp", "-m", "tcp", "--dport", str(port), "-j", target]
+    if target == "REJECT":
+        tokens += ["--reject-with", "tcp-reset"]
+    return tokens
+
+
+# 期望规则（有序，**完整 token 全等**——多一个条件/少一个条件都拒绝）
+GUARD_RULES: list[list[str]] = [
+    _rule(9999, "127.0.0.1/32", "ACCEPT"),
+    _rule(9999, "192.10.50.172/32", "ACCEPT"),
+    _rule(9999, None, "REJECT"),
+    _rule(8082, "127.0.0.1/32", "ACCEPT"),
+    _rule(8082, "192.10.50.172/32", "ACCEPT"),
+    _rule(8082, None, "REJECT"),
 ]
+# INPUT 首条必须为**无条件**跳转（无 -s/-d/-i/-o/-p 等任何匹配项）
+INPUT_JUMP: list[str] = ["-A", "INPUT", "-j", GUARD_CHAIN]
 EXPECTED_CONTAINER_MEMORY: dict[str, int] = {
     "cube-sandbox-mysql": 512,
     "cube-sandbox-redis": 128,
@@ -120,53 +135,29 @@ def check_container_limits(docker_inspect: Callable[[str], tuple[int, str]]) -> 
     return True, "8 容器限额=冻结值"
 
 
-def _parse_chain_rules(iptables_lines: str) -> list[dict[str, str]]:
-    """把 `iptables -L <chain> -n --line-numbers` 输出解析为规则 dict 列表。"""
-    rules = []
-    for line in iptables_lines.splitlines():
-        tokens = line.split()
-        # 行格式：num target prot opt source destination [extras...]
-        if len(tokens) >= 6 and tokens[0].isdigit():
-            extras = " ".join(tokens[6:])
-            rules.append({
-                "target": tokens[1], "prot": tokens[2],
-                "source": tokens[4], "extras": extras,
-            })
-    return rules
-
-
 def check_firewall_structure(
-    input_listing: str, guard_listing: str
+    input_s: str, guard_s: str
 ) -> tuple[bool, str]:
-    """专用链结构校验：INPUT 首条=跳转 GUARD 链；链内规则逐条按序全等。
+    """iptables -S 完整形态全等校验（R3：条件跳转/附加条件均拒绝）。
 
-    - 前置全放行必然把跳转挤到非首位（或在其前放行目标端口）→ 拒绝；
-    - 端口用 token 全等（"dpt:9999"），`dpt:80820`/`dpt:99991` 不误认；
-    - 规则数量必须恰为期望序列（多出的目标端口规则=结构漂移）。
+    - INPUT 第 1 条必须是**无条件**跳转（token 全等于
+      ["-A","INPUT","-j",GUARD]）——带 -s/-d/-i/-o/-p 的条件跳转会让
+      不匹配流量绕开守卫链（R3 复现缺陷）；
+    - 链内规则逐条**完整 token 全等**：REJECT 带 -s 限缩、ACCEPT 带 -d
+      限缩、多任何匹配项或动作修饰都视为结构漂移 → 拒绝。
     """
-    # INPUT 首条必须是跳转专用链（首条之前不存在任何可绕过规则）
-    first = None
-    for line in input_listing.splitlines():
-        tokens = line.split()
-        if len(tokens) >= 6 and tokens[0].isdigit():
-            first = tokens
-            break
-    if first is None or first[1] != GUARD_CHAIN:
-        return False, f"INPUT 首条非 {GUARD_CHAIN} 跳转（首条={first[1] if first else '无规则'}）"
-
-    rules = _parse_chain_rules(guard_listing)
-    if len(rules) != len(GUARD_RULES):
-        return False, f"GUARD 链规则数 {len(rules)}≠{len(GUARD_RULES)}"
-    for idx, ((target, source, port), rule) in enumerate(zip(GUARD_RULES, rules, strict=True), start=1):
-        if rule["target"] != target or rule["source"] != source or rule["prot"] != "tcp":
-            return False, f"规则{idx} 不匹配: {rule}"
-        port_token = f"dpt:{port}"
-        tokens = rule["extras"].split()
-        if port_token not in tokens:
-            return False, f"规则{idx} 端口 token 不匹配（期望 {port_token}）"
-        if target == "REJECT" and "reject-with" not in rule["extras"] and "tcp-reset" not in rule["extras"]:
-            return False, f"规则{idx} REJECT 缺 tcp-reset"
-    return True, f"{GUARD_CHAIN} 链结构=期望序列（{len(GUARD_RULES)} 条）"
+    input_rules = [ln.split() for ln in input_s.splitlines() if ln.startswith("-A INPUT ")]
+    if not input_rules:
+        return False, "INPUT 无规则（跳转缺失）"
+    if input_rules[0] != INPUT_JUMP:
+        return False, f"INPUT 首条非无条件跳转（={input_rules[0]}）"
+    guard_rules = [ln.split() for ln in guard_s.splitlines() if ln.startswith(f"-A {GUARD_CHAIN} ")]
+    if len(guard_rules) != len(GUARD_RULES):
+        return False, f"{GUARD_CHAIN} 规则数 {len(guard_rules)}≠{len(GUARD_RULES)}"
+    for idx, (expect, got) in enumerate(zip(GUARD_RULES, guard_rules, strict=True), start=1):
+        if expect != got:
+            return False, f"规则{idx} 形态不等：期望 {' '.join(expect)} 实得 {' '.join(got)}"
+    return True, f"{GUARD_CHAIN} 完整形态全等（{len(GUARD_RULES)} 条）"
 
 
 def check_port_convergence(
@@ -216,8 +207,8 @@ def run_all(
         "port_convergence",
         *check_port_convergence(
             run_cmd(["ss", "-tln"]),
-            run_cmd(["iptables", "-L", "INPUT", "-n", "--line-numbers"]),
-            run_cmd(["iptables", "-L", GUARD_CHAIN, "-n", "--line-numbers"]),
+            run_cmd(["iptables", "-S", "INPUT"]),
+            run_cmd(["iptables", "-S", GUARD_CHAIN]),
         ),
     ))
 
