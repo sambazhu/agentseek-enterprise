@@ -5,6 +5,9 @@ description = "Offline execution contracts for AgentSeek (M1, no Cube integratio
 requires-python = ">=3.10,<3.14"
 dependencies = []
 
+[project.optional-dependencies]
+broker = ["cryptography==49.0.0"]
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
