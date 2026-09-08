@@ -40,6 +40,17 @@ def digest(value: object) -> str:
 
 
 class Ledger:
+    def _protect(self, value: str, context: str) -> str:
+        """Storage codec seam; the M1 reference ledger remains plaintext."""
+        return value
+
+    def _reveal(self, value: str, context: str) -> str:
+        return value
+
+    @staticmethod
+    def _context(execution_id: str, attempt: int, field: str) -> str:
+        return canonical([execution_id, attempt, field])
+
     def __init__(self, path: Path):
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -99,7 +110,13 @@ class Ledger:
                 require(old["state"] in {"failed", "cancelled"}, Code.CONFLICT)
                 self.db.execute(
                     "INSERT INTO attempt_history VALUES (?,?,?)",
-                    (execution.execution_id, old["attempt"], canonical(dict(old))),
+                    (
+                        execution.execution_id,
+                        old["attempt"],
+                        self._protect(
+                            canonical(dict(old)), self._context(execution.execution_id, old["attempt"], "history")
+                        ),
+                    ),
                 )
             attempt = old["attempt"] + 1 if old is not None else 1
             fence = row["fence"] + 1
@@ -115,11 +132,11 @@ class Ledger:
                     digest(asdict(execution)),
                     attempt,
                     "preparing",
-                    owner,
+                    self._protect(owner, self._context(execution.execution_id, attempt, "owner")),
                     fence,
                     now + ttl,
                     row["revision"],
-                    token,
+                    self._protect(token, self._context(execution.execution_id, attempt, "create_token")),
                 ),
             )
             self.db.execute(
@@ -134,7 +151,13 @@ class Ledger:
         ).fetchone()
         require(row is not None, Code.CONFLICT)
         require(
-            (row["attempt"], row["owner"], row["fence"], row["base"], row["create_token"])
+            (
+                row["attempt"],
+                self._reveal(row["owner"], self._context(lease.execution_id, row["attempt"], "owner")),
+                row["fence"],
+                row["base"],
+                self._reveal(row["create_token"], self._context(lease.execution_id, row["attempt"], "create_token")),
+            )
             == (lease.attempt, lease.owner, lease.fencing, lease.base_revision, lease.create_token),
             Code.CONFLICT,
         )
@@ -183,17 +206,31 @@ class Ledger:
         identifier(token)
         payload = canonical(asdict(manifest))
         with self.transaction():
-            old = self.db.execute("SELECT * FROM revisions WHERE token=?", (token,)).fetchone()
+            stored_token = self._protect(token, "commit-token-index")
+            old = self.db.execute("SELECT * FROM revisions WHERE token=?", (stored_token,)).fetchone()
             if old is not None:
                 owner = self.db.execute("SELECT * FROM executions WHERE id=?", (lease.execution_id,)).fetchone()
                 require(owner is not None, Code.CONFLICT)
                 require(
-                    (owner["attempt"], owner["owner"], owner["fence"], owner["base"], owner["create_token"])
+                    (
+                        owner["attempt"],
+                        self._reveal(owner["owner"], self._context(lease.execution_id, owner["attempt"], "owner")),
+                        owner["fence"],
+                        owner["base"],
+                        self._reveal(
+                            owner["create_token"], self._context(lease.execution_id, owner["attempt"], "create_token")
+                        ),
+                    )
                     == (lease.attempt, lease.owner, lease.fencing, lease.base_revision, lease.create_token),
                     Code.CONFLICT,
                 )
                 require(
-                    (old["execution"], old["attempt"], old["manifest"]) == (lease.execution_id, lease.attempt, payload),
+                    (
+                        old["execution"],
+                        old["attempt"],
+                        self._reveal(old["manifest"], self._context(old["execution"], old["attempt"], "manifest")),
+                    )
+                    == (lease.execution_id, lease.attempt, payload),
                     Code.CONFLICT,
                 )
                 return self._revision(old)
@@ -204,7 +241,15 @@ class Ledger:
             revision = task["revision"] + 1
             self.db.execute(
                 "INSERT INTO revisions VALUES (?,?,?,?,?,?,?)",
-                (row["task"], revision, lease.execution_id, lease.attempt, lease.base_revision, token, payload),
+                (
+                    row["task"],
+                    revision,
+                    lease.execution_id,
+                    lease.attempt,
+                    lease.base_revision,
+                    stored_token,
+                    self._protect(payload, self._context(lease.execution_id, lease.attempt, "manifest")),
+                ),
             )
             self.db.execute("UPDATE tasks SET revision=?,active=NULL WHERE id=?", (revision, row["task"]))
             self.db.execute("UPDATE executions SET state='succeeded' WHERE id=?", (lease.execution_id,))
@@ -212,12 +257,17 @@ class Ledger:
                 row["task"], revision, lease.base_revision, lease.execution_id, lease.attempt, manifest, token
             )
 
-    @staticmethod
-    def _revision(row: sqlite3.Row) -> WorkspaceRevision:
-        value = json.loads(row["manifest"])
+    def _revision(self, row: sqlite3.Row) -> WorkspaceRevision:
+        value = json.loads(self._reveal(row["manifest"], self._context(row["execution"], row["attempt"], "manifest")))
         manifest = OutputManifest(tuple(FileEntry(**item) for item in value["files"]), value["schema_version"])
         return WorkspaceRevision(
-            row["task"], row["revision"], row["parent"], row["execution"], row["attempt"], manifest, row["token"]
+            row["task"],
+            row["revision"],
+            row["parent"],
+            row["execution"],
+            row["attempt"],
+            manifest,
+            self._reveal(row["token"], "commit-token-index"),
         )
 
     def state(self, execution_id: str) -> str | None:
