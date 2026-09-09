@@ -21,6 +21,8 @@ from .models import Code, ContractError, canonical, require
 
 MAX_REQUEST = 65536
 MAX_RESPONSE = 65536
+MAX_DRAIN = 65536
+DRAIN_GRACE = 0.05
 
 
 def serve_unix(
@@ -109,6 +111,30 @@ class Dispatcher:
         raise ContractError(Code.DENIED)
 
 
+def _drain_after_response(connection: socket.socket, deadline: float) -> None:
+    """Discard bounded trailing input, never dispatch it or renew the request budget.
+
+    The write half has already closed so a peer waiting for response EOF can
+    finish and close its end. Linux may otherwise reset an AF_UNIX connection
+    closed with unread receive data. Unbounded hostile input is not guaranteed
+    graceful delivery: stop at the byte/time cap rather than hold the server.
+    """
+    deadline = min(deadline, time.monotonic() + DRAIN_GRACE)
+    drained = 0
+    while drained < MAX_DRAIN:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        connection.settimeout(remaining)
+        try:
+            block = connection.recv(min(4096, MAX_DRAIN - drained))
+        except OSError:
+            return
+        if not block:
+            return
+        drained += len(block)
+
+
 def serve_connection(
     connection: socket.socket, dispatch: Callable[[dict[str, object]], dict[str, object]], *, budget: float = 2.0
 ) -> None:
@@ -144,5 +170,9 @@ def serve_connection(
         try:
             connection.settimeout(remaining)
             connection.sendall(response)
+            # Announce response EOF before waiting for peer EOF. Drain only a
+            # bounded amount of remaining input; the caller still owns close().
+            connection.shutdown(socket.SHUT_WR)
+            _drain_after_response(connection, deadline)
         except OSError:
             pass
