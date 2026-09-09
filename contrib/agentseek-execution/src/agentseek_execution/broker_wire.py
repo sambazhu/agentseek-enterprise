@@ -1,7 +1,7 @@
-"""Bounded local JSON framing and read-only Broker discovery dispatcher.
+"""Bounded local JSON framing plus the legacy read-only discovery dispatcher.
 
-No listener/daemon is started here. The eventual Unix Socket service calls
-serve_connection on accepted sockets. Lifecycle commands remain closed.
+No listener/daemon starts at import. broker_daemon supplies the separate
+Lifecycle dispatcher; Dispatcher itself remains a read-only library interface.
 """
 
 from __future__ import annotations
@@ -24,7 +24,13 @@ MAX_RESPONSE = 65536
 
 
 def serve_unix(
-    path: Path, dispatch: Callable[[dict[str, object]], dict[str, object]], stop: Event, *, request_budget: float = 2.0
+    path: Path,
+    dispatch: Callable[[dict[str, object]], dict[str, object]],
+    stop: Event,
+    *,
+    request_budget: float = 2.0,
+    tick: Callable[[], None] | None = None,
+    on_bound: Callable[[int, int], None] | None = None,
 ) -> None:
     """Single local discovery listener; refuses existing socket or unsafe directory.
 
@@ -44,9 +50,15 @@ def serve_unix(
         created = path.lstat()
         identity = (created.st_dev, created.st_ino)
         path.chmod(0o600)
+        if on_bound is not None:
+            on_bound(*identity)
         listener.listen(8)
         listener.settimeout(0.1)
+        next_tick = 0.0
         while not stop.is_set():
+            if tick is not None and time.monotonic() >= next_tick:
+                tick()
+                next_tick = time.monotonic() + 1
             try:
                 connection, _ = listener.accept()
             except TimeoutError:

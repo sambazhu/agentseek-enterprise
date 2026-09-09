@@ -1230,9 +1230,9 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 
 ### M1：执行与文件合同
 
-进度：已启动独立分支 `enterprise/v0.1.3-execution-contracts`（基线 M0 收官 5d79784）。
+进度：M1 已由用户确认 PASS，收官 `4a7e76f`，限离线合同范围。
 初版合同与 Fake/SQLite 离线参考实现见 [M1 合同](V0.1.3_M1_EXECUTION_CONTRACTS.md)，
-复验见 [M1 工单](V0.1.3_M1_VERIFICATION.md)。待 Linux 复验及用户验收，不计 M1 PASS。
+复验见 [M1 工单](V0.1.3_M1_VERIFICATION.md)。真实 VM/O4b 不计入 M1 通过项。
 
 - 定义 task_id、execution_id、attempt、InputManifest、OutputManifest、
   WorkspaceRevision、ExecutionOutput；
@@ -1244,7 +1244,9 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 
 进度：基于 M1 收官 `4a7e76f` 启动 `enterprise/v0.1.3-execution-broker`。
 [M2 切片与验收合同](V0.1.3_M2_BROKER_PLAN.md) 登记实现进度；
-当前仅 M2.1 授权核心离线实现，不是完整 Broker，不计 O4b/M2 PASS，尚不部署。
+已完成独立 Broker 部署候选：生命周期、加密创建回执、SDK worker、停止对账和固定探针。
+[运行合同](V0.1.3_M2_BROKER_RUNTIME.md) 与 [Linux 安装复验](V0.1.3_M2_BROKER_VERIFICATION.md)
+已交接；安装变更须用户放行，真实 B0–B9/O4b 待 Linux 验证，不计 M2 PASS。
 
 - 增加 `.171` 测试驱动模拟 DirectTurn / Work 请求的真实沙箱冒烟，提前验证 Broker 接缝；
   不经过真实 Agent/企微，不替代 M4 的业务活体验证；进入 Turn 或创建 WorkItem 本身不启动 VM。
@@ -1252,6 +1254,7 @@ VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
 - 独立 Broker 使用 Cube 原生 SDK，受控 create、execute、cancel、delete；
 - 模板与资源策略由服务端固定，密钥留在 Broker/代理，不进入 VM；
 - 设置每 VM 与总容量限制、队列、公平性、超时和失联对账；
+  本轮 PoC 明确全局容量1、忙时拒绝，不实现多用户公平队列，不宣称并发吞吐已验证；
 - Linux 真 VM 资源、网络、权限、进程树清理通过后进入 M3。
 
 ### M3：资料挂载与输出提交

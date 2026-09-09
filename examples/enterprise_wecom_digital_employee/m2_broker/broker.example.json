@@ -1,0 +1,16 @@
+{
+  "runtime": "/var/lib/agentseek-m2-broker",
+  "encryption_key_file": "/etc/agentseek-m2-broker/encryption.key",
+  "cube_key_file": "/etc/agentseek-m2-broker/cube.key",
+  "api_url": "https://REPLACE_WITH_M0_CA_MATCHING_HOST:13000",
+  "ca_file": "/etc/agentseek-m2-broker/ca.pem",
+  "template_id": "REPLACE_WITH_M0_VERIFIED_TEMPLATE_ID",
+  "proxy_port": 13080,
+  "sandbox_domain": "REPLACE_WITH_M0_SDK_DOMAIN",
+  "run_id": "REPLACE_WITH_DEDICATED_M2_SUPERVISOR_RUN_ID",
+  "preflight_command": ["/etc/agentseek-m2-broker/preflight-ready"],
+  "principals": [
+    {"id": "m2-a", "key_file": "/etc/agentseek-m2-broker/client-a.key", "scope": {"tenant": "m2-test", "digital_employee": "m2-test", "conversation": "conversation-a", "requester": "requester-a"}},
+    {"id": "m2-b", "key_file": "/etc/agentseek-m2-broker/client-b.key", "scope": {"tenant": "m2-test", "digital_employee": "m2-test", "conversation": "conversation-b", "requester": "requester-b"}}
+  ]
+}

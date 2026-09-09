@@ -1,0 +1,13 @@
+Host cube-m2-gate
+    HostName 192.10.50.172
+    Port 22589
+    User REPLACE_WITH_APPROVED_GATE_ACCOUNT
+    IdentityFile /etc/agentseek-m2-broker/gate.key
+    UserKnownHostsFile /etc/agentseek-m2-broker/known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes
+    IdentitiesOnly yes
+    ConnectTimeout 3
+    ConnectionAttempts 1
+    ServerAliveInterval 2
+    ServerAliveCountMax 1

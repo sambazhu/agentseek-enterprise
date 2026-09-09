@@ -278,3 +278,18 @@ class Ledger:
         row = self.db.execute("SELECT fingerprint FROM executions WHERE id=?", (lease.execution_id,)).fetchone()
         require(execution.execution_id == lease.execution_id and row is not None, Code.DENIED)
         require(row["fingerprint"] == digest(asdict(execution)), Code.DENIED)
+
+    def recover_lease(self, execution_id: str) -> Lease | None:
+        """Private recovery lookup; caller must authorize against its intent journal."""
+        row = self.db.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
+        if row is None:
+            return None
+        return Lease(
+            execution_id,
+            row["attempt"],
+            self._reveal(row["owner"], self._context(execution_id, row["attempt"], "owner")),
+            row["fence"],
+            row["expires"],
+            row["base"],
+            self._reveal(row["create_token"], self._context(execution_id, row["attempt"], "create_token")),
+        )

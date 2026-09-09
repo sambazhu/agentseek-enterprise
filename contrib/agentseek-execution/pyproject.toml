@@ -7,6 +7,10 @@ dependencies = []
 
 [project.optional-dependencies]
 broker = ["cryptography==49.0.0"]
+cube = ["cryptography==49.0.0", "cubesandbox==0.7.0"]
+
+[project.scripts]
+agentseek-execution-broker = "agentseek_execution.broker_daemon:main"
 
 [build-system]
 requires = ["pdm-backend"]

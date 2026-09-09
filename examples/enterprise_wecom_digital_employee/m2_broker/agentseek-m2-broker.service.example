@@ -1,0 +1,29 @@
+# Template only: replace interpreter/user/group after Linux change review.
+# No service is installed/enabled by the repository.
+[Unit]
+Description=AgentSeek M2 synthetic Cube Broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_WITH_DEDICATED_BROKER_USER
+Group=REPLACE_WITH_DEDICATED_BROKER_GROUP
+WorkingDirectory=/var/lib/agentseek-m2-broker
+ExecStart=/ABS/M2_VENV/bin/python -I -m agentseek_execution.broker_daemon --config /etc/agentseek-m2-broker/broker.json
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=3
+MemoryMax=512M
+CPUQuota=100%
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agentseek-m2-broker
+
+[Install]
+WantedBy=multi-user.target

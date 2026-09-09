@@ -50,6 +50,19 @@ def load_key(path: Path) -> bytes:
         os.close(fd)
 
 
+def load_service_key(path: Path) -> str:
+    """ASCII service credential in a private file, independent of encryption key."""
+    fd = private_file(path)
+    try:
+        value = os.read(fd, 258)
+        require(len(value) <= 257, Code.DENIED)
+        result = value.decode("ascii").removesuffix("\n")
+        require(32 <= len(result) <= 256 and all(33 <= ord(char) <= 126 for char in result), Code.DENIED)
+        return result
+    finally:
+        os.close(fd)
+
+
 class SecureOwnership:
     def __init__(self, directory: Path, key: bytes):
         require(type(key) is bytes and len(key) == 32, Code.DENIED)
