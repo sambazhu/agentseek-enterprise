@@ -24,8 +24,9 @@ from .broker_access import Resource
 from .models import Code, ContractError, Scope, canonical, require
 
 
-def private_file(path: Path, *, create: bool = False) -> int:
-    flags = os.O_RDWR | os.O_NOFOLLOW
+def private_file(path: Path, *, create: bool = False, readonly: bool = False) -> int:
+    require(not (create and readonly), Code.INVALID)
+    flags = (os.O_RDONLY if readonly else os.O_RDWR) | os.O_NOFOLLOW
     if create:
         flags |= os.O_CREAT | os.O_EXCL
     fd = os.open(path, flags, 0o600)
@@ -41,7 +42,7 @@ def private_file(path: Path, *, create: bool = False) -> int:
 
 def load_key(path: Path) -> bytes:
     """Read exactly 32 binary bytes; provisioning is an out-of-band operation."""
-    fd = private_file(path)
+    fd = private_file(path, readonly=True)
     try:
         key = os.read(fd, 33)
         require(len(key) == 32, Code.DENIED)
@@ -52,7 +53,7 @@ def load_key(path: Path) -> bytes:
 
 def load_service_key(path: Path) -> str:
     """ASCII service credential in a private file, independent of encryption key."""
-    fd = private_file(path)
+    fd = private_file(path, readonly=True)
     try:
         value = os.read(fd, 258)
         require(len(value) <= 257, Code.DENIED)

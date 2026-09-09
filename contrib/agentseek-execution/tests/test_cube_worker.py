@@ -91,11 +91,26 @@ def platform(tmp_path):  # noqa: C901 -- isolated stateful mock HTTP protocol fi
     def call(operation):
         return perform({"config": config, "resource_id": resource, "operation": operation})
 
+    state["fixture_request"] = {"config": config, "resource_id": resource, "operation": "create"}
+
     yield call, state, journal, resource
     server.shutdown()
     server.server_close()
     thread.join()
     journal.close()
+
+
+def test_live_fixture_drops_receipt_before_persistence_with_real_sdk(platform):
+    from live_cube_recovery import fault_worker
+
+    call, state, journal, resource = platform
+    with pytest.raises(ContractError):
+        fault_worker(state["fixture_request"])
+    assert state["receipt"] is not None  # mock platform accepted SDK create
+    assert journal.require_job(resource).get("receipt") is None
+    assert call("delete") == {"status": "stopped"}
+    assert [item[0] for item in state["calls"]].count("POST") == 1
+    assert [item[0] for item in state["calls"]].count("DELETE") == 1
 
 
 def test_real_sdk_create_receipt_rehydrate_and_confirmed_delete(platform):

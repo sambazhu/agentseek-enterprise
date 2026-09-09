@@ -25,7 +25,7 @@ from .worker_process import run_worker
 
 
 def read_config(path: Path) -> dict:
-    fd = private_file(path)
+    fd = private_file(path, readonly=True)
     try:
         raw = os.read(fd, 65537)
     finally:
