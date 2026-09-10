@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import os
 import re
@@ -78,7 +79,11 @@ class ContextSeekPlugin:
     def _scope_from_state(self, message: Envelope, session_id: str, state: State) -> str | None:
         if self._settings.SCOPE_MODE.strip().lower() != "enterprise_user":
             return self._scope_from_message(message, session_id)
-        return _enterprise_semantic_scope(message, state, session_id)
+        scope = _enterprise_semantic_scope(message, state, session_id)
+        cached = state.get("_contextseek_scope")
+        if cached is not None and cached != scope:
+            return None
+        return scope
 
     @hookimpl
     async def load_state(
@@ -86,13 +91,20 @@ class ContextSeekPlugin:
         message: Envelope,
         session_id: str,
     ) -> State:
-        """Publish a session scope for generic agents.
+        """Publish a generic scope or capture enterprise ingress routing evidence.
 
         Enterprise user scopes depend on identity state loaded by another Bub
         plugin. That aggregate state is only available to ``build_prompt``.
         """
         if self._settings.SCOPE_MODE.strip().lower() == "enterprise_user":
-            return {}
+            # Preserve routing evidence before a prompt adapter drops the envelope.
+            # Keep only classification and a digest, never the raw chat identifier.
+            return {
+                "_contextseek_conversation": {
+                    "kind": _conversation_kind(message, session_id),
+                    "session_digest": _session_digest(session_id),
+                }
+            }
         return {"_contextseek_scope": self._scope_from_message(message, session_id)}
 
     @hookimpl(tryfirst=True)
@@ -103,16 +115,18 @@ class ContextSeekPlugin:
         state: State,
     ) -> str | None:
         """Retrieve semantic context once the full enterprise runtime state is available."""
+        scope = self._scope_from_state(message, session_id, state)
+        if scope is None:
+            state.pop("_contextseek_block", None)
+            state["_contextseek_scope_status"] = (
+                "identity_required"
+                if _enterprise_employee_scope(state, session_id) is None
+                else "conversation_required"
+            )
+            return None
         if state.get("_contextseek_enriched"):
             return None
         state["_contextseek_enriched"] = True
-
-        scope = self._scope_from_state(message, session_id, state)
-        if scope is None:
-            state["_contextseek_scope_status"] = (
-                "conversation_required" if _is_group_conversation(message, session_id) else "identity_required"
-            )
-            return None
         state["_contextseek_scope"] = scope
 
         client = await self._call_client(self._get_client)
@@ -152,14 +166,21 @@ class ContextSeekPlugin:
         model_output: str,
     ) -> None:
         """Write model output into the contextseek evolution pipeline."""
-        client = await self._call_client(self._get_client)
-        if client is None or not model_output:
+        if not model_output:
             return
 
-        scope = state.get("_contextseek_scope")
+        scope = (
+            self._scope_from_state(message, session_id, state)
+            if self._settings.SCOPE_MODE.strip().lower() == "enterprise_user"
+            else state.get("_contextseek_scope")
+        )
         if not isinstance(scope, str) or not scope:
             scope = self._scope_from_state(message, session_id, state)
         if scope is None:
+            return
+
+        client = await self._call_client(self._get_client)
+        if client is None:
             return
 
         content = _content_to_store(
@@ -207,9 +228,22 @@ def _enterprise_semantic_scope(message: Envelope, state: State, session_id: str)
     so one employee's semantic recall in group A cannot retrieve turns from
     group B. If an older or incomplete runtime omits that key, group recall and
     storage fail closed instead of falling back to the broader employee scope.
+    Unknown/conflicting routing evidence and state from another session also
+    fail closed. Captured ingress evidence survives synthetic prompt envelopes.
     """
+    kind = _conversation_kind(message, session_id)
+    ingress = state.get("_contextseek_conversation")
+    if ingress is not None:
+        if not isinstance(ingress, Mapping) or ingress.get("session_digest") != _session_digest(session_id):
+            return None
+        captured = ingress.get("kind")
+        if not isinstance(captured, str) or captured not in {"single", "group"} or kind not in {"unknown", captured}:
+            return None
+        kind = captured
+    if kind not in {"single", "group"}:
+        return None
     employee_scope = _enterprise_employee_scope(state, session_id)
-    if employee_scope is None or not _is_group_conversation(message, session_id):
+    if employee_scope is None or kind == "single":
         return employee_scope
 
     enterprise = _enterprise_identity_context(state, session_id)
@@ -238,20 +272,38 @@ def _enterprise_identity_context(state: State, session_id: str) -> Mapping[str, 
     return enterprise
 
 
-def _is_group_conversation(message: Envelope, session_id: str) -> bool:
+def _session_digest(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def _message_conversation_kinds(message: Envelope) -> set[str]:
     context = field_of(message, "context", {})
     if isinstance(context, Mapping):
         wecom = context.get("wecom")
         if isinstance(wecom, Mapping):
-            if _clean(wecom.get("chat_type")).lower() == "group":
-                return True
+            values = [wecom.get("chat_type")]
             address = wecom.get("address")
-            if isinstance(address, Mapping) and _clean(address.get("chat_type")).lower() == "group":
-                return True
+            if isinstance(address, Mapping):
+                values.append(address.get("chat_type"))
             raw = wecom.get("raw")
-            if isinstance(raw, Mapping) and _clean(raw.get("chattype")).lower() == "group":
-                return True
-    return session_id.startswith("wecom:") and ":group:" in session_id
+            if isinstance(raw, Mapping):
+                values.append(raw.get("chattype"))
+            return {_clean(value).lower() for value in values if value is not None}
+    return set()
+
+
+def _conversation_kind(message: Envelope, session_id: str) -> str:
+    kinds = _message_conversation_kinds(message)
+    if session_id.startswith("wecom:"):
+        if ":group:" in session_id:
+            kinds.add("group")
+        elif session_id.count(":") == 1 and session_id.removeprefix("wecom:"):
+            kinds.add("single")
+    if not kinds:
+        return "unknown"
+    if len(kinds) != 1 or not kinds.issubset({"single", "group"}):
+        return "conflict"
+    return next(iter(kinds))
 
 
 def _enterprise_context_from_employee_context(
@@ -323,8 +375,4 @@ def _clean(value: object) -> str:
 
 
 def _contextseek_storage_backend() -> str:
-    return (
-        os.environ.get("AGENTSEEK_CTX_STORAGE_BACKEND")
-        or os.environ.get("STORAGE_BACKEND")
-        or ""
-    ).strip().lower()
+    return (os.environ.get("AGENTSEEK_CTX_STORAGE_BACKEND") or os.environ.get("STORAGE_BACKEND") or "").strip().lower()

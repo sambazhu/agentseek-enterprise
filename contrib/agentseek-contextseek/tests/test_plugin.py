@@ -157,7 +157,9 @@ async def test_load_state_leaves_enterprise_scope_for_build_prompt(monkeypatch):
     monkeypatch.setenv("AGENTSEEK_CTX_SCOPE_MODE", "enterprise_user")
     plugin = ContextSeekPlugin()
     state = await plugin.load_state(message={"content": "hi"}, session_id="s1")
-    assert state == {}
+    assert "_contextseek_scope" not in state
+    assert state["_contextseek_conversation"]["kind"] == "unknown"
+    assert state["_contextseek_conversation"]["session_digest"] != "s1"
 
 
 @pytest.mark.anyio
@@ -376,7 +378,9 @@ async def test_build_prompt_derives_enterprise_scope_from_employee_context(monke
     plugin._client_initialized = True
     state = {"employee_context": {"oa_account": "employee-a", "name": "Alice"}}
 
-    result = await plugin.build_prompt(message={"content": "what did I ask you to remember?"}, session_id="wecom:a", state=state)
+    result = await plugin.build_prompt(
+        message={"content": "what did I ask you to remember?"}, session_id="wecom:a", state=state
+    )
 
     assert result is None
     scope = mock_client.retrieve.call_args.kwargs["scope"]
