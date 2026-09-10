@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from bub.envelope import field_of
 from typing_extensions import TypedDict
 
 LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY = "_langgraph_runtime_context"
@@ -25,6 +26,7 @@ class EnterpriseIdentityContext(TypedDict):
     tenant_key: str
     user_key: str
     session_key: str
+    conversation_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +54,7 @@ class EnterpriseRuntimeSettings:
         """Return a stable, namespace-safe key without exposing source identifiers."""
         payload = f"{scope}:{value}".encode()
         if self.namespace_secret:
-            digest = hmac.new(
-                self.namespace_secret.encode("utf-8"), payload, hashlib.sha256
-            ).hexdigest()
+            digest = hmac.new(self.namespace_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
             return f"hmac-{digest}"
         return f"sha256-{hashlib.sha256(payload).hexdigest()}"
 
@@ -64,6 +64,7 @@ def enterprise_runtime_context(
     session_id: str,
     *,
     settings: EnterpriseRuntimeSettings | None = None,
+    message: object | None = None,
 ) -> dict[str, EnterpriseIdentityContext] | None:
     """Build runtime identifiers after the authoritative employee lookup succeeds.
 
@@ -84,12 +85,18 @@ def enterprise_runtime_context(
             "tenant_key": runtime_settings.scoped_key("tenant", runtime_settings.tenant_id),
             "user_key": runtime_settings.scoped_key("employee", oa_account),
             "session_key": runtime_settings.scoped_key("session", session),
+            "conversation_type": _conversation_type(message, session),
         }
     }
 
 
 def enterprise_filesystem_namespace(runtime: Any) -> tuple[str, ...]:
-    """Resolve the persistent, per-tenant/per-employee StoreBackend namespace."""
+    """Keep direct employee memory stable; isolate each group within that boundary.
+
+    All durable tools and the /memories/ StoreBackend use this resolver. Never
+    fall back to the legacy employee namespace for unknown/old runtime context.
+    No existing records are moved or deleted by this routing change.
+    """
     context = getattr(runtime, "context", None)
     enterprise = (
         context.get(ENTERPRISE_RUNTIME_CONTEXT_KEY)
@@ -104,7 +111,36 @@ def enterprise_filesystem_namespace(runtime: Any) -> tuple[str, ...]:
     user_key = _clean(enterprise.get("user_key"))
     if version != "v1" or not _is_scoped_key(tenant_key) or not _is_scoped_key(user_key):
         raise RuntimeError("Enterprise runtime context contains an invalid persistent-memory scope.")
-    return ("enterprise", version, tenant_key, user_key, "filesystem")
+    prefix = ("enterprise", version, tenant_key, user_key)
+    conversation_type = _clean(enterprise.get("conversation_type"))
+    if conversation_type == "single":
+        return (*prefix, "filesystem")
+    if conversation_type == "group":
+        session_key = _clean(enterprise.get("session_key"))
+        if _is_scoped_key(session_key):
+            return (*prefix, "conversation", session_key, "filesystem")
+    raise RuntimeError("Verified conversation context is required for persistent employee memory.")
+
+
+def _conversation_type(message: object | None, session_id: str) -> str:
+    """Use ingress routing evidence, never user text or model-supplied tool args."""
+    kinds: set[str] = set()
+    context = field_of(message, "context", {}) if message is not None else {}
+    wecom = context.get("wecom") if isinstance(context, Mapping) else None
+    if isinstance(wecom, Mapping):
+        for source, key in ((wecom, "chat_type"), (wecom.get("address"), "chat_type"), (wecom.get("raw"), "chattype")):
+            if isinstance(source, Mapping) and source.get(key) is not None:
+                kinds.add(_clean(source[key]).lower())
+    if session_id.startswith("wecom:"):
+        if ":group:" in session_id:
+            kinds.add("group")
+        elif session_id.count(":") == 1 and session_id.removeprefix("wecom:"):
+            kinds.add("single")
+    if not kinds:
+        return "unknown"
+    if len(kinds) != 1 or not kinds.issubset({"single", "group"}):
+        return "conflict"
+    return next(iter(kinds))
 
 
 def _is_scoped_key(value: str) -> bool:

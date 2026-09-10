@@ -145,7 +145,7 @@ class EnterprisePlugin:
         state.update(employee_state)
         employee_context = employee_state.get(EMPLOYEE_CONTEXT_STATE_KEY)
         if isinstance(employee_context, Mapping):
-            runtime_context = enterprise_runtime_context(employee_context, session_id)
+            runtime_context = enterprise_runtime_context(employee_context, session_id, message=message)
             if runtime_context is not None:
                 state[LANGGRAPH_RUNTIME_CONTEXT_STATE_KEY] = runtime_context
         return state
