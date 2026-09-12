@@ -48,6 +48,16 @@ def _playbooks() -> tuple[PlaybookSpec, PlaybookSpec]:
     return report, summary
 
 
+def test_active_work_accepts_revision_and_cancel_but_allows_unrelated_question() -> None:
+    report, _summary = _playbooks()
+    for message in ("覆盖期调整到明年，报告结构不变", "请把第二节缩短", "取消当前报告任务", "面向董事会，覆盖今年", "重点放在经纪业务", "先别继续了，我想调整需求"):
+        result = route_playbook(message, playbooks=(report,), active_playbook_refs=(report.ref,))
+        assert result.selected_playbook_ref == report.ref
+    assert route_playbook("我是谁", playbooks=(report,), active_playbook_refs=(report.ref,)).status is PlaybookRouteStatus.OUT_OF_SCOPE
+    for message in ("请把我今天的会议列出来", "查一下我的报销进度", "你能做什么"):
+        assert route_playbook(message, playbooks=(report,), active_playbook_refs=(report.ref,)).status is PlaybookRouteStatus.OUT_OF_SCOPE
+
+
 def test_exact_action_and_authenticated_envelope_route_without_model() -> None:
     report, summary = _playbooks()
 
@@ -154,8 +164,8 @@ def test_active_work_accepts_draft_action_and_contextual_affirmative_follow_up()
     assert affirmative.reason_code is PlaybookRouteReason.ACTIVE_WORK
     assert bare_without_context.status is PlaybookRouteStatus.OUT_OF_SCOPE
     assert bare_with_context.selected_playbook_ref == report.ref
-    assert conceptual.status is PlaybookRouteStatus.CLARIFICATION_REQUIRED
-    assert conceptual.selected_playbook_ref is None
+    # Explaining the active report is a valid task conversation, not an action authorization.
+    assert conceptual.selected_playbook_ref == report.ref
 
 
 def test_ambiguous_deterministic_match_never_uses_priority_as_authorization() -> None:

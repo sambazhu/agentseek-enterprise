@@ -7,6 +7,7 @@ from typing import Any
 
 from agentseek_enterprise.mcp_policy import MCPPolicy, MCPPolicySettings, confirmation_required_message
 from fastmcp import Client
+from langgraph.prebuilt import ToolRuntime
 
 from enterprise_wecom_digital_employee.settings import PROJECT_ROOT, get_settings
 
@@ -55,6 +56,7 @@ async def call_mcp_tool(
     tool_name: str,
     arguments: dict[str, Any] | None = None,
     confirmed: bool = False,
+    runtime: ToolRuntime = None,
 ) -> str:
     """Call a configured MCP tool by server name and remote tool name.
 
@@ -69,16 +71,26 @@ async def call_mcp_tool(
     if server_config is None:
         return f"MCP server {server_name!r} is not configured."
 
-    call_arguments = arguments or {}
+    from enterprise_wecom_digital_employee.production_mcp import prepare_production_arguments
+
+    call_arguments, refusal = prepare_production_arguments(server_name, tool_name, arguments or {}, runtime)
     policy = _mcp_policy()
+    if refusal:
+        policy.audit(
+            server_name=server_name, tool_name=tool_name, action="denied",
+            risk="read", arguments={}, confirmed=False, reason="requester_binding_required",
+        )
+        return refusal
     decision = policy.evaluate(server_name, tool_name, confirmed=confirmed)
+    # OA results and authenticated accounts must not enter diagnostic/audit text.
+    audit_arguments = {} if server_name == "OA流程助手" else call_arguments
     if decision.action == "deny":
         policy.audit(
             server_name=server_name,
             tool_name=tool_name,
             action="denied",
             risk=decision.risk,
-            arguments=call_arguments,
+            arguments=audit_arguments,
             confirmed=confirmed,
             reason=decision.reason,
         )
@@ -89,7 +101,7 @@ async def call_mcp_tool(
             tool_name=tool_name,
             action="confirmation_required",
             risk=decision.risk,
-            arguments=call_arguments,
+            arguments=audit_arguments,
             confirmed=confirmed,
             reason=decision.reason,
         )
@@ -97,6 +109,14 @@ async def call_mcp_tool(
 
     try:
         async with Client({server_name: _normalize_server_config(server_config)}, init_timeout=20) as client:
+            if server_name == "OA流程助手":
+                from enterprise_wecom_digital_employee.production_mcp import bind_oa_schema
+
+                candidates = await client.list_tools()
+                target = next((item for item in candidates if item.name == tool_name), None)
+                if target is None:
+                    return "该 OA 查询工具当前不可用。"
+                call_arguments = bind_oa_schema(tool_name, call_arguments, target.inputSchema, runtime)
             result = await client.call_tool(tool_name, call_arguments)
     except Exception as exc:
         policy.audit(
@@ -104,11 +124,13 @@ async def call_mcp_tool(
             tool_name=tool_name,
             action="failed",
             risk=decision.risk,
-            arguments=call_arguments,
+            arguments=audit_arguments,
             confirmed=confirmed,
             reason=decision.reason,
-            error=exc,
+            error=ValueError(type(exc).__name__) if server_name == "OA流程助手" else exc,
         )
+        if server_name == "OA流程助手":
+            return "OA 查询未完成：请检查查询条件或联系管理员核对接口配置。未执行业务写入。"
         raise
     formatted = _format_mcp_result(result)
     policy.audit(
@@ -116,10 +138,10 @@ async def call_mcp_tool(
         tool_name=tool_name,
         action="succeeded",
         risk=decision.risk,
-        arguments=call_arguments,
+        arguments=audit_arguments,
         confirmed=confirmed,
         reason=decision.reason,
-        result=formatted,
+        result=None if server_name == "OA流程助手" else formatted,
     )
     return formatted
 

@@ -1,23 +1,23 @@
 schema_version: 1
 pack_id: industry-report
-pack_version: 1.13.0
+pack_version: 1.14.0
 profile: profile.yaml
 skills:
   - id: report-intake
-    version: 1.1.0
+    version: 1.2.0
     path: skills/report-intake/SKILL.md
-    sha256: a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e
+    sha256: 9d5fa8026cba60901157708beef06917298594a58949826320858f81e5f70e79
   - id: report-writing
-    version: 1.5.3
+    version: 1.6.0
     path: skills/report-writing/SKILL.md
-    sha256: 3c3385c3502f6faa9fcbe7e5820afe64a9384a167913b9adf3f66a628fc6ca08
+    sha256: 1861cc6cc72a2cffeed7233600d7ba4c31ec16dffd70a8c33a6b522231b8e7a3
 playbooks:
   - id: securities-industry-report
     version: "1"
     entrypoint: enterprise_wecom_digital_employee.reports.playbook:build_playbook
     skill_refs:
-      - report-intake@1.1.0
-      - report-writing@1.5.3
+      - report-intake@1.2.0
+      - report-writing@1.6.0
     policy_refs:
       - industry-report-v1
     tool_grants:
@@ -49,7 +49,7 @@ playbooks:
         - reportdelivery
         - 报告任务状态
       priority: 100
-    research_template_ref: skill://report-intake@1.1.0/references/securities-industry-internal-research.yaml
+    research_template_ref: skill://report-intake@1.2.0/references/securities-industry-internal-research.yaml
 assets:
   - id: strategic-report-docx
     version: 1.0.0

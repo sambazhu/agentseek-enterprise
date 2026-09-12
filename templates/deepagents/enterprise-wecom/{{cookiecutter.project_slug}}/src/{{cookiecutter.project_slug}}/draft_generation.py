@@ -50,7 +50,10 @@ async def generate_draft_claims(
     bind = getattr(chat_model, "with_structured_output", None)
     if not callable(bind):
         raise RuntimeError("当前模型不支持结构化初稿生成。")
-    runnable = bind(DraftClaimBatch)
+    # OpenAI-compatible providers need not support response_format=json_schema.
+    # Tool calling still returns a validated DraftClaimBatch; never fall back to
+    # accepting unvalidated prose after a provider error.
+    runnable = bind(DraftClaimBatch, method="function_calling")
     payload = context.as_dict()
     payload.pop("instructions", None)
     config: dict[str, object] = {

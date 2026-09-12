@@ -49,7 +49,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
 
     assert loaded.schema_version == 1
     assert loaded.pack_id == "industry-report"
-    assert loaded.pack_version == "1.13.0"
+    assert loaded.pack_version == "1.14.0"
     assert loaded.profile.profile_schema_version == 2
     assert loaded.profile.employee_code == "DE-SD-001"
     assert loaded.profile.display_name == "战略发展部数字员工"
@@ -57,9 +57,9 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert loaded.profile.mission.startswith("基于授权知识")
     assert loaded.profile.owning_org == "战略发展部"
     assert loaded.profile.supported_playbooks == ("securities-industry-report@1",)
-    assert loaded.profile.skill_refs == ("report-intake@1.1.0", "report-writing@1.5.3")
+    assert loaded.profile.skill_refs == ("report-intake@1.2.0", "report-writing@1.6.0")
     assert loaded.profile.asset_refs == ("strategic-report-docx@1.0.0",)
-    assert loaded.profile.profile_version == "1.12.0"
+    assert loaded.profile.profile_version == "1.13.0"
     assert loaded.profile.service_catalog[0].service_id == "securities-report"
     assert loaded.profile.service_catalog[0].playbook_ref == "securities-industry-report@1"
     assert loaded.profile.behavior_policy_refs == ("industry-report-v1",)
@@ -72,8 +72,8 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert knowledge.retrieval_modes == ("keyword", "semantic", "hybrid")
     assert knowledge.default_mode == "hybrid"
     assert loaded.skill_digests == (
-        "sha256:a509c2fd1bc83c1ff56dfc9e885f97a3c191b7a0f76570d265c8f0fe9c5b816e",
-        "sha256:3c3385c3502f6faa9fcbe7e5820afe64a9384a167913b9adf3f66a628fc6ca08",
+        "sha256:9d5fa8026cba60901157708beef06917298594a58949826320858f81e5f70e79",
+        "sha256:1861cc6cc72a2cffeed7233600d7ba4c31ec16dffd70a8c33a6b522231b8e7a3",
     )
     playbook = loaded.playbooks[0]
     assert playbook.entrypoint.endswith("reports.playbook:build_playbook")
@@ -91,7 +91,7 @@ def test_industry_report_pack_loads_with_frozen_profile_and_digests(tmp_path: Pa
     assert playbook.routing.priority == 100
     assert playbook.research_template_ref is not None
     assert playbook.research_template_path is not None
-    assert playbook.research_template_ref.startswith("skill://report-intake@1.1.0/")
+    assert playbook.research_template_ref.startswith("skill://report-intake@1.2.0/")
     assert playbook.research_template_path.endswith("securities-industry-internal-research.yaml")
     assert "external_factor_on_securities" in playbook.allowed_research_scopes
 
@@ -177,7 +177,7 @@ def test_loader_rejects_undeclared_profile_refs_and_entrypoint_escape(tmp_path: 
             "undeclared skill version",
         ),
         (
-            "skill://report-intake@1.1.0/../profile.yaml",
+            "skill://report-intake@1.2.0/../profile.yaml",
             "normalized and relative",
         ),
     ],
@@ -365,7 +365,7 @@ def test_research_template_must_belong_to_playbook_skill_subset(tmp_path: Path) 
     rewrite_yaml(
         pack_root / "pack.yaml",
         lambda document: document["playbooks"][0].update(
-            {"skill_refs": ["report-writing@1.5.3"]}
+            {"skill_refs": ["report-writing@1.6.0"]}
         ),
     )
 

@@ -125,6 +125,14 @@ def work_tools(  # noqa: C901
             "下一步需要形成并确认轻量 ReportBrief；研究尚未启动，请勿声称报告已经开始编写或完成。"
         )
 
+    @tool("cancel_current_report_work")
+    def cancel_current_report_work(runtime: ToolRuntime) -> str:
+        """Cancel the authenticated requester's active report after an explicit cancel command."""
+        return composition.cancel_current_work(
+            runtime.state, runtime.context,
+            latest_user_message=_latest_user_message_text(runtime),
+        )
+
     @tool("get_current_work_status")
     def get_current_work_status(runtime: ToolRuntime) -> str:
         """Read current WorkItem, ReportBrief, and gap-decision versions from the ledger."""
@@ -180,7 +188,9 @@ def work_tools(  # noqa: C901
             f"主题：{brief.title}；研究范围：{brief.research_scope.value}；"
             f"目标受众：{'、'.join(brief.target_audience)}；"
             f"报告覆盖期：{brief.coverage_period}；输出：{','.join(brief.output_formats)}。"
-            f"如认可，请明确回复“确认 ReportBrief v{contract.contract_version}”；"
+            f"如认可并希望自动推进到初稿，请回复“确认 ReportBrief v{contract.contract_version} 并自动研究生成初稿”；"
+            f"如需逐步审阅，请明确回复“确认 ReportBrief v{contract.contract_version}”。"
+            "自动推进仅含内部研究、提纲和可审阅初稿，遇资料缺口仍会询问；不含外部检索、审批或交付。"
             "不要只回复“确认 vN”。未确认前不得启动正式知识检索。"
         )
 
@@ -206,6 +216,7 @@ def work_tools(  # noqa: C901
         return (
             f"ReportBrief v{contract.contract_version} 已由任务委派人确认。"
             "现在可以启动模板驱动的内部知识检索；尚未授权外部搜索或报告写作。"
+            "如需自动推进到初稿，请回复“按已确认需求自动研究并生成初稿”；遇资料缺口仍会暂停询问。"
         )
 
     @tool("run_internal_report_research")
@@ -684,6 +695,7 @@ def work_tools(  # noqa: C901
 
     return [
         create_industry_report_work,
+        cancel_current_report_work,
         get_current_work_status,
         save_report_brief,
         confirm_report_brief,
@@ -723,6 +735,30 @@ async def generate_report_draft_action(
 
     if not explicitly_requests_report_draft(latest_user_message):
         raise WorkCompositionError("员工最新消息未明确请求生成可审阅初稿，不能推进 ReportDraft。")
+    from enterprise_wecom_digital_employee.work_commands import automatic_draft_brief_version, requests_automatic_draft
+
+    if requests_automatic_draft(latest_user_message):
+        if (brief_version := automatic_draft_brief_version(latest_user_message)) is not None:
+            composition.confirm_report_brief(
+                state, runtime_context, expected_version=brief_version,
+                latest_user_message=latest_user_message,
+            )
+        internal = _load_current_research_result(
+            composition=composition, state=state, runtime_context=runtime_context,
+            template_path=composition.research_template_path,
+        )
+        if not internal.sources:
+            await _run_internal_research(
+                composition=composition, state=state, runtime_context=runtime_context,
+                template_path=composition.research_template_path, invoke_mcp=invoke_mcp,
+            )
+        # This rechecks the current gap decision and never grants external access.
+        outline = _build_automatic_report_outline(composition, state, runtime_context)
+        saved = composition.save_report_outline(state, runtime_context, outline)
+        composition.confirm_report_outline(
+            state, runtime_context, expected_version=saved.contract_version,
+            latest_user_message=latest_user_message, accept_generated_outline=True,
+        )
     item, outline_contract, _outline = composition.current_confirmed_report_outline(
         state,
         runtime_context,
@@ -807,6 +843,24 @@ def deliver_report_artifact_action(
             payload=delivery_record_action_payload(commit_record),
         ),
     ))
+
+
+def _build_automatic_report_outline(composition, state, runtime_context) -> ReportOutline:
+    try:
+        return _build_current_report_outline(composition, state, runtime_context)
+    except WorkCompositionError as exc:
+        internal = _load_current_research_result(
+            composition=composition, state=state, runtime_context=runtime_context,
+            template_path=composition.research_template_path,
+        )
+        choices = gap_options(internal)["choices"]
+        if not choices:
+            raise
+        options = "\n".join(f"- {choice['confirmation']}" for choice in choices)
+        raise WorkCompositionError(
+            f"{exc}\n自动推进已暂停，未授权外部检索。请选择一项：\n{options}\n"
+            "完成缺口处理后，可回复“按已确认需求自动研究并生成初稿”。"
+        ) from exc
 
 
 def _build_current_report_outline(

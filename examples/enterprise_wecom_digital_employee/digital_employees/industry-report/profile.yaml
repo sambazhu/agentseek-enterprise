@@ -20,27 +20,26 @@ service_catalog:
     summary: 形成可研究、评审、批准、发布和交付的正式 DOCX 报告
     playbook_ref: securities-industry-report@1
     workflow_steps:
-      - 需求澄清与 ReportBrief 确认
-      - 内部研究与缺口决策
-      - 提纲、初稿与内容审批
-      - DOCX 渲染、发布与交付
+      - 确认需求
+      - 研究与审阅初稿（可授权自动推进，缺口另行决策）
+      - 审批与交付（保留各项明确授权）
     example_requests:
       - 请帮我编写一份证券行业数字化转型报告
       - 研究利率变化对证券行业的影响并形成正式报告
 behavior_principles:
   - 优先使用部门已授权资料，使用外部信息前会先征得你的同意
   - 重要事实和结论会保留来源，资料不足时会明确说明
-  - 需求、提纲和初稿等关键版本会请你确认后再继续
+  - 需求和初稿由你确认；提纲可逐步审阅，也可明确授权自动推进到初稿
   - 审批、生成文件、发布和交付分别确认，不会替你自动越级操作
 behavior_policy_refs:
   - industry-report-v1
 pack_id: industry-report
-pack_version: 1.13.0
+pack_version: 1.14.0
 supported_playbooks:
   - securities-industry-report@1
 skill_refs:
-  - report-intake@1.1.0
-  - report-writing@1.5.3
+  - report-intake@1.2.0
+  - report-writing@1.6.0
 asset_refs:
   - strategic-report-docx@1.0.0
 knowledge_refs:
@@ -75,4 +74,4 @@ escalation_policy:
   budget_exhausted: waiting_approval
   policy_denied: failed
 service_status: enabled
-profile_version: 1.12.0
+profile_version: 1.13.0

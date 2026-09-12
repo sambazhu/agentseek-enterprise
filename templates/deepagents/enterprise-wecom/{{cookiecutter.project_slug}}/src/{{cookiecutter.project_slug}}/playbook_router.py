@@ -10,7 +10,9 @@ from {{ cookiecutter.project_slug }}.channel_command import (
     authenticated_user_command_text,
     has_untrusted_channel_envelope,
 )
+from {{ cookiecutter.project_slug }}.job_charter import match_job_charter_intent
 from {{ cookiecutter.project_slug }}.pack_loader import PlaybookSpec
+from {{ cookiecutter.project_slug }}.work_commands import explicitly_cancels_current_work
 
 
 class PlaybookRouteStatus(StrEnum):
@@ -119,6 +121,7 @@ def route_playbook(
     active = tuple(reference for reference in active_playbook_refs if reference in {item.ref for item in ordered})
     if active and (
         command in _CONTINUATION_COMMANDS
+        or explicitly_cancels_current_work(message)
         or _has_active_action(command)
         or _is_affirmative_follow_up(command, previous_assistant_message)
     ):
@@ -132,16 +135,37 @@ def route_playbook(
     if matched:
         return _candidate_result(matched, reason=PlaybookRouteReason.DETERMINISTIC_MATCH)
 
-    if any(term in command for term in _FORMAL_REQUEST_TERMS):
+    if active and (any(term in command for term in _FORMAL_REQUEST_TERMS) or not _is_independent_direct_request(message, command)):
+        # Contextual fallback is conversation routing, never action authorization.
+        # Let the selected Playbook clarify/revise naturally; its server-side
+        # action gates still reject bare assent, stale versions and quoted commands.
+        return _candidate_result(active, reason=PlaybookRouteReason.ACTIVE_WORK)
+
+    if any(term in command for term in _FORMAL_REQUEST_TERMS) and len(ordered) > 1:
         return PlaybookRouteResult(
             status=PlaybookRouteStatus.CLARIFICATION_REQUIRED,
             reason_code=PlaybookRouteReason.NO_MATCH,
             candidate_playbook_refs=tuple(item.ref for item in ordered),
         )
 
+    if len(ordered) == 1 and any(term in command for term in ("报告", "研报")) and any(
+        verb in command for verb in ("写", "编", "制作", "创建", "准备")
+    ):
+        return _candidate_result((ordered[0].ref,), reason=PlaybookRouteReason.DETERMINISTIC_MATCH)
+
     return PlaybookRouteResult(
         status=PlaybookRouteStatus.OUT_OF_SCOPE,
         reason_code=PlaybookRouteReason.NO_MATCH,
+    )
+
+
+def _is_independent_direct_request(message: str, command: str) -> bool:
+    if match_job_charter_intent(message) is not None or command in {
+        "我是谁", "我的身份是什么", "请介绍一下我的身份", "你好", "谢谢", "好的", "好", "嗯",
+    }:
+        return True
+    return any(term in command for term in ("会议", "报销", "考勤", "天气", "制度", "外规")) or command.startswith(
+        ("什么是", "查询", "查一下", "请查", "解释一下", "另外问", "换个话题"),
     )
 
 

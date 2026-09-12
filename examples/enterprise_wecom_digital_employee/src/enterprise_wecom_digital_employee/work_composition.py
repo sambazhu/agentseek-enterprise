@@ -21,6 +21,7 @@ from agentseek_wecom.outbound import (
 )
 from agentseek_work import (
     LATEST_SCHEMA_VERSION,
+    ActorType,
     ArtifactRecord,
     CreateWorkResult,
     DeliveryGrantConsumedError,
@@ -363,6 +364,33 @@ class IndustryReportWorkComposition:
             playbook_id=self.playbook_id,
         )
 
+    def cancel_current_work(
+        self,
+        state: Mapping[str, object],
+        runtime_context: object | None = None,
+        *,
+        latest_user_message: str,
+    ) -> str:
+        from enterprise_wecom_digital_employee.work_commands import explicitly_cancels_current_work
+
+        if not explicitly_cancels_current_work(latest_user_message):
+            return "未取消任务。如需取消，请明确回复“取消当前报告任务”。"
+        item = self.current_work(state, runtime_context)
+        if item is None:
+            return "当前没有可取消的报告任务。"
+        self.repository.cancel_work(
+            tenant_id=item.tenant_id,
+            work_id=item.work_id,
+            event_id=f"event_{uuid4().hex}",
+            actor_type=ActorType.REQUESTER,
+            actor_id=item.requester_id,
+            now=self._factory.clock(),
+        )
+        if isinstance(state, dict):
+            state.pop("current_work", None)
+            state.pop("current_work_context", None)
+        return "已取消当前报告任务，历史记录保留。你可以创建新任务。"
+
     def current_work_summary(
         self,
         state: Mapping[str, object],
@@ -505,6 +533,7 @@ class IndustryReportWorkComposition:
         *,
         expected_version: int,
         latest_user_message: str,
+        accept_generated_outline: bool = False,
     ) -> WorkContractSnapshot:
         """Confirm an outline only while its Brief, evidence set, and decision remain current."""
 
@@ -529,10 +558,15 @@ class IndustryReportWorkComposition:
         if current.status is WorkContractStatus.CONFIRMED:
             confirmed = current
         else:
-            if not explicitly_confirms_report_outline(latest_user_message, expected_version=expected_version):
+            from enterprise_wecom_digital_employee.work_commands import requests_automatic_draft
+
+            delegated = accept_generated_outline and requests_automatic_draft(latest_user_message)
+            if not delegated and not explicitly_confirms_report_outline(latest_user_message, expected_version=expected_version):
                 raise WorkCompositionError(
                     f"员工最新消息未显式确认 ReportOutline v{expected_version}，不能进入初稿阶段。"
                 )
+            if delegated:
+                self._record_draft_delegation(item, outline, expected_version, latest_user_message)
             confirmed = self.repository.confirm_work_contract(
                 tenant_id=item.tenant_id,
                 work_id=item.work_id,
@@ -544,6 +578,41 @@ class IndustryReportWorkComposition:
         if isinstance(state, dict):
             self._publish_current_work(cast("dict[str, Any]", state), item)
         return confirmed
+
+    def _record_draft_delegation(
+        self, item: WorkItem, outline: ReportOutline, outline_version: int, message: str,
+    ) -> None:
+        authorization_type = "report-draft-execution"
+        previous = self.repository.get_current_work_contract(
+            tenant_id=item.tenant_id, work_id=item.work_id, contract_type=authorization_type,
+        )
+        payload = {
+            "report_brief_version": outline.report_brief_version,
+            "report_outline_version": outline_version,
+            "message_digest": sha256(message.encode()).hexdigest(),
+            "scope": "internal-research-outline-review-draft",
+            "external_search_authorized": False,
+            "approval_publication_delivery_authorized": False,
+        }
+        authorization = previous
+        if previous is None or dict(previous.payload) != payload:
+            authorization = WorkContractSnapshot(
+                tenant_id=item.tenant_id, work_id=item.work_id,
+                contract_type=authorization_type,
+                contract_version=1 if previous is None else previous.contract_version + 1,
+                status=WorkContractStatus.PROVISIONAL,
+                payload=payload, created_by=item.requester_id, created_at=self._factory.clock(),
+            )
+            if previous is None:
+                self.repository.create_work_contract(authorization)
+            else:
+                self.repository.revise_work_contract(authorization)
+        if authorization.status is not WorkContractStatus.CONFIRMED:
+            self.repository.confirm_work_contract(
+                tenant_id=item.tenant_id, work_id=item.work_id,
+                contract_type=authorization_type, expected_contract_version=authorization.contract_version,
+                confirmed_by=item.requester_id, confirmed_at=self._factory.clock(),
+            )
 
     def current_confirmed_report_outline(
         self,

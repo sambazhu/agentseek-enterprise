@@ -102,6 +102,23 @@ def internal_message(msgid: str = "message-internal-001") -> dict:
     }
 
 
+def test_cancel_current_work_requires_requester_and_explicit_latest_command(tmp_path: Path) -> None:
+    composition = build_composition(tmp_path)
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    created = composition.create_report_work(state).item
+    assert "未取消" in composition.cancel_current_work(state, latest_user_message="不要取消当前任务")
+    other = authorized_state()
+    other["_langgraph_runtime_context"]["enterprise"]["user_key"] = "hmac-" + "9" * 64
+    composition.enrich_state(message(), "wecom:other", other)
+    assert "没有可取消" in composition.cancel_current_work(other, latest_user_message="取消当前任务")
+    assert composition.current_work(state).work_id == created.work_id
+    assert "已取消" in composition.cancel_current_work(state, latest_user_message="取消当前任务")
+    assert composition.current_work(state) is None
+    assert composition.repository.get_work(tenant_id=created.tenant_id, work_id=created.work_id).status.value == "cancelled"
+    assert "没有可取消" in composition.cancel_current_work(state, latest_user_message="取消当前任务")
+
+
 def test_enrichment_publishes_safe_profile_and_preserves_enterprise_context(tmp_path: Path) -> None:
     composition = build_composition(tmp_path)
     state = authorized_state()
@@ -154,9 +171,9 @@ def test_factory_creates_idempotent_profile_bound_work_and_publishes_current_sta
     assert replay.item.work_id == first.item.work_id == "work_live_001"
     assert first.item.status is WorkStatus.DRAFT
     assert first.item.pack_snapshot_id == composition.pack_snapshot_id
-    assert first.item.skill_set_version == "1.12.0"
-    assert first.item.digital_employee_profile_version == "1.12.0"
-    assert first.item.pack_version == "1.13.0"
+    assert first.item.skill_set_version == "1.13.0"
+    assert first.item.digital_employee_profile_version == "1.13.0"
+    assert first.item.pack_version == "1.14.0"
     assert composition.research_template_path.is_relative_to(tmp_path / "snapshots")
     assert first.item.digital_employee_permissions_digest == composition.permissions_digest
     assert first.item.skill_digests

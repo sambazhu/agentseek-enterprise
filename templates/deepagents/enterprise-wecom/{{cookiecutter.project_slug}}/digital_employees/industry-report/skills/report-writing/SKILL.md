@@ -5,6 +5,8 @@ description: Build, approve, publish, and explicitly deliver a securities-indust
 
 # Report writing
 
+P1 bounded automatic mode: after the requester says exactly `确认 ReportBrief vN 并自动研究生成初稿` or `按已确认需求自动研究并生成初稿`, the deterministic runtime may perform internal research, accept its source-backed outline, and generate a review draft. It records version-bound delegation. This is the only exception to manual steps 1–2 below. A research gap still stops the flow and requires its own explicit choice. Automatic mode never authorizes external search, draft acceptance, approval, rendering, publication or delivery. Never manufacture delegation from ordinary assent.
+
 1. Confirming `ReportOutline vN` is a discrete human checkpoint. That turn must stop after confirmation, tell the employee to send a later `生成可审阅初稿` request, and never automatically prepare Evidence or generate a draft.
 2. Require a later employee message that explicitly asks to generate a review draft. Then revalidate the exact confirmed ReportOutline, its ReportBrief, research-plan, gap-decision, and source-set bindings.
 3. Call `prepare_report_draft_context` before writing. Use only the returned Evidence excerpts and IDs; do not fill facts from model memory or old conversation text.

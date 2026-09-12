@@ -89,6 +89,12 @@ class IndustryReportPlaybookBinding:
         runtime_context: object | None = None,
         callbacks: Sequence[object] = (),
     ) -> str | None:
+        from {{ cookiecutter.project_slug }}.work_commands import explicitly_cancels_current_work
+
+        if explicitly_cancels_current_work(message):
+            return self.composition.cancel_current_work(
+                state, runtime_context, latest_user_message=message,
+            )
         sections = match_report_status_sections(message)
         if sections is not None:
             summary = self.composition.current_work_summary(state, runtime_context)

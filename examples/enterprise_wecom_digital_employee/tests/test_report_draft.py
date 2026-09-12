@@ -276,6 +276,76 @@ def test_prepare_evidence_build_draft_and_save_idempotently(tmp_path: Path) -> N
     assert all(claim.verification_status.value == "unverified" for claim in claims)
 
 
+@pytest.mark.parametrize("command", ["按已确认需求自动研究并生成初稿", "确认 ReportBrief v1 并自动研究生成初稿"])
+def test_automatic_draft_records_bounded_delegation_and_stops_at_review(tmp_path: Path, command: str) -> None:
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path, confirm=False)
+
+    async def invoke(_server, tool, _arguments, _confirmed):
+        assert tool == "knowledge_read_chunks"
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+
+    async def generate(context, _callbacks):
+        return _proposals(outline, context.evidence[0].evidence_id)
+
+    result = _run(generate_report_draft_action(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=command,
+        invoke_mcp=invoke, claim_generator=generate,
+    ))
+    assert "ReportDraft v1" in result
+    grant = composition.repository.get_current_work_contract(
+        tenant_id="tenant-test", work_id="work_draft_001", contract_type="report-draft-execution",
+    )
+    assert grant.payload["report_brief_version"] == 1
+    assert grant.payload["external_search_authorized"] is False
+    assert grant.payload["approval_publication_delivery_authorized"] is False
+    replay = _run(generate_report_draft_action(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=command, invoke_mcp=invoke, claim_generator=generate,
+    ))
+    assert replay == result
+    assert composition.repository.get_current_work_contract(
+        tenant_id="tenant-test", work_id="work_draft_001", contract_type=REPORT_APPROVAL_CONTRACT_TYPE,
+    ) is None
+
+
+def test_automatic_draft_stale_brief_does_not_call_mcp_or_model(tmp_path: Path) -> None:
+    composition, state = _confirmed_brief_composition(tmp_path)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("stale request must not call MCP or model")
+    with pytest.raises(WorkCompositionError, match="版本"):
+        _run(generate_report_draft_action(
+            composition=composition, state=state, runtime_context=None,
+            latest_user_message="确认 ReportBrief v999 并自动研究生成初稿",
+            invoke_mcp=forbidden, claim_generator=forbidden,
+        ))
+
+
+def test_confirm_and_draft_stops_at_internal_gap_without_external_or_model(tmp_path: Path) -> None:
+    composition, state = _confirmed_brief_composition(tmp_path, confirm=False)
+    calls = []
+    async def internal_only(server, tool, arguments, confirmed):
+        assert server == "department-knowledge"
+        assert tool in {"knowledge_search", "knowledge_read_chunks"}
+        calls.append(tool)
+        return json.dumps({"results": [], "chunks": []})
+    async def forbidden(*args, **kwargs):
+        pytest.fail("a gap does not authorize draft generation")
+    with pytest.raises(WorkCompositionError, match="ReportBrief v1 保留缺口继续生成"):
+        _run(generate_report_draft_action(
+            composition=composition, state=state, runtime_context=None,
+            latest_user_message="确认 ReportBrief v1 并自动研究生成初稿",
+            invoke_mcp=internal_only, claim_generator=forbidden,
+        ))
+    assert calls
+    assert composition.repository.get_current_work_contract(
+        tenant_id="tenant-test", work_id="work_draft_001", contract_type="report-brief",
+    ).status is WorkContractStatus.CONFIRMED
+    assert composition.repository.get_current_work_contract(
+        tenant_id="tenant-test", work_id="work_draft_001", contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+    ) is None
+
+
 def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(tmp_path: Path) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
     generated: list[int] = []
@@ -943,6 +1013,7 @@ def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path
 
 def _composition_with_confirmed_outline(
     tmp_path: Path,
+    *, confirm: bool = True,
 ) -> tuple[IndustryReportWorkComposition, dict[str, Any], ReportOutline]:
     composition, state = _confirmed_brief_composition(tmp_path)
     internal = load_current_research_result(
@@ -1003,17 +1074,19 @@ def _composition_with_confirmed_outline(
     )
     outline = _build_current_report_outline(composition, state, None)
     contract = composition.save_report_outline(state, None, outline)
-    composition.confirm_report_outline(
-        state,
-        None,
-        expected_version=contract.contract_version,
-        latest_user_message="确认 ReportOutline v1。",
-    )
+    if confirm:
+        composition.confirm_report_outline(
+            state,
+            None,
+            expected_version=contract.contract_version,
+            latest_user_message="确认 ReportOutline v1。",
+        )
     return composition, state, outline
 
 
 def _confirmed_brief_composition(
     tmp_path: Path,
+    *, confirm: bool = True,
 ) -> tuple[IndustryReportWorkComposition, dict[str, Any]]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     apply_migrations(engine)
@@ -1060,12 +1133,13 @@ def _confirmed_brief_composition(
             coverage_period="2026年全年",
         ),
     )
-    composition.confirm_report_brief(
-        state,
-        None,
-        expected_version=brief.contract_version,
-        latest_user_message="确认 ReportBrief v1。",
-    )
+    if confirm:
+        composition.confirm_report_brief(
+            state,
+            None,
+            expected_version=brief.contract_version,
+            latest_user_message="确认 ReportBrief v1。",
+        )
     return composition, state
 
 

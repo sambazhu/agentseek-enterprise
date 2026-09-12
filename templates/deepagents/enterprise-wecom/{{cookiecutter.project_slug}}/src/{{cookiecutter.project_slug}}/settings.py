@@ -79,6 +79,9 @@ class ProjectSettings(BaseSettings):
         ),
     )
     work_enabled: bool = Field(default=False, validation_alias=AliasChoices("AGENTSEEK_WORK_ENABLED"))
+    production_mcp_enabled: bool = Field(default=False, validation_alias="AGENTSEEK_PRODUCTION_MCP_ENABLED")
+    it_policy_kb_code: str = Field(default="", validation_alias="AGENTSEEK_IT_POLICY_KB_CODE")
+    it_regulation_kb_code: str = Field(default="", validation_alias="AGENTSEEK_IT_REGULATION_KB_CODE")
     work_sqlalchemy_url: str = Field(
         default="",
         validation_alias=AliasChoices("AGENTSEEK_WORK_SQLALCHEMY_URL"),

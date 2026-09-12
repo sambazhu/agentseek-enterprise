@@ -75,8 +75,9 @@ def test_job_charter_responses_are_profile_backed_and_explain_the_formal_workflo
     assert "DE-SD-001" in identity
     assert profile.mission in identity
     assert "证券行业正式报告" in capabilities
-    assert "需求澄清与 ReportBrief 确认" in capabilities
-    assert "DOCX 渲染、发布与交付" in capabilities
+    assert "确认需求" in capabilities
+    assert "研究与审阅初稿（可授权自动推进，缺口另行决策）" in capabilities
+    assert "审批与交付（保留各项明确授权）" in capabilities
     assert "分析你授权的文件" in capabilities
     assert "检索已配置的部门知识" in capabilities
     assert "明确同意后使用已配置的外部数据或公开搜索" in capabilities
@@ -150,7 +151,7 @@ def test_agent_direct_response_requires_loaded_employee_profile_and_emits_safe_e
                 "status": "succeeded",
                 "session_id": "wecom:test",
                 "digital_employee_id": "industry-report",
-                "profile_version": "1.12.0",
+                "profile_version": "1.13.0",
                 "intent": "identity",
             },
         )
