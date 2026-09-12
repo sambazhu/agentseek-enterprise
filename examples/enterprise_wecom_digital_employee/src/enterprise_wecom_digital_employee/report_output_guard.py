@@ -260,8 +260,8 @@ _REPORT_DELIVERY_LEDGER_TOOLS = frozenset({
 
 M2_OUTPUT_BLOCKED_MESSAGE = (
     "未检测到本轮账本支持的 ReportDraft，因此这次模型正文已被运行时守卫拦截，"
-    "不作为报告或事实交付。请先确认准确的 ReportOutline，再调用 "
-    "prepare_report_draft_context 和 build_report_draft；DOCX/PDF 与最终批准尚未启用。"
+    "请查询当前 ReportDraft 的真实版本，并按工具返回结果继续；"
+    "这次拦截没有确认初稿，也没有执行审批、生成文件或交付。"
 )
 REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE = (
     "未检测到本轮 save_report_brief 的成功账本写入，因此不能声称 ReportBrief "
@@ -362,6 +362,8 @@ def enforce_m2_output_guard(  # noqa: C901
     )
     if reason == "unverified_report_brief_write":
         return REPORT_BRIEF_LEDGER_CLAIM_BLOCKED_MESSAGE
+    if reason == "unverified_report_outline_write" and re.search(r"report\s*draft", latest_user_message, re.IGNORECASE):
+        return REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_outline_write":
         return REPORT_OUTLINE_LEDGER_CLAIM_BLOCKED_MESSAGE
     if reason == "unverified_report_draft_write":

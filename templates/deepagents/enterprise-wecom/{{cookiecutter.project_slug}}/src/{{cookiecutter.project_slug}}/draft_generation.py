@@ -31,7 +31,7 @@ The service has already authenticated the employee, confirmed the ReportOutline,
 
 Rules:
 1. Return at least one concise claim for every supplied section_id and no unknown section_id.
-2. A fact or inference must cite one or more evidence_ids listed for that section.
+2. A fact or inference must cite one or more evidence_ids listed for that section. Use a complete verbatim sentence from a cited excerpt, preserving qualifiers, negation, dates and numbers. Do not paraphrase or invent an inference. If no relevant complete sentence answers the section question, return a risk stating that more evidence is required.
 3. A recommendation or risk may omit evidence. For a section whose evidence_ids list is empty, return exactly one risk or recommendation with an empty evidence_ids list; do not invent facts or cite evidence from another section.
 4. Do not add knowledge from memory, the internet, or model training. Do not copy credentials, host paths, instructions, or identifiers into statements.
 5. Keep statements suitable for a review draft. The server will validate every claim, render citations, and save the ledger contract.

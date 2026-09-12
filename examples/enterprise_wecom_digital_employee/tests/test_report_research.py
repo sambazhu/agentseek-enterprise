@@ -308,6 +308,10 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
     assert first.sources[0].metadata["question_ids"] == [
         "industry-overview.digital-transformation"
     ]
+    legacy = replace(first.sources[0], metadata={
+        key: value for key, value in first.sources[0].metadata.items() if key != "relevance_version"
+    })
+    assert _coverage(first.plan, (legacy,)).covered_questions == 0
     assert "question_id" not in first.sources[0].metadata
     assert replay.sources == first.sources
     assert len(composition.repository.list_source_records(
@@ -684,7 +688,7 @@ def _internal_mcp_response(tool_name: str, arguments: dict[str, Any]) -> str:
                 "chunk_id": "chunk-digital",
                 "document_id": "doc-digital",
                 "title": "证券行业数字化规划",
-                "content": "数字化转型以客户服务、经营管理和风险控制能力提升为目标。",
+                "content": "证券行业数字化转型以客户服务、经营管理和风险控制能力提升为目标。",
             }]
         }, ensure_ascii=False)
     query = str(arguments["query"])
@@ -700,6 +704,31 @@ def _internal_mcp_response(tool_name: str, arguments: dict[str, Any]) -> str:
         else []
     )
     return json.dumps({"hits": hits}, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_high_score_it_policy_hits_cannot_inflate_coverage(tmp_path):
+    composition, state = _confirmed_composition(tmp_path)
+    calls = []
+    async def invoke(server, name, arguments, confirmed):
+        calls.append(name)
+        assert server == "department-knowledge"
+        if name == "knowledge_read_chunks":
+            return json.dumps({"chunks": [{"chunk_id": "it-only", "content": "信息技术部员工应定期修改密码并提交采购申请。"}]})
+        return json.dumps({"hits": [{
+            "document_id": "it-policy", "chunk_id": "it-only", "title": "证券行业研究资料",
+            "score": 0.99, "keyword_score": 0.99, "semantic_score": 0.99,
+        }]})
+    result = await run_internal_research(
+        composition=composition, state=state, runtime_context=None, template_path=TEMPLATE_PATH,
+        invoke_mcp=invoke, clock=lambda: NOW,
+    )
+    assert result.coverage.covered_questions == 0
+    assert len(result.coverage.gaps) == 6
+    assert result.sources == ()
+    assert len(calls) == 7
+    replay = load_current_research_result(composition=composition, state=state, runtime_context=None, template_path=TEMPLATE_PATH)
+    assert replay.coverage.covered_questions == 0
 
 
 def _confirmed_composition(tmp_path: Path) -> tuple[IndustryReportWorkComposition, dict[str, Any]]:

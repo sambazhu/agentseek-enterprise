@@ -1044,6 +1044,7 @@ def _composition_with_confirmed_outline(
         license_terms_ref="internal-policy://department-knowledge/v1",
         metadata={
             "provider": "department-knowledge",
+            "relevance_version": "securities-content-v1",
             "document_id": "doc-1",
             "chunk_id": "chunk-1",
             "section_ids": ["executive-summary"],
@@ -1149,7 +1150,7 @@ def _proposals(outline: ReportOutline, evidence_id: str) -> list[DraftClaimPropo
         proposals.append(DraftClaimProposal(
             section_id=section.section_id,
             statement=(
-                "证券行业数字化转型应同时提升客户服务、经营管理和风险控制能力。"
+                CONTENT
                 if index == 0
                 else f"{section.title}仍有研究问题需要后续确认。"
             ),
@@ -1157,6 +1158,25 @@ def _proposals(outline: ReportOutline, evidence_id: str) -> list[DraftClaimPropo
             evidence_ids=[evidence_id] if index == 0 else [],
         ))
     return proposals
+
+
+@pytest.mark.parametrize("unsupported", [
+    "证券公司利润增长20%。", "证券行业数字化转型不应以客户服务、经营管理和风险控制能力提升为目标。",
+])
+def test_claim_gate_rejects_fabricated_fact_before_any_claim_write(tmp_path, unsupported):
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    async def invoke(*args):
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+    context = _run(prepare_report_draft_context(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke,
+    ))
+    proposals = _proposals(outline, context.evidence[0].evidence_id)
+    proposals[0] = proposals[0].model_copy(update={"statement": unsupported})
+    with pytest.raises(ValueError, match="完整证据原句"):
+        build_report_draft(composition=composition, state=state, runtime_context=None,
+                           latest_user_message=DRAFT_REQUEST, proposals=proposals)
+    assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
 
 
 def _authorized_state() -> dict[str, Any]:

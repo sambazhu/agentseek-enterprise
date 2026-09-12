@@ -375,6 +375,8 @@ def load_current_research_result(
 ) -> InternalResearchResult:
     """Rebuild current internal coverage from immutable SourceRecords without MCP calls."""
 
+    from enterprise_wecom_digital_employee.evidence_relevance import RELEVANCE_VERSION
+
     item, _, plan = _current_research_plan(
         composition=composition,
         state=state,
@@ -388,6 +390,7 @@ def load_current_research_result(
             work_id=item.work_id,
         )
         if source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+        and source.metadata.get("relevance_version") == RELEVANCE_VERSION
         and source.metadata.get("report_brief_version") == plan.report_brief_version
         and source.metadata.get("research_plan_digest") == plan.digest
     )
@@ -480,7 +483,11 @@ def _index_selected_hits(
     for section in plan.template.sections:
         for question in section.questions:
             for hit in hits_by_question.get(question.question_id, ())[:2]:
-                if hit.chunk_id not in chunks_by_id:
+                from enterprise_wecom_digital_employee.evidence_relevance import relevant_content
+
+                if hit.chunk_id not in chunks_by_id or not relevant_content(
+                    _text(chunks_by_id[hit.chunk_id], "content"), question.question_id, plan.report_title,
+                ):
                     continue
                 questions_by_chunk.setdefault(hit.chunk_id, set()).add(question.question_id)
                 sections_by_chunk.setdefault(hit.chunk_id, set()).add(section.section_id)
@@ -512,7 +519,9 @@ def _persist_sources(
         if chunk is None or hit is None:
             continue
         content_hash = _digest_text(_text(chunk, "content"))
-        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}"
+        from enterprise_wecom_digital_employee.evidence_relevance import RELEVANCE_VERSION
+
+        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}:{RELEVANCE_VERSION}"
         source_id = f"source_sha256_{sha256(identity.encode()).hexdigest()}"
         try:
             source = composition.repository.get_source_record(tenant_id=tenant_id, source_id=source_id)
@@ -550,6 +559,7 @@ def _persist_sources(
                 license_terms_ref="internal-policy://department-knowledge/v1",
                 metadata={
                     "provider": "department-knowledge",
+                    "relevance_version": RELEVANCE_VERSION,
                     "document_id": hit.document_id,
                     "chunk_id": chunk_id,
                     "section_ids": sorted(sections_by_chunk[chunk_id]),
@@ -563,8 +573,12 @@ def _persist_sources(
 
 
 def _coverage(plan: ReportResearchPlan, sources: Sequence[SourceRecord]) -> ResearchCoverage:
+    from enterprise_wecom_digital_employee.evidence_relevance import RELEVANCE_VERSION
+
     source_ids_by_question: dict[str, list[str]] = {}
     for source in sources:
+        if source.metadata.get("relevance_version") != RELEVANCE_VERSION:
+            continue
         question_ids = source.metadata.get("question_ids")
         if not isinstance(question_ids, list):
             continue

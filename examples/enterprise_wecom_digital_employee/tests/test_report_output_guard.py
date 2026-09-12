@@ -72,6 +72,18 @@ def test_generic_confirmation_is_blocked_and_audited() -> None:
     assert fields["tool_sequence"] == []
 
 
+def test_fake_draft_request_does_not_receive_outline_guidance():
+    output = "ReportOutline v999 已构建，暂定。"
+    guarded = enforce_m2_output_guard(_result("确认 ReportDraft v999", output), output)
+    assert guarded == REPORT_DRAFT_LEDGER_CLAIM_BLOCKED_MESSAGE
+    assert "ReportOutline" not in guarded
+
+
+def test_unbacked_draft_body_does_not_claim_docx_approval_are_disabled():
+    assert "尚未启用" not in M2_OUTPUT_BLOCKED_MESSAGE
+    assert "ReportDraft" in M2_OUTPUT_BLOCKED_MESSAGE
+
+
 def test_generic_confirmation_uses_explicit_live_state_when_messages_drop_human_input() -> None:
     events: list[tuple[str, dict[str, object]]] = []
     result = _result("historical request", "我会继续处理当前任务。")

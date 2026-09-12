@@ -1,7 +1,6 @@
 """Identity and capability discovery independent of the work ledger switch."""
 
 from collections.abc import Mapping
-from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -48,7 +47,15 @@ def identity_response(message: str, state: Mapping[str, object], *, profile=None
         effective_data_scopes=frozenset(profile.data_scopes),
         configured_servers=configured_mcp_server_names(settings.resolved_mcp_config_path()),
     )
-    displayed_profile = profile if settings.work_enabled else replace(profile, service_catalog=())
+    if not settings.work_enabled:
+        return (
+            f"我是{profile.display_name}。\n"
+            "现在可以：日常问答、解释概念、梳理你提供的文字；这些协助不会自动创建正式报告任务。\n"
+            "按配置提供：文件分析、知识检索和 OA 查询，以当前已启用工具及你的权限为准。\n"
+            "尚未启用：正式报告工作流。报告任务、审批、生成正式文件和交付暂不可用。\n"
+            "当前正式报告工作流未启用。你可以直接告诉我想解决的问题。"
+        ) + production_capability_summary()
+    displayed_profile = profile
     response = render_job_charter_response(displayed_profile, intent, capabilities=availability)
     if not settings.work_enabled:
         response += "\n当前正式报告工作流未启用；日常问答按已配置能力提供。"

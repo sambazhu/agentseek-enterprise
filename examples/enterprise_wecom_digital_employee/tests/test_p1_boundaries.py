@@ -159,6 +159,9 @@ def test_work_disabled_discovery_does_not_advertise_an_enabled_formal_service(mo
         response = module.identity_response(command, {})
         assert "正式报告工作流未启用" in response
         assert "当前正式服务" not in response
+        assert "现在可以：" in response
+        assert "按配置提供：" in response
+        assert "尚未启用：" in response
 
 
 def test_business_tools_have_injected_runtime_and_fixed_knowledge_collection(monkeypatch):

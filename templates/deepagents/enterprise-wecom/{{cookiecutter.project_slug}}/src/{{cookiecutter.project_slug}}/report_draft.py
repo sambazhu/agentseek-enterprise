@@ -383,6 +383,14 @@ async def prepare_report_draft_context(
             continue
         if _digest_text(content) != source.content_hash:
             raise RuntimeError(f"source content changed after registration: {source.source_id}")
+        from {{ cookiecutter.project_slug }}.evidence_relevance import relevant_content
+
+        if not any(
+            relevant_content(content, question.question_id, outline.report_title)
+            for section in outline.sections for question in section.questions
+            if source.source_id in question.source_ids
+        ):
+            continue
         evidence_id = _evidence_id(source, outline_contract.contract_version)
         try:
             record = composition.repository.get_evidence_record(
@@ -483,6 +491,15 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
                 raise ValueError(f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}")
             if record.source_id not in section.source_ids:
                 raise ValueError(f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}")
+        from {{ cookiecutter.project_slug }}.evidence_relevance import is_evidence_sentence, relevant_content
+
+        if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}:
+            excerpts = [evidence_by_id[key].excerpt for key in evidence_ids]
+            if not is_evidence_sentence(proposal.statement, excerpts) or not any(
+                relevant_content(proposal.statement, question.question_id, outline.report_title)
+                for question in section.questions
+            ):
+                raise ValueError("事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。")
         claim_id = _claim_id(
             item.work_id,
             outline_contract.contract_version,
@@ -627,6 +644,7 @@ def _quality_checks(
 ) -> tuple[DraftQualityCheck, ...]:
     cited = {evidence_id for claim in claims for evidence_id in claim.evidence_ids}
     checks = [
+        DraftQualityCheck("securities-content-v1", DraftQualityStatus.PASS, "已检查研究问题的正文线索；事实和推断仅使用完整证据原句。"),
         DraftQualityCheck("outline_binding", DraftQualityStatus.PASS, "初稿精确绑定已确认 ReportOutline。"),
         DraftQualityCheck("claim_evidence_binding", DraftQualityStatus.PASS, "事实和推断 Claim 均绑定 Evidence。"),
         DraftQualityCheck("citation_locator", DraftQualityStatus.PASS, "所有已引用 Evidence 均包含稳定 locator。"),

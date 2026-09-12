@@ -774,6 +774,8 @@ async def generate_report_draft_action(
     }:
         current_draft = ReportDraft.from_contract(current)
         if current_draft.report_outline_version == outline_contract.contract_version:
+            if not any(check.check_id == "securities-content-v1" for check in current_draft.quality_checks):
+                raise WorkCompositionError("当前初稿尚未经过内容相关性补修校验；请保留历史并使用新测试任务重新研究。")
             return _format_draft(current.contract_version, current.status.value, current_draft)
 
     async def invoke(server: str, tool_name: str, arguments: dict, confirmed: bool) -> str:
@@ -980,13 +982,16 @@ def _current_outline_sources(
     research_plan_digest: str,
     gap_decision_contract_version: int | None,
 ) -> tuple[SourceRecord, ...]:
+    from {{ cookiecutter.project_slug }}.evidence_relevance import RELEVANCE_VERSION
+
     return tuple(
         source
         for source in composition.repository.list_source_records(tenant_id=tenant_id, work_id=work_id)
         if source.metadata.get("report_brief_version") == report_brief_version
         and source.metadata.get("research_plan_digest") == research_plan_digest
         and (
-            source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+            (source.source_type is SourceType.DEPARTMENT_KNOWLEDGE
+             and source.metadata.get("relevance_version") == RELEVANCE_VERSION)
             or (
                 gap_decision_contract_version is not None
                 and source.metadata.get("gap_decision_contract_version") == gap_decision_contract_version
