@@ -155,6 +155,59 @@ def test_explicit_new_report_commands(command):
     assert explicitly_creates_new_report(command)
 
 
+def test_creation_replay_preempts_active_route_without_any_ledger_write(tmp_path):
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from agentseek_langchain.spec import InvocationContext
+    from agentseek_work.schema import metadata, work_items
+    from enterprise_wecom_digital_employee.agent import _deterministic_direct_response
+    from sqlalchemy import select, update
+
+    composition = build_composition(tmp_path)
+    original_state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", original_state)
+    original = composition.create_report_work(original_state).item
+    with composition.repository.engine.begin() as connection:
+        connection.execute(update(work_items).where(work_items.c.work_id == original.work_id).values(status="published"))
+    composition._factory = replace(composition._factory, id_factory=lambda: "work_active")
+    active_state = authorized_state()
+    composition.enrich_state(message("new-message"), "wecom:test", active_state)
+    active = composition.create_report_work(active_state, latest_user_message="新建报告任务").item
+
+    def snapshot():
+        with composition.repository.engine.connect() as connection:
+            return {table.name: connection.execute(select(table)).all() for table in metadata.sorted_tables}
+
+    before = snapshot()
+    replay_state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", replay_state)
+    assert composition.current_work(replay_state).work_id == active.work_id
+    replay_state["playbook_route"] = {"route_status": "clarification_required"}
+    result = asyncio.run(_deterministic_direct_response(
+        InvocationContext(prompt=message()["content"], session_id="wecom:test", state=replay_state,
+                          workspace=tmp_path, agents_md=None),
+        SimpleNamespace(profile=composition.profile),  # No routing/model methods: replay must return first.
+    ))
+    assert original.work_id in result
+    assert "未续接" in result
+    assert snapshot() == before
+    # Same text with a different channel ID is not a replay; stale response is cleared.
+    composition.enrich_state(message("fresh-message"), "wecom:test", replay_state)
+    assert replay_state["work_creation_replay_response"] == ""
+    composition.enrich_state({"content": message()["content"]}, "wecom:test", replay_state)
+    assert replay_state["work_creation_replay_response"] == ""
+    normalized = authorized_state() | composition.load_message_state(message(), "wecom:test")
+    composition.enrich_state({"content": message()["content"]}, "wecom:test", normalized)
+    assert original.work_id in normalized["work_creation_replay_response"]
+    scope = {"tenant_id": original.tenant_id, "requester_id": original.requester_id,
+             "digital_employee_id": original.digital_employee_id, "playbook_id": original.playbook_id,
+             "idempotency_key": original.idempotency_key}
+    for field in ("tenant_id", "requester_id", "digital_employee_id", "playbook_id"):
+        assert composition.repository.find_created_work(**dict(scope, **{field: "other"})) is None
+
+
 def message(msgid: str = "message-001") -> dict:
     return {
         "content": "请创建2025年中国证券行业发展研究报告任务",

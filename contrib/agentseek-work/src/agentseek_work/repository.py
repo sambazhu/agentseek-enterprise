@@ -280,6 +280,19 @@ class SQLAlchemyWorkRepository:
             raise WorkNotFoundError(f"work item {work_id} was not found for tenant")
         return _row_to_item(row)
 
+    def find_created_work(
+        self, *, tenant_id: str, requester_id: str, digital_employee_id: str,
+        playbook_id: str, idempotency_key: str,
+    ) -> WorkItem | None:
+        """Read a creation replay only within the complete authenticated owner scope."""
+        item = self._get_by_idempotency_key(tenant_id=tenant_id, idempotency_key=idempotency_key)
+        if item is None or (
+            item.requester_id != requester_id or item.digital_employee_id != digital_employee_id
+            or item.playbook_id != playbook_id
+        ):
+            return None
+        return item
+
     def find_current_work(
         self,
         *,

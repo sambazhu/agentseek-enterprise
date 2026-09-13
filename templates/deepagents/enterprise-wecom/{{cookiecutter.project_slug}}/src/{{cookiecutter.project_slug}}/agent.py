@@ -116,6 +116,7 @@ class EnterpriseAgentState(DeepAgentState):
     latest_user_message: NotRequired[str]
     playbook_route: NotRequired[dict[str, Any]]
     work_request_key: NotRequired[str]
+    work_creation_replay_response: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +471,8 @@ async def _deterministic_direct_response(
     route = context.state.get("playbook_route")
     if isinstance(route, Mapping) and route.get("route_status") == PlaybookRouteStatus.FORBIDDEN.value:
         return "当前身份不在该部门数字员工的授权服务范围内，未启动任何正式任务。"
+    if replay := _clean(context.state.get("work_creation_replay_response")):
+        return replay
     from {{ cookiecutter.project_slug }}.report_delivery import match_report_history_command
     from {{ cookiecutter.project_slug }}.work_commands import explicitly_cancels_current_work
 

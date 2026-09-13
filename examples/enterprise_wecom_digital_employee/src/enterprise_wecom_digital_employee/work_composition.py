@@ -264,7 +264,10 @@ class IndustryReportWorkComposition:
 
     def load_message_state(self, message: Envelope, session_id: str) -> State:
         del session_id
-        return {"_work_message_key": _message_scope_key(message)}
+        return {
+            "_work_message_key": _message_scope_key(message),
+            "_work_message_has_id": bool(_nested_message_id(field_of(message, "context", {}))),
+        }
 
     def authorize_state(self, state: State) -> None:
         status = self._authorization_status(state)
@@ -274,6 +277,7 @@ class IndustryReportWorkComposition:
 
     def enrich_state(self, message: Envelope, session_id: str, state: State) -> None:
         del session_id
+        state["work_creation_replay_response"] = ""
         self.authorize_state(state)
         status = str(state.get(_DIGITAL_EMPLOYEE_STATUS_KEY, ""))
         if status != "found":
@@ -287,6 +291,19 @@ class IndustryReportWorkComposition:
         state["_work_permissions_digest"] = self.permissions_digest
         state["_work_skill_set_digest"] = self.skill_set_digest
         state[_WORK_REQUEST_KEY] = _request_key(message, enterprise, state)
+        # Never identify a replay by text alone. The loader preserves the
+        # presence of a channel message ID when its envelope is normalized.
+        if state.get("_work_message_has_id") or _nested_message_id(field_of(message, "context", {})):
+            replay = self.repository.find_created_work(
+                tenant_id=str(enterprise["tenant_id"]), requester_id=str(enterprise["user_key"]),
+                digital_employee_id=self.profile.digital_employee_id, playbook_id=self.playbook_id,
+                idempotency_key=str(state[_WORK_REQUEST_KEY]),
+            )
+            if replay is not None:
+                state["work_creation_replay_response"] = (
+                    f"该创建消息已处理，原任务：work_id={replay.work_id}，状态={replay.status.value}。"
+                    "本轮仅返回原任务，未新建、未修改任何任务，也未续接当前活动任务。"
+                )
         _merge_runtime_context(
             state,
             "digital_employee",
