@@ -17,6 +17,17 @@ def explicitly_cancels_current_work(message: str) -> bool:
     }
 
 
+def explicitly_creates_new_report(message: str) -> bool:
+    """Bounded new-task consent; bare agreement, revision, quotes and questions fail closed."""
+    command = authenticated_user_command_text(message).strip().rstrip("。.!！")
+    return command in {
+        f"{prefix}{verb}{target}"
+        for prefix in ("", "请", "确认", "同意")
+        for verb in ("新建", "创建新的", "创建一个新的", "新建一个", "新建一份")
+        for target in ("报告", "报告任务", "行业报告", "行业报告任务")
+    }
+
+
 def requests_automatic_draft(message: str) -> bool:
     command = authenticated_user_command_text(message).strip().rstrip("。.!！")
     return automatic_draft_brief_version(message) is not None or command in {

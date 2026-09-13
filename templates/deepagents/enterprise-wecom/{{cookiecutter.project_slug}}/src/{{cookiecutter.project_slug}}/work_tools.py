@@ -107,7 +107,9 @@ def work_tools(  # noqa: C901
         """
 
         try:
-            result = composition.create_report_work(runtime.state, runtime.context)
+            result = composition.create_report_work(
+                runtime.state, runtime.context, latest_user_message=_latest_user_message_text(runtime),
+            )
         except ActiveWorkConflictError as exc:
             item = exc.existing
             return (

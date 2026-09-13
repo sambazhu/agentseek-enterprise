@@ -118,6 +118,43 @@ def test_published_history_commands_are_requester_scoped_and_read_only(tmp_path)
     assert composition.repository.get_work(tenant_id=item.tenant_id, work_id=item.work_id).status is WorkStatus.PUBLISHED
 
 
+def test_published_revision_requires_new_task_consent_and_preserves_replay(tmp_path):
+    from dataclasses import replace
+
+    from agentseek_work.schema import work_items
+    from sqlalchemy import select, update
+
+    composition = build_composition(tmp_path)
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    original = composition.create_report_work(state).item
+    with composition.repository.engine.begin() as connection:
+        connection.execute(update(work_items).where(work_items.c.work_id == original.work_id).values(status="published"))
+    assert not composition.create_report_work(state).created  # Original-message replay is read-only.
+    composition._factory = replace(composition._factory, id_factory=lambda: "work_new_consent")
+    next_state = authorized_state()
+    composition.enrich_state(message("message-next"), "wecom:test", next_state)
+    for command in ("修改已发布报告", "不需要新建报告任务", "新建报告任务吗？", "同事说新建报告任务", "同意", ""):
+        with pytest.raises(WorkCompositionError, match="本轮未创建新任务"):
+            composition.create_report_work(next_state, latest_user_message=command)
+        with composition.repository.engine.connect() as connection:
+            assert len(connection.execute(select(work_items)).all()) == 1
+    created = composition.create_report_work(next_state, latest_user_message="新建报告任务")
+    assert created.created
+    assert created.item.work_id == "work_new_consent"
+    assert not composition.create_report_work(next_state, latest_user_message="新建报告任务").created
+    with composition.repository.engine.connect() as connection:
+        assert len(connection.execute(select(work_items)).all()) == 2
+    assert composition.repository.get_work(tenant_id=original.tenant_id, work_id=original.work_id).status is WorkStatus.PUBLISHED
+
+
+@pytest.mark.parametrize("command", ["新建报告", "请新建一份报告", "确认新建报告任务", "同意创建新的行业报告任务"])
+def test_explicit_new_report_commands(command):
+    from enterprise_wecom_digital_employee.work_commands import explicitly_creates_new_report
+
+    assert explicitly_creates_new_report(command)
+
+
 def message(msgid: str = "message-001") -> dict:
     return {
         "content": "请创建2025年中国证券行业发展研究报告任务",

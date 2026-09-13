@@ -307,6 +307,8 @@ class IndustryReportWorkComposition:
         self,
         state: Mapping[str, object],
         runtime_context: object | None = None,
+        *,
+        latest_user_message: str = "",
     ) -> CreateWorkResult:
         if state.get(_DIGITAL_EMPLOYEE_STATUS_KEY) != "found":
             raise WorkCompositionError("当前员工未获授权使用行业报告数字员工。")
@@ -337,7 +339,22 @@ class IndustryReportWorkComposition:
             idempotency_key=request_key,
             input_file_ids=_current_file_ids(state),
         )
-        result = self.repository.create_work(item)
+        from {{ cookiecutter.project_slug }}.work_commands import explicitly_creates_new_report
+
+        history = self.repository.find_latest_published_work(
+            tenant_id=item.tenant_id, requester_id=item.requester_id,
+            digital_employee_id=item.digital_employee_id, playbook_id=item.playbook_id,
+        )
+        allow_create = history is None or explicitly_creates_new_report(latest_user_message)
+        try:
+            result = self.repository.create_work(item, allow_create=allow_create)
+        except WorkConflictError as exc:
+            if allow_create:
+                raise
+            raise WorkCompositionError(
+                "已发布报告不能原位修订，本轮未创建新任务。是否需要新建报告任务？"
+                "如需新建，请明确回复“新建报告任务”；如不需要，无需操作。"
+            ) from exc
         if isinstance(state, dict):
             self._publish_current_work(cast("dict[str, Any]", state), result.item)
         return result

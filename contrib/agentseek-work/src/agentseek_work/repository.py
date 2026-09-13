@@ -213,7 +213,7 @@ class SQLAlchemyWorkRepository:
             raise WorkNotFoundError(f"pack snapshot {pack_snapshot_id} was not found")
         return _row_to_pack_snapshot(row)
 
-    def create_work(self, item: WorkItem) -> CreateWorkResult:
+    def create_work(self, item: WorkItem, *, allow_create: bool = True) -> CreateWorkResult:
         values = _item_to_values(item)
         try:
             with self.engine.begin() as connection:
@@ -230,6 +230,8 @@ class SQLAlchemyWorkRepository:
                 )
                 if existing is not None:
                     return CreateWorkResult(item=_row_to_item(existing), created=False)
+                if not allow_create:
+                    raise WorkConflictError("新建任务尚未获得明确授权。")
                 active = _find_active_work(
                     connection,
                     tenant_id=item.tenant_id,
