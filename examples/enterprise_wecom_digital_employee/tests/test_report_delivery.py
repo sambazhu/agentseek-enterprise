@@ -15,6 +15,7 @@ from enterprise_wecom_digital_employee.report_delivery import (
     REPORT_DELIVERY_CARD_ACTION_KIND,
     explicitly_requests_report_delivery,
     match_report_delivery_version,
+    match_report_history_command,
 )
 from enterprise_wecom_digital_employee.work_tools import (
     _delivery_card_description,
@@ -46,6 +47,19 @@ from langchain_core.tools import StructuredTool
 )
 def test_delivery_command_is_exact_and_wecom_envelope_aware(message: str, expected: bool) -> None:
     assert explicitly_requests_report_delivery(message, expected_version=2) is expected
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("查看已发布报告 work_001", ("work_001", None)),
+    ("交付已发布报告 work_001 ReportArtifact v2 给我", ("work_001", 2)),
+    ("不要交付已发布报告 work_001 ReportArtifact v2 给我", None),
+    ("交付已发布报告 work_001 ReportArtifact v2 给我吗？", None),
+    ("交付已发布报告 work_001 ReportArtifact v2 给别人", None),
+    ("同事说：交付已发布报告 work_001 ReportArtifact v2 给我", None),
+    ("交付已发布报告 work_001 ReportArtifact v0 给我", None),
+])
+def test_history_commands_bind_task_version_and_self(message, expected):
+    assert match_report_history_command(message) == expected
 
 
 def test_delivery_command_returns_exact_version_for_deterministic_dispatch() -> None:

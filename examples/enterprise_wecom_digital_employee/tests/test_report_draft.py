@@ -400,6 +400,35 @@ def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(t
     }
 
 
+@pytest.mark.parametrize("with_fact", [False, True])
+def test_program_completes_sections_and_uses_chinese_questions(tmp_path, with_fact):
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    async def invoke(*args):
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+    context = _run(prepare_report_draft_context(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke, clock=lambda: NOW,
+    ))
+    proposals = _proposals(outline, context.evidence[0].evidence_id)[:1] if with_fact else []
+    draft = build_report_draft(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, proposals=proposals, clock=lambda: NOW,
+    )
+    assert len(draft.sections) == len(outline.sections)
+    assert all(section.claim_ids for section in draft.sections)
+    for section in outline.sections:
+        for question in section.questions:
+            if question.question_id in outline.unresolved_question_ids:
+                assert question.question_id not in draft.markdown
+                assert question.prompt in draft.markdown
+    assert "待确认" in draft.markdown
+    if with_fact:
+        assert CONTENT in draft.markdown
+        assert "[E1]" in draft.markdown
+    else:
+        assert "[E1]" not in draft.markdown
+
+
 def test_draft_requires_confirmed_outline_and_source_hash_stability(tmp_path: Path) -> None:
     composition, state = _confirmed_brief_composition(tmp_path)
 
@@ -600,7 +629,8 @@ def test_report_draft_confirmation_is_exact_and_idempotent(tmp_path: Path) -> No
     assert draft_summary["status"] == "confirmed"
 
 
-def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path: Path) -> None:
+@pytest.mark.parametrize("finish_delivery", [False, True])
+def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path: Path, finish_delivery: bool) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
 
     async def invoke(_server: str, _tool_name: str, _arguments: dict[str, Any], _confirmed: bool) -> str:
@@ -813,128 +843,150 @@ def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path
             expected_version=2,
             latest_user_message="发布 ReportArtifact v2",
         )
-    publication = composition.publish_report_artifact(
-        state,
-        None,
-        expected_version=1,
-        latest_user_message="发布 ReportArtifact v1",
-    )
-    published_item = composition.current_work(state)
-    assert published_item is not None
-    published_version = published_item.version
-    replay_publication = composition.publish_report_artifact(
-        state,
-        None,
-        expected_version=1,
-        latest_user_message="发布 ReportArtifact v1",
-    )
-
-    assert publication == replay_publication
-    assert publication.publication_version == 1
-    assert publication.artifact_id == artifact.artifact_id
-    assert publication.content_sha256 == artifact.content_sha256
-    assert publication.metadata["delivery_status"] == "not_delivered"
-    replay_item = composition.current_work(state)
-    assert replay_item is not None
-    assert replay_item.status.value == "published"
-    assert replay_item.version == published_version
-    publication_summary = composition.current_work_summary(state)
-    assert publication_summary is not None
-    publications = cast("list[dict[str, object]]", publication_summary["report_publications"])
-    assert publications[0]["current"] is True
-    assert publications[0]["delivery_status"] == "not_delivered"
-    assert cast("list[dict[str, object]]", publication_summary["report_artifacts"])[0][
-        "publication_status"
-    ] == "published"
-
-    with pytest.raises(WorkCompositionError, match="未精确请求"):
-        composition.prepare_report_delivery(
+    if finish_delivery:
+        publication = composition.publish_report_artifact(
             state,
             None,
             expected_version=1,
-            latest_user_message="请交付 ReportArtifact v1 给我",
+            latest_user_message="发布 ReportArtifact v1",
         )
-    prepared = composition.prepare_report_delivery(
-        state,
-        None,
-        expected_version=1,
-        latest_user_message=(
-            "from_userid=opaque|channel=$wecom|chat_id=opaque\n"
-            "---Date: 2026-07-20T09:00:00+08:00---\n"
-            "交付 ReportArtifact v1 给我"
-        ),
-    )
-    assert prepared.download_url.startswith(
-        f"https://reports.example.test/artifacts/{prepared.record.delivery_id}#"
-    )
-    assert prepared.grant_token not in prepared.record.grant_hash
-    delivery = composition.commit_report_delivery(prepared)
-    assert delivery.artifact_id == artifact.artifact_id
-    lifecycle_events = composition.repository.list_events(
-        tenant_id="tenant-test",
-        work_id="work_draft_001",
-    )
-    lifecycle_event_types = {event.event_type for event in lifecycle_events}
-    assert {
-        "artifact_registered",
-        "publication_registered",
-        "delivery_registered",
-    } <= lifecycle_event_types
-    ledger_events = tuple(
-        event
-        for event in lifecycle_events
-        if event.event_type
-        in {"artifact_registered", "publication_registered", "delivery_registered"}
-    )
-    lifecycle_event_text = repr(ledger_events)
-    assert all(event.payload_digest.startswith("sha256:") for event in ledger_events)
-    assert prepared.grant_token not in lifecycle_event_text
-    assert artifact.storage_key not in lifecycle_event_text
-    assert "测试员工" not in lifecycle_event_text
-    assert "not-published" not in lifecycle_event_text
-    delivered_item = composition.current_work(state)
-    assert delivered_item is not None
-    assert delivered_item.status.value == "delivered"
-    active_replay = composition.prepare_report_delivery(
-        state,
-        None,
-        expected_version=1,
-        latest_user_message="交付 ReportArtifact v1 给我",
-    )
-    assert active_replay.already_delivered is True
-    assert active_replay.record.delivery_id == delivery.delivery_id
-    assert active_replay.grant_token == ""
-    download = composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
-    assert download.data == artifact_path.read_bytes()
-    assert download.filename == artifact.filename
-    with pytest.raises(ArtifactDownloadGone):
-        composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
-    consumed_reissue = composition.prepare_report_delivery(
-        state,
-        None,
-        expected_version=1,
-        latest_user_message="交付 ReportArtifact v1 给我",
-    )
-    assert consumed_reissue.already_delivered is False
-    assert consumed_reissue.record.delivery_version == 2
-    assert consumed_reissue.record.delivery_id != delivery.delivery_id
-    assert consumed_reissue.grant_token
-    assert consumed_reissue.grant_token != prepared.grant_token
-    assert consumed_reissue.grant_token not in consumed_reissue.record.grant_hash
-    delivery_summary = composition.current_work_summary(state)
-    assert delivery_summary is not None
-    deliveries = cast("list[dict[str, object]]", delivery_summary["report_deliveries"])
-    assert deliveries == [{
-        "delivery_id": delivery.delivery_id,
-        "delivery_version": 1,
-        "status": "delivered",
-        "artifact_id": artifact.artifact_id,
-        "publication_id": publication.publication_id,
-        "content_sha256": artifact.content_sha256,
-        "report_draft_version": 1,
-        "current": True,
-        "grant_state": "consumed",
-    }]
+        published_item = composition.current_work(state)
+        assert published_item is not None
+        published_version = published_item.version
+        replay_publication = composition.publish_report_artifact(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="发布 ReportArtifact v1",
+        )
+
+        assert publication == replay_publication
+        assert publication.publication_version == 1
+        assert publication.artifact_id == artifact.artifact_id
+        assert publication.content_sha256 == artifact.content_sha256
+        assert publication.metadata["delivery_status"] == "not_delivered"
+        replay_item = composition.current_work(state)
+        assert replay_item is not None
+        assert replay_item.status.value == "published"
+        assert replay_item.version == published_version
+        publication_summary = composition.current_work_summary(state)
+        assert publication_summary is not None
+        publications = cast("list[dict[str, object]]", publication_summary["report_publications"])
+        assert publications[0]["current"] is True
+        assert publications[0]["delivery_status"] == "not_delivered"
+        assert cast("list[dict[str, object]]", publication_summary["report_artifacts"])[0][
+            "publication_status"
+        ] == "published"
+
+        from agentseek_work import WorkContractConflictError
+        with pytest.raises(WorkContractConflictError, match="已冻结"):
+            composition.save_report_draft(state, None, replace(draft, markdown=draft.markdown + "\\n修改"))
+        assert "不能取消" in composition.cancel_current_work(state, latest_user_message="取消当前报告任务")
+        successor = replace(
+            published_item, work_id="work_successor", idempotency_key="request_successor",
+            status=type(published_item.status).DRAFT, version=0, artifact_ids=(),
+        )
+        composition.repository.create_work(successor)
+        assert composition.current_work(state).work_id == "work_successor"
+        state = dict(state, _report_history_work_id=published_item.work_id)
+        assert composition.current_work(state).work_id == published_item.work_id
+
+        with pytest.raises(WorkCompositionError, match="未精确请求"):
+            composition.prepare_report_delivery(
+                state,
+                None,
+                expected_version=1,
+                latest_user_message="请交付 ReportArtifact v1 给我",
+            )
+        prepared = composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message=(
+                "from_userid=opaque|channel=$wecom|chat_id=opaque\n"
+                "---Date: 2026-07-20T09:00:00+08:00---\n"
+                "交付 ReportArtifact v1 给我"
+            ),
+        )
+        assert prepared.download_url.startswith(
+            f"https://reports.example.test/artifacts/{prepared.record.delivery_id}#"
+        )
+        assert prepared.grant_token not in prepared.record.grant_hash
+        delivery = composition.commit_report_delivery(prepared)
+        assert delivery.artifact_id == artifact.artifact_id
+        lifecycle_events = composition.repository.list_events(
+            tenant_id="tenant-test",
+            work_id="work_draft_001",
+        )
+        lifecycle_event_types = {event.event_type for event in lifecycle_events}
+        assert {
+            "artifact_registered",
+            "publication_registered",
+            "delivery_registered",
+        } <= lifecycle_event_types
+        ledger_events = tuple(
+            event
+            for event in lifecycle_events
+            if event.event_type
+            in {"artifact_registered", "publication_registered", "delivery_registered"}
+        )
+        lifecycle_event_text = repr(ledger_events)
+        assert all(event.payload_digest.startswith("sha256:") for event in ledger_events)
+        assert prepared.grant_token not in lifecycle_event_text
+        assert artifact.storage_key not in lifecycle_event_text
+        assert "测试员工" not in lifecycle_event_text
+        assert "not-published" not in lifecycle_event_text
+        delivered_item = composition.current_work(state)
+        assert delivered_item is not None
+        assert delivered_item.status.value == "delivered"
+        active_replay = composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="交付 ReportArtifact v1 给我",
+        )
+        assert active_replay.already_delivered is True
+        assert active_replay.record.delivery_id == delivery.delivery_id
+        assert active_replay.grant_token == ""
+        download = composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
+        assert download.data == artifact_path.read_bytes()
+        assert download.filename == artifact.filename
+        with pytest.raises(ArtifactDownloadGone):
+            composition.redeem_report_delivery(delivery.delivery_id, prepared.grant_token)
+        consumed_reissue = composition.prepare_report_delivery(
+            state,
+            None,
+            expected_version=1,
+            latest_user_message="交付 ReportArtifact v1 给我",
+        )
+        assert consumed_reissue.already_delivered is False
+        assert consumed_reissue.record.delivery_version == 2
+        assert consumed_reissue.record.delivery_id != delivery.delivery_id
+        assert consumed_reissue.grant_token
+        assert consumed_reissue.grant_token != prepared.grant_token
+        assert consumed_reissue.grant_token not in consumed_reissue.record.grant_hash
+        delivery_summary = composition.current_work_summary(state)
+        assert delivery_summary is not None
+        deliveries = cast("list[dict[str, object]]", delivery_summary["report_deliveries"])
+        assert deliveries == [{
+            "delivery_id": delivery.delivery_id,
+            "delivery_version": 1,
+            "status": "delivered",
+            "artifact_id": artifact.artifact_id,
+            "publication_id": publication.publication_id,
+            "content_sha256": artifact.content_sha256,
+            "report_draft_version": 1,
+            "current": True,
+            "grant_state": "consumed",
+        }]
+        from agentseek_work import WorkContractConflictError
+        with pytest.raises(WorkContractConflictError, match="已冻结"):
+            composition.save_report_draft(state, None, replace(draft, markdown=draft.markdown + "\\n修改"))
+        assert composition.repository.find_active_work(
+            tenant_id=successor.tenant_id, requester_id=successor.requester_id,
+            digital_employee_id=successor.digital_employee_id, playbook_id=successor.playbook_id,
+        ).work_id == successor.work_id
+        return
 
     revised_draft = replace(draft, markdown=f"{draft.markdown}\n\n修订说明。")
     revised = composition.save_report_draft(state, None, revised_draft)
@@ -944,10 +996,10 @@ def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path
     assert cast("dict[str, object]", stale_summary["report_approval"])["current"] is False
     stale_artifacts = cast("list[dict[str, object]]", stale_summary["report_artifacts"])
     assert stale_artifacts[0]["current"] is False
-    stale_publications = cast("list[dict[str, object]]", stale_summary["report_publications"])
-    assert stale_publications[0]["current"] is False
-    stale_deliveries = cast("list[dict[str, object]]", stale_summary["report_deliveries"])
-    assert stale_deliveries[0]["current"] is False
+    stale_publications = cast("list[dict[str, object]]", stale_summary.get("report_publications", []))
+    assert stale_publications == []
+    stale_deliveries = cast("list[dict[str, object]]", stale_summary.get("report_deliveries", []))
+    assert stale_deliveries == []
     composition.confirm_report_draft(
         state,
         None,

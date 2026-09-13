@@ -19,6 +19,19 @@ _DELIVERY_REQUEST_RE = re.compile(
 REPORT_DELIVERY_CARD_ACTION_KIND = "enterprise.report_delivery.commit.v1"
 
 
+def match_report_history_command(message: str) -> tuple[str, int | None] | None:
+    """Exact requester-scoped history lookup or self-delivery, never a revision."""
+    text = authenticated_user_command_text(message)
+    match = re.fullmatch(r"\s*查看已发布报告\s+([A-Za-z0-9_-]{1,160})\s*[。.!！]?\s*", text)
+    if match:
+        return match.group(1), None
+    match = re.fullmatch(
+        r"\s*交付已发布报告\s+([A-Za-z0-9_-]{1,160})\s+ReportArtifact\s+[vV]([1-9]\d*)\s*给我\s*[。.!！]?\s*",
+        text, re.IGNORECASE,
+    )
+    return (match.group(1), int(match.group(2))) if match else None
+
+
 def explicitly_requests_report_delivery(message: str, *, expected_version: int) -> bool:
     """Accept only an exact self-delivery action for one Artifact version."""
 

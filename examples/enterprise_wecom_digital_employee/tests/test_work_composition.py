@@ -88,6 +88,36 @@ def authorized_state() -> dict:
     }
 
 
+def test_published_history_commands_are_requester_scoped_and_read_only(tmp_path):
+    import asyncio
+
+    from agentseek_work.schema import work_items
+    from enterprise_wecom_digital_employee.reports.playbook import IndustryReportPlaybookBinding
+    from sqlalchemy import update
+
+    composition = build_composition(tmp_path)
+    state = authorized_state()
+    composition.enrich_state(message(), "wecom:test", state)
+    item = composition.create_report_work(state).item
+    with composition.repository.engine.begin() as connection:
+        connection.execute(update(work_items).where(work_items.c.work_id == item.work_id).values(status="published"))
+    binding = IndustryReportPlaybookBinding(spec=composition.playbook, composition=composition, service=None)
+    command = f"查看已发布报告 {item.work_id}"
+    result = asyncio.run(binding.direct_response(command, state))
+    assert "已发布" in result
+    assert "不能取消或原位修订" in result
+    assert "_report_history_work_id" not in state
+    assert "未启用 signed_link" in asyncio.run(binding.direct_response(
+        f"交付已发布报告 {item.work_id} ReportArtifact v1 给我", state,
+    ))
+    for field, value in (("tenant_id", "other-tenant"), ("user_key", "other-user")):
+        other = authorized_state()
+        other["_langgraph_runtime_context"]["enterprise"][field] = value
+        composition.authorize_state(other)
+        assert asyncio.run(binding.direct_response(command, other)) == "未找到当前身份可访问的已发布报告。"
+    assert composition.repository.get_work(tenant_id=item.tenant_id, work_id=item.work_id).status is WorkStatus.PUBLISHED
+
+
 def message(msgid: str = "message-001") -> dict:
     return {
         "content": "请创建2025年中国证券行业发展研究报告任务",

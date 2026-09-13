@@ -92,6 +92,12 @@ def render_report_status(  # noqa: C901 - renders bounded ledger sections
         f"状态={_status_label(summary['status'])}，阶段={summary['current_phase']}，"
         f"服务={summary['playbook_id']}@{summary['playbook_version']}。"
     ]
+    if summary["status"] in {"published", "delivered"}:
+        lines.append(
+            "内容已冻结，不能取消或原位修订，可直接创建新的报告任务。"
+            f"历史查询：查看已发布报告 {summary['work_id']}。"
+            "历史交付：交付已发布报告 <任务编号> ReportArtifact v<版本> 给我（需启用交付）。"
+        )
     if ReportStatusSection.BRIEF in selected:
         _append_brief(lines, summary.get(ReportStatusSection.BRIEF.value))
     if ReportStatusSection.GAP_DECISION in selected:

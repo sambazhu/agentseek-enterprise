@@ -501,7 +501,7 @@ def test_revision_ten_creates_publication_ledger() -> None:
 def test_revision_eleven_creates_delivery_ledger() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
-    assert LATEST_SCHEMA_VERSION == 11
+    assert LATEST_SCHEMA_VERSION == 12
     assert apply_migrations(engine) == LATEST_SCHEMA_VERSION
     assert work_deliveries.name in set(inspect(engine).get_table_names())
     columns = {column["name"] for column in inspect(engine).get_columns(work_deliveries.name)}
@@ -850,6 +850,75 @@ def test_find_current_work_is_tenant_requester_and_employee_scoped(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("status", [WorkStatus.PUBLISHED, WorkStatus.DELIVERED])
+def test_published_history_releases_scope_and_freezes_content(repository, status) -> None:
+    from agentseek_work.schema import work_items
+    from sqlalchemy import update
+
+    original = repository.create_work(make_item()).item
+    first = repository.create_work_contract(make_contract())
+    source = repository.put_source_record(make_source())
+    evidence = repository.put_evidence_record(make_evidence())
+    claim = repository.put_claim_record(make_claim())
+    with repository.engine.begin() as connection:
+        connection.execute(update(work_items).where(work_items.c.work_id == original.work_id).values(status=status.value))
+    scope = {"tenant_id": original.tenant_id, "requester_id": original.requester_id,
+             "digital_employee_id": original.digital_employee_id, "playbook_id": original.playbook_id}
+    assert repository.find_active_work(**scope) is None
+    assert repository.find_latest_published_work(**scope).work_id == original.work_id
+    assert repository.find_latest_published_work(**dict(scope, requester_id="other")) is None
+    assert not repository.create_work(make_item()).created
+    successor = repository.create_work(make_item(work_id="work_002", idempotency_key="request_002"))
+    assert successor.created
+    with pytest.raises(ActiveWorkConflictError):
+        repository.create_work(make_item(work_id="work_003", idempotency_key="request_003"))
+    assert repository.create_work_contract(first) == first
+    assert repository.put_source_record(source) == source
+    assert repository.put_evidence_record(evidence) == evidence
+    assert repository.put_claim_record(claim) == claim
+    for operation in (
+        lambda: repository.revise_work_contract(make_contract(version=2)),
+        lambda: repository.create_work_contract(replace(first, contract_type="new-type")),
+        lambda: repository.confirm_work_contract(tenant_id=first.tenant_id, work_id=first.work_id,
+            contract_type=first.contract_type, expected_contract_version=1,
+            confirmed_by=first.created_by, confirmed_at=NOW),
+        lambda: repository.put_source_record(replace(source, source_id="new-source")),
+        lambda: repository.put_evidence_record(replace(evidence, evidence_id="new-evidence")),
+        lambda: repository.put_claim_record(replace(claim, claim_id="new-claim")),
+    ):
+        with pytest.raises(WorkContractConflictError, match="已冻结"):
+            operation()
+    assert repository.list_work_contracts(tenant_id=first.tenant_id, work_id=first.work_id,
+                                         contract_type=first.contract_type) == (first,)
+    assert len(repository.list_claim_records(tenant_id=first.tenant_id, work_id=first.work_id)) == 1
+
+
+def test_revision_twelve_upgrades_eleven_without_ledger_changes(monkeypatch) -> None:
+    import agentseek_work.migrations as migrations
+    from agentseek_work.schema import work_items
+    from sqlalchemy import select
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with monkeypatch.context() as patch:
+        patch.setattr(migrations, "LATEST_SCHEMA_VERSION", 11)
+        assert migrations.apply_migrations(engine) == 11
+    repo = SQLAlchemyWorkRepository(engine)
+    repo.put_budget("budget_001", make_budget())
+    repo.put_pack_snapshot(make_pack_snapshot())
+    repo.create_work(replace(make_item(), status=WorkStatus.PUBLISHED))
+    with engine.connect() as connection:
+        before = connection.execute(select(work_items)).mappings().all()
+    assert migrations.apply_migrations(engine) == 12
+    assert migrations.apply_migrations(engine) == 12
+    with engine.connect() as connection:
+        assert connection.execute(select(work_items)).mappings().all() == before
+    assert repo.create_work(make_item(work_id="work_next", idempotency_key="request_next")).created
+    with engine.begin() as connection, pytest.raises(IntegrityError):
+        connection.execute(insert(work_items).values(**{
+            **dict(before[0]), "work_id": "work_forbidden", "idempotency_key": "request_forbidden", "status": "draft",
+        }))
 
 
 def test_create_requires_registered_matching_pack_snapshot(

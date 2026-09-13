@@ -20,7 +20,7 @@ from agentseek_work.schema import (
     work_sources,
 )
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 _ACTIVE_PLAYBOOK_INDEX = "uq_work_items_active_playbook"
 _CURRENT_CONTRACT_INDEX = "uq_work_contracts_current_type"
@@ -71,6 +71,15 @@ def _apply_revision(connection: Connection, version: int) -> None:
         _apply_revision_ten(connection)
     elif version == 11:
         _apply_revision_eleven(connection)
+    elif version == 12:
+        # Publication releases the creation slot, not the historical ledger.
+        # Keep revision 5 unchanged for installations upgrading from older schemas.
+        connection.exec_driver_sql(f"DROP INDEX IF EXISTS {_ACTIVE_PLAYBOOK_INDEX}")
+        connection.exec_driver_sql(
+            f"CREATE UNIQUE INDEX {_ACTIVE_PLAYBOOK_INDEX} "
+            f"ON {work_items.name} (tenant_id, requester_id, digital_employee_id, playbook_id) "
+            "WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'published', 'delivered')"
+        )
 
 
 def _apply_revision_four(connection: Connection) -> None:

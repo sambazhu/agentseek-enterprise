@@ -65,7 +65,7 @@ def test_openai_compatible_wire_uses_tool_calling_and_validates_output(invalid: 
             model = ChatOpenAI(model="deepseek-chat", api_key="test-only", base_url="https://provider.invalid/v1", http_async_client=client, max_retries=0)
             context = DraftContextResult(
                 work_id="test-work", report_outline_version=1, report_brief_version=1, report_title="测试报告",
-                evidence=(), unavailable_source_ids=(), sections=({"section_id": "summary", "title": "摘要", "evidence_ids": []},),
+                evidence=(), unavailable_source_ids=(), sections=({"section_id": "summary", "title": "摘要", "evidence_ids": ["test-evidence"]},),
             )
             return await generate_draft_claims(context, model=model)
     if invalid:
@@ -90,7 +90,7 @@ def test_claim_generation_forces_one_structured_model_call() -> None:
             "title": "执行摘要",
             "question_ids": ["q1"],
             "unresolved_question_ids": ["q1"],
-            "evidence_ids": [],
+            "evidence_ids": ["test-evidence"],
         },),
     )
 
@@ -112,7 +112,7 @@ def test_claim_generation_forces_one_structured_model_call() -> None:
     assert len(callbacks) == 1
 
 
-def test_claim_generation_replaces_cross_section_citation_for_evidence_free_gap() -> None:
+def test_evidence_free_draft_skips_model_entirely() -> None:
     class CrossSectionRunnable(_StructuredRunnable):
         async def ainvoke(self, value: object, config: object = None) -> object:
             self.calls.append((value, config))
@@ -147,9 +147,5 @@ def test_claim_generation_replaces_cross_section_citation_for_evidence_free_gap(
         model=_StructuredModel(runnable),
     ))
 
-    assert len(runnable.calls) == 1
-    assert len(claims) == 1
-    assert claims[0].section_id == "executive-summary"
-    assert claims[0].claim_type is ClaimType.RISK
-    assert claims[0].evidence_ids == []
-    assert claims[0].statement == "执行摘要仍存在未解决问题，相关判断需补充适用证据后确认。"
+    assert runnable.calls == []
+    assert claims == ()

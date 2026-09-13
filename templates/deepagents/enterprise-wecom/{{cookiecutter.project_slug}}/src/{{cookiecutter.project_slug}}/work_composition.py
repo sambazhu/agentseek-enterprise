@@ -283,8 +283,6 @@ class IndustryReportWorkComposition:
         if enterprise is None:  # guarded by _authorization_status
             state[_DIGITAL_EMPLOYEE_STATUS_KEY] = "requester_forbidden"
             return
-        requester_key = str(enterprise["user_key"])
-        tenant_id = str(enterprise["tenant_id"])
         state["_work_binding_digest"] = f"sha256:{sha256(self.pack_snapshot_id.encode()).hexdigest()}"
         state["_work_permissions_digest"] = self.permissions_digest
         state["_work_skill_set_digest"] = self.skill_set_digest
@@ -301,12 +299,7 @@ class IndustryReportWorkComposition:
             },
         )
 
-        current = self.repository.find_active_work(
-            tenant_id=tenant_id,
-            requester_id=requester_key,
-            digital_employee_id=self.profile.digital_employee_id,
-            playbook_id=self.playbook_id,
-        )
+        current = self.current_work(state)
         if current is not None:
             self._publish_current_work(state, current)
 
@@ -357,12 +350,27 @@ class IndustryReportWorkComposition:
         enterprise = _enterprise_context(runtime_context if runtime_context is not None else state)
         if enterprise is None or state.get(_DIGITAL_EMPLOYEE_STATUS_KEY) != "found":
             return None
-        return self.repository.find_active_work(
-            tenant_id=str(enterprise["tenant_id"]),
-            requester_id=str(enterprise["user_key"]),
-            digital_employee_id=self.profile.digital_employee_id,
-            playbook_id=self.playbook_id,
-        )
+        scope = {
+            "tenant_id": str(enterprise["tenant_id"]),
+            "requester_id": str(enterprise["user_key"]),
+            "digital_employee_id": self.profile.digital_employee_id,
+            "playbook_id": self.playbook_id,
+        }
+        history_id = _clean(state.get("_report_history_work_id"))
+        if history_id:
+            try:
+                item = self.repository.get_work(tenant_id=scope["tenant_id"], work_id=history_id)
+            except WorkNotFoundError as exc:
+                raise WorkCompositionError("未找到当前身份可访问的已发布报告。") from exc
+            if (
+                item.requester_id != scope["requester_id"]
+                or item.digital_employee_id != scope["digital_employee_id"]
+                or item.playbook_id != scope["playbook_id"]
+                or item.status.value not in {"published", "delivered"}
+            ):
+                raise WorkCompositionError("未找到当前身份可访问的已发布报告。")
+            return item
+        return self.repository.find_active_work(**scope) or self.repository.find_latest_published_work(**scope)
 
     def cancel_current_work(
         self,
@@ -378,6 +386,8 @@ class IndustryReportWorkComposition:
         item = self.current_work(state, runtime_context)
         if item is None:
             return "当前没有可取消的报告任务。"
+        if item.status.value in {"published", "delivered"}:
+            return "该报告已发布，不能取消；历史记录保留，你可以直接创建新的报告任务。"
         self.repository.cancel_work(
             tenant_id=item.tenant_id,
             work_id=item.work_id,
@@ -2092,7 +2102,10 @@ def _work_summary(item: WorkItem) -> dict[str, object]:
         "input_file_ids": list(item.input_file_ids),
         "artifact_ids": list(item.artifact_ids),
         "updated_at": item.updated_at.isoformat(),
-        "allowed_next_actions": ["provide_input", "cancel", "query_status"],
+        "allowed_next_actions": (
+            ["query_status", "deliver", "create_new_work"]
+            if item.status.value in {"published", "delivered"} else ["provide_input", "cancel", "query_status"]
+        ),
     }
 
 

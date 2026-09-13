@@ -181,7 +181,7 @@ def work_tools(  # noqa: C901
                 confidentiality_level=confidentiality_level,
             )
             contract = composition.save_report_brief(runtime.state, runtime.context, brief)
-        except (ValueError, WorkCompositionError) as exc:
+        except (ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportBrief v{contract.contract_version} 已保存，状态={contract.status.value}。"
@@ -211,7 +211,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (ValueError, WorkCompositionError) as exc:
+        except (ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportBrief v{contract.contract_version} 已由任务委派人确认。"
@@ -351,7 +351,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (TypeError, ValueError, WorkCompositionError) as exc:
+        except (TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportOutline v{contract.contract_version} 已由任务委派人确认。"
@@ -429,7 +429,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (TypeError, ValueError, WorkCompositionError) as exc:
+        except (TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportDraft v{contract.contract_version} 已由任务委派人确认。"
@@ -475,7 +475,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (TypeError, ValueError, WorkCompositionError) as exc:
+        except (TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportApproval contract_v{contract.contract_version}，"
@@ -519,7 +519,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (TypeError, ValueError, WorkCompositionError) as exc:
+        except (TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportApproval contract_v{contract.contract_version}，status=approved，"
@@ -601,7 +601,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+        except (OSError, TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
         return (
             f"ReportPublication publication_id={publication.publication_id}，"
@@ -664,7 +664,7 @@ def work_tools(  # noqa: C901
                 expected_version=expected_version,
                 latest_user_message=_latest_user_message_text(runtime),
             )
-        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+        except (OSError, TypeError, ValueError, WorkCompositionError, WorkConflictError) as exc:
             return str(exc)
 
     @tool("get_current_report_deliveries")
@@ -735,6 +735,9 @@ async def generate_report_draft_action(
 
     if not explicitly_requests_report_draft(latest_user_message):
         raise WorkCompositionError("员工最新消息未明确请求生成可审阅初稿，不能推进 ReportDraft。")
+    existing_work = composition.current_work(state, runtime_context)
+    if existing_work is not None and existing_work.status.value in {"published", "delivered"}:
+        raise WorkCompositionError("该报告已发布，内容已冻结；请新建报告任务，历史版本仍可查询和交付。")
     from {{ cookiecutter.project_slug }}.work_commands import automatic_draft_brief_version, requests_automatic_draft
 
     if requests_automatic_draft(latest_user_message):

@@ -470,9 +470,14 @@ async def _deterministic_direct_response(
     route = context.state.get("playbook_route")
     if isinstance(route, Mapping) and route.get("route_status") == PlaybookRouteStatus.FORBIDDEN.value:
         return "当前身份不在该部门数字员工的授权服务范围内，未启动任何正式任务。"
+    from enterprise_wecom_digital_employee.report_delivery import match_report_history_command
     from enterprise_wecom_digital_employee.work_commands import explicitly_cancels_current_work
 
-    if (match_report_status_sections(message) is not None or explicitly_cancels_current_work(message)) and len(registry.playbook_refs) == 1:
+    if (
+        match_report_status_sections(message) is not None
+        or explicitly_cancels_current_work(message)
+        or match_report_history_command(message) is not None
+    ) and len(registry.playbook_refs) == 1:
         playbook_ref = registry.playbook_refs[0]
         if response := await registry.direct_response_for(
             playbook_ref,

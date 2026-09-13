@@ -325,6 +325,22 @@ class SQLAlchemyWorkRepository:
                 playbook_id=playbook_id,
             )
 
+    def find_latest_published_work(
+        self, *, tenant_id: str, requester_id: str, digital_employee_id: str, playbook_id: str,
+    ) -> WorkItem | None:
+        """Read published history without occupying the active creation slot."""
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(work_items).where(
+                    work_items.c.tenant_id == tenant_id,
+                    work_items.c.requester_id == requester_id,
+                    work_items.c.digital_employee_id == digital_employee_id,
+                    work_items.c.playbook_id == playbook_id,
+                    work_items.c.status.in_((WorkStatus.PUBLISHED.value, WorkStatus.DELIVERED.value)),
+                ).order_by(work_items.c.updated_at.desc(), work_items.c.work_id.desc()).limit(1)
+            ).mappings().one_or_none()
+        return _row_to_item(row) if row is not None else None
+
     def create_work_contract(self, contract: WorkContractSnapshot) -> WorkContractSnapshot:
         """Create the first provisional contract for a WorkItem, idempotently."""
 
@@ -414,6 +430,7 @@ class SQLAlchemyWorkRepository:
                 raise WorkContractConflictError("WorkItem contract was confirmed by another actor")
             if current.status is not WorkContractStatus.PROVISIONAL:
                 raise WorkContractConflictError("only a provisional WorkItem contract can be confirmed")
+            _require_unpublished_contract_work(connection, tenant_id=tenant_id, work_id=work_id)
             confirmed = replace(
                 current,
                 status=WorkContractStatus.CONFIRMED,
@@ -472,6 +489,7 @@ class SQLAlchemyWorkRepository:
                     if stored != source:
                         _raise_source_record_conflict(source.source_id)
                     return stored
+                _require_unpublished_contract_work(connection, tenant_id=source.tenant_id, work_id=source.work_id)
                 connection.execute(insert(work_sources).values(**values))
                 return source
         except WorkConflictError:
@@ -540,6 +558,7 @@ class SQLAlchemyWorkRepository:
                     if stored != evidence:
                         _raise_evidence_record_conflict(evidence.evidence_id)
                     return stored
+                _require_unpublished_contract_work(connection, tenant_id=evidence.tenant_id, work_id=evidence.work_id)
                 connection.execute(insert(work_evidence).values(**values))
                 return evidence
         except WorkConflictError:
@@ -607,6 +626,7 @@ class SQLAlchemyWorkRepository:
                     if stored != claim:
                         _raise_claim_record_conflict(claim.claim_id)
                     return stored
+                _require_unpublished_contract_work(connection, tenant_id=claim.tenant_id, work_id=claim.work_id)
                 _require_claim_evidence_bindings(connection, claim)
                 connection.execute(insert(work_claims).values(**values))
                 if claim.evidence_ids:
@@ -1820,7 +1840,9 @@ def _find_active_work(
                 work_items.c.requester_id == requester_id,
                 work_items.c.digital_employee_id == digital_employee_id,
                 work_items.c.playbook_id == playbook_id,
-                work_items.c.status.not_in(_terminal_status_values()),
+                work_items.c.status.not_in((
+                    *_terminal_status_values(), WorkStatus.PUBLISHED.value, WorkStatus.DELIVERED.value,
+                )),
             )
             .order_by(work_items.c.updated_at.desc(), work_items.c.work_id.desc())
             .limit(1)
@@ -1853,6 +1875,7 @@ def _create_work_contract(
         if existing == contract:
             return existing
         raise WorkContractConflictError("WorkItem contract version already exists with different values")
+    _require_unpublished_contract_work(connection, tenant_id=contract.tenant_id, work_id=contract.work_id)
     if _find_current_contract(
         connection,
         tenant_id=contract.tenant_id,
@@ -1875,6 +1898,7 @@ def _revise_work_contract(
         if existing == contract:
             return existing
         raise WorkContractConflictError("WorkItem contract version already exists with different values")
+    _require_unpublished_contract_work(connection, tenant_id=contract.tenant_id, work_id=contract.work_id)
     current = _find_current_contract(
         connection,
         tenant_id=contract.tenant_id,
@@ -1908,6 +1932,14 @@ def _revise_work_contract(
         raise WorkContractConflictError("WorkItem contract revision lost a concurrent update")
     connection.execute(insert(work_contracts).values(**_contract_values(contract)))
     return contract
+
+
+def _require_unpublished_contract_work(connection: Connection, *, tenant_id: str, work_id: str) -> None:
+    status = connection.execute(select(work_items.c.status).where(
+        work_items.c.tenant_id == tenant_id, work_items.c.work_id == work_id,
+    ).with_for_update()).scalar_one()
+    if status in {WorkStatus.PUBLISHED.value, WorkStatus.DELIVERED.value}:
+        raise WorkContractConflictError("已发布报告的内容合同已冻结；历史记录保留，请创建新报告任务。")
 
 
 def _require_contract_work_binding(connection: Connection, contract: WorkContractSnapshot) -> None:

@@ -456,8 +456,6 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ReportDraft:
     _require_explicit_draft_request(latest_user_message)
-    if not proposals:
-        raise ValueError("报告初稿至少需要一条结构化 Claim。")
     if len(proposals) > MAX_DRAFT_CLAIMS:
         raise ValueError(f"报告初稿最多允许 {MAX_DRAFT_CLAIMS} 条 Claim。")
     item, outline_contract, outline = composition.current_confirmed_report_outline(state, runtime_context)
@@ -470,10 +468,27 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
     )
     evidence_by_id = {record.evidence_id: record for record in evidence}
     outline_sections = {section.section_id: section for section in outline.sections}
+    if any(_FORBIDDEN_CONTENT_RE.search(proposal.statement) for proposal in proposals):
+        raise ValueError("Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
+    # Keep facts intact for validation; only program-owned placeholders may
+    # omit literal evidence binding. Unknown sections still fail below.
+    proposals = tuple(
+        proposal for proposal in proposals
+        if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}
+        or proposal.section_id not in outline_sections
+    )
     proposal_sections = {proposal.section_id for proposal in proposals}
-    missing_sections = tuple(section_id for section_id in outline_sections if section_id not in proposal_sections)
-    if missing_sections:
-        raise ValueError("报告初稿缺少提纲章节：" + "、".join(missing_sections))
+    proposals += tuple(
+        DraftClaimProposal(
+            section_id=section.section_id,
+            statement=f"{section.title}待确认：本节尚无通过证据校验的事实结论，需补充适用证据或人工核对。",
+            claim_type=ClaimType.RISK,
+            evidence_ids=[],
+        )
+        for section in outline.sections if section.section_id not in proposal_sections
+    )
+    if len(proposals) > MAX_DRAFT_CLAIMS:
+        raise ValueError(f"补齐章节后超过 {MAX_DRAFT_CLAIMS} 条 Claim，请减少重复事实后重试。")
 
     validated: list[tuple[DraftClaimProposal, tuple[str, ...], str]] = []
     for proposal in proposals:
@@ -682,6 +697,10 @@ def _render_markdown(
         for evidence_id in claim.evidence_ids:
             citation_labels.setdefault(evidence_id, f"E{len(citation_labels) + 1}")
     lines = [f"# {outline.report_title}", "", "> 状态：可审阅初稿；所有 Claim 尚待语义核验和人工评审。"]
+    question_labels = {
+        question.question_id: question.prompt
+        for section in outline.sections for question in section.questions
+    }
     for section in outline.sections:
         lines.extend(("", f"## {section.title}", ""))
         section_claims = [claim for claim in claims if claim.section_id == section.section_id]
@@ -690,10 +709,14 @@ def _render_markdown(
             lines.append(f"{claim.statement}{citations}")
             lines.append("")
         if section.unresolved_question_ids:
-            lines.append("**待确认问题：** " + "、".join(section.unresolved_question_ids))
+            lines.append("**待确认问题：** " + "、".join(
+                question_labels.get(key, "待补充研究问题") for key in section.unresolved_question_ids
+            ))
     lines.extend(("", "## 风险与不确定性", ""))
     if outline.unresolved_question_ids:
-        lines.append("- 以下研究问题仍未解决：" + "、".join(outline.unresolved_question_ids))
+        lines.append("- 以下研究问题仍未解决：" + "、".join(
+            question_labels.get(key, "待补充研究问题") for key in outline.unresolved_question_ids
+        ))
     lines.append("- 本初稿中的 Claim 尚未完成语义核验或人工评审，不作为最终批准版本。")
     lines.extend(("", "## 来源与引用", ""))
     for evidence_id, label in citation_labels.items():

@@ -11,7 +11,10 @@ from {{ cookiecutter.project_slug }}.capability_registry import CapabilityRegist
 from {{ cookiecutter.project_slug }}.draft_generation import generate_draft_claims
 from {{ cookiecutter.project_slug }}.pack_loader import PlaybookSpec, ServiceCatalogEntry
 from {{ cookiecutter.project_slug }}.report_artifact import match_report_artifact_render_version
-from {{ cookiecutter.project_slug }}.report_delivery import match_report_delivery_version
+from {{ cookiecutter.project_slug }}.report_delivery import (
+    match_report_delivery_version,
+    match_report_history_command,
+)
 from {{ cookiecutter.project_slug }}.report_draft import (
     DraftClaimProposal,
     DraftContextResult,
@@ -82,6 +85,21 @@ class IndustryReportPlaybookBinding:
     def instructions(self) -> str:
         return ""  # The report instructions are supplied by the report agent prompt.
 
+    def _history_response(self, history, state, runtime_context) -> str:
+        work_id, version = history
+        scoped_state = dict(state, _report_history_work_id=work_id)
+        try:
+            if self.composition.current_work(scoped_state, runtime_context) is None:
+                return "未找到当前身份可访问的已发布报告。"
+            if version is None:
+                return render_report_status(self.composition.current_work_summary(scoped_state, runtime_context))
+            return deliver_report_artifact_action(
+                composition=self.composition, state=scoped_state, runtime_context=runtime_context,
+                expected_version=version, latest_user_message=f"交付 ReportArtifact v{version} 给我",
+            )
+        except (OSError, TypeError, ValueError, WorkCompositionError) as exc:
+            return str(exc)
+
     async def direct_response(
         self,
         message: str,
@@ -91,6 +109,9 @@ class IndustryReportPlaybookBinding:
     ) -> str | None:
         from {{ cookiecutter.project_slug }}.work_commands import explicitly_cancels_current_work
 
+        history = match_report_history_command(message)
+        if history is not None:
+            return self._history_response(history, state, runtime_context)
         if explicitly_cancels_current_work(message):
             return self.composition.cancel_current_work(
                 state, runtime_context, latest_user_message=message,
@@ -128,7 +149,11 @@ class IndustryReportPlaybookBinding:
                     callbacks=callbacks,
                 )
             except (RuntimeError, TypeError, ValueError, WorkCompositionError) as exc:
-                return str(exc)
+                return (
+                    f"本轮初稿未能保存：{exc} "
+                    "请查看当前报告状态；若为证据校验拒绝，可补充适用资料后重新生成，"
+                    "也可回复“生成初稿”重试。既有稿件与审批记录保留，未发布新版本。"
+                )
         delivery_version = match_report_delivery_version(message)
         if delivery_version is not None:
             try:
