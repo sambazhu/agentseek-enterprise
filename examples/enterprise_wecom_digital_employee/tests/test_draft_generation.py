@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import cast
 
 import httpx
@@ -149,3 +150,20 @@ def test_evidence_free_draft_skips_model_entirely() -> None:
 
     assert runnable.calls == []
     assert claims == ()
+
+
+def test_repair_feedback_is_model_context_not_observability_metadata() -> None:
+    runnable = _StructuredRunnable()
+    context = DraftContextResult(
+        work_id="work_test", report_outline_version=2, report_brief_version=3,
+        report_title="证券行业报告", evidence=(), unavailable_source_ids=(),
+        sections=({"section_id": "summary", "evidence_ids": ["e1"]},),
+    )
+    feedback = {"reason_code": "not_complete_sentence", "failed_claim_index": 0,
+                "previous_claims": [{"statement": "仅限生成上下文的修复原句"}]}
+    asyncio.run(generate_draft_claims(replace(context, repair_feedback=feedback), model=_StructuredModel(runnable)))
+    messages, config = runnable.calls[0]
+    assert json.loads(messages[1].content)["repair_feedback"] == feedback
+    assert "only repair attempt" in messages[0].content
+    assert config["metadata"]["repair_attempt"] == 1
+    assert "仅限生成上下文" not in repr(config)

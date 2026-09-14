@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from agentseek_wecom.outbound import (
@@ -43,6 +44,7 @@ from {{ cookiecutter.project_slug }}.report_draft import (
     REPORT_DRAFT_MARKDOWN_BEGIN,
     REPORT_DRAFT_MARKDOWN_END,
     DraftClaimProposal,
+    DraftClaimValidationError,
     DraftContextResult,
     ReportDraft,
     explicitly_requests_report_draft,
@@ -723,7 +725,7 @@ def work_tools(  # noqa: C901
     ]
 
 
-async def generate_report_draft_action(
+async def generate_report_draft_action(  # noqa: C901 - checkpoint plus one strictly bounded validation repair
     *,
     composition: IndustryReportWorkComposition,
     state: Mapping[str, object],
@@ -794,13 +796,40 @@ async def generate_report_draft_action(
         invoke_mcp=invoke,
     )
     proposals = await claim_generator(context, callbacks)
-    draft = _build_report_draft(
-        composition=composition,
-        state=state,
-        runtime_context=runtime_context,
-        latest_user_message=latest_user_message,
-        proposals=proposals,
-    )
+    for attempt in range(2):
+        # A retry may not carry old evidence into a newly revised contract.
+        current_item, current_outline, _ = composition.current_confirmed_report_outline(state, runtime_context)
+        if current_item.work_id != item.work_id or current_outline != outline_contract:
+            raise WorkCompositionError("初稿生成期间提纲已变化；本轮停止，请基于当前版本重新请求。")
+        try:
+            draft = _build_report_draft(
+                composition=composition, state=state, runtime_context=runtime_context,
+                latest_user_message=latest_user_message, proposals=proposals,
+            )
+            break
+        except DraftClaimValidationError as exc:
+            if attempt or exc.reason not in {"not_complete_sentence", "sentence_not_relevant"}:
+                raise
+            from {{ cookiecutter.project_slug }}.report_diagnostics import record_draft_diagnostic
+
+            record_draft_diagnostic(
+                reason="repair_requested", work_id=item.work_id,
+                outline_version=context.report_outline_version, brief_version=context.report_brief_version,
+                proposals=proposals,
+            )
+            repair_context = replace(context, repair_feedback={
+                "attempt": 1, "maximum_repairs": 1,
+                "reason_code": exc.reason, "failed_claim_index": exc.claim_index,
+                "index_base": 0,
+                "previous_claims": [proposal.model_dump(mode="json") for proposal in proposals],
+            })
+            repaired = await claim_generator(repair_context, callbacks)
+            if len(repaired) != len(proposals) or any(
+                (old.section_id, old.claim_type) != (new.section_id, new.claim_type)
+                for old, new in zip(proposals, repaired, strict=True)
+            ):
+                raise WorkCompositionError("初稿修复不得删除事实或改为占位；本轮未保存初稿，请核对证据后重新请求。") from exc
+            proposals = repaired
     contract = composition.save_report_draft(state, runtime_context, draft)
     return _format_draft(contract.contract_version, contract.status.value, draft)
 

@@ -346,6 +346,73 @@ def test_confirm_and_draft_stops_at_internal_gap_without_external_or_model(tmp_p
     ) is None
 
 
+@pytest.mark.parametrize("outcome", ["corrected", "invalid_again", "drop", "downgrade", "provider_error", "missing_evidence", "stale_outline", "first_api_error"])
+def test_draft_repair_is_bounded_and_keeps_batch_atomic(tmp_path: Path, outcome: str, monkeypatch) -> None:  # noqa: C901 - failure matrix
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    calls = []
+    reads = []
+
+    async def invoke(*args):
+        reads.append(args)
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]}, ensure_ascii=False)
+
+    async def generate(context, _callbacks):
+        calls.append(context)
+        good = _proposals(outline, context.evidence[0].evidence_id)
+        assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+        if len(calls) == 1:
+            assert context.repair_feedback is None
+            if outcome == "first_api_error":
+                raise RuntimeError("simulated first API failure")
+            updates = {"statement": "证券行业数字化转型推动了效率提升。"}
+            if outcome == "missing_evidence":
+                updates = {"evidence_ids": []}
+            return [good[0].model_copy(update=updates), *good[1:]]
+        feedback = context.repair_feedback
+        assert feedback["reason_code"] == "not_complete_sentence"
+        assert feedback["failed_claim_index"] == 0
+        assert feedback["maximum_repairs"] == 1
+        assert context.evidence == calls[0].evidence
+        if outcome == "provider_error":
+            raise RuntimeError("simulated provider failure")
+        if outcome == "stale_outline":
+            original = composition.current_confirmed_report_outline
+
+            def revised(_self, *args):
+                item, contract, report = original(*args)
+                return item, replace(contract, contract_version=contract.contract_version + 1), report
+
+            monkeypatch.setattr(type(composition), "current_confirmed_report_outline", revised)
+        if outcome == "drop":
+            return good[1:]
+        if outcome == "downgrade":
+            return [good[0].model_copy(update={"claim_type": ClaimType.RISK}), *good[1:]]
+        if outcome == "invalid_again":
+            return [good[0].model_copy(update={"statement": "证券行业数字化转型推动了效率提升。"}), *good[1:]]
+        return good
+
+    action = generate_report_draft_action(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke, claim_generator=generate,
+    )
+    if outcome == "corrected":
+        result = _run(action)
+        assert "ReportDraft v1" in result
+        assert _run(generate_report_draft_action(
+            composition=composition, state=state, runtime_context=None,
+            latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke, claim_generator=generate,
+        )) == result
+    else:
+        with pytest.raises((ValueError, WorkCompositionError, RuntimeError)):
+            _run(action)
+        assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+        assert composition.repository.get_current_work_contract(
+            tenant_id="tenant-test", work_id="work_draft_001", contract_type=REPORT_DRAFT_CONTRACT_TYPE,
+        ) is None
+    assert len(calls) == (1 if outcome in {"missing_evidence", "first_api_error"} else 2)
+    assert len(reads) == 1
+
+
 def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(tmp_path: Path) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
     generated: list[int] = []

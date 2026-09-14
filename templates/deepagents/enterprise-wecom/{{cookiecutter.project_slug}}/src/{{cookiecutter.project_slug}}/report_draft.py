@@ -90,6 +90,15 @@ class DraftQualityStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class DraftClaimValidationError(ValueError):
+    """Safe structured failure raised before any Claim writes; no raw prose attached."""
+
+    def __init__(self, message: str, *, reason: str, claim_index: int | None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.claim_index = claim_index
+
+
 class DraftClaimProposal(BaseModel):
     """One model-authored draft assertion submitted to the deterministic ledger gate."""
 
@@ -315,6 +324,7 @@ class DraftContextResult:
     evidence: tuple[EvidenceRecord, ...]
     unavailable_source_ids: tuple[str, ...]
     sections: tuple[dict[str, object], ...]
+    repair_feedback: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         evidence_by_id = {item.evidence_id: item for item in self.evidence}
@@ -347,6 +357,7 @@ class DraftContextResult:
                 for section in self.sections
             ],
             "unavailable_source_ids": list(self.unavailable_source_ids),
+            "repair_feedback": self.repair_feedback,
             "instructions": (
                 "仅基于 evidence 中的 excerpt 起草；事实和推断必须绑定 evidence_ids。"
                 "未解决问题写成风险或待确认项，不得用模型常识补齐。"
@@ -468,7 +479,8 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
             reason=reason, work_id=item.work_id, outline_version=outline_contract.contract_version,
             brief_version=outline.report_brief_version, proposals=submitted_proposals, rejected=proposal,
         )
-        return ValueError(message)
+        index = next((i for i, candidate in enumerate(submitted_proposals) if candidate is proposal), None)
+        return DraftClaimValidationError(message, reason=reason, claim_index=index)
 
     record_draft_diagnostic(
         reason="proposals_received", work_id=item.work_id, outline_version=outline_contract.contract_version,
