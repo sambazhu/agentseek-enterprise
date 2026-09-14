@@ -97,6 +97,7 @@ class DraftClaimValidationError(ValueError):
         super().__init__(message)
         self.reason = reason
         self.claim_index = claim_index
+        self.failures = [{"index": claim_index, "reason": reason}]
 
 
 class DraftClaimProposal(BaseModel):
@@ -524,50 +525,58 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
 
     validated: list[tuple[DraftClaimProposal, tuple[str, ...], str]] = []
     usage_by_claim: dict[str, str] = {}
+    failures: list[DraftClaimValidationError] = []
     for proposal in proposals:
-        section = outline_sections.get(proposal.section_id)
-        if section is None:
-            raise reject("unknown_section", f"Claim 引用了未确认提纲中的章节：{proposal.section_id}", proposal)
-        if _FORBIDDEN_CONTENT_RE.search(proposal.statement):
-            raise reject("sensitive_pattern", "Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
-        evidence_ids = tuple(proposal.evidence_ids)
-        if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE} and not evidence_ids:
-            raise reject("missing_evidence", "事实和推断 Claim 必须绑定 EvidenceRecord。", proposal)
-        for evidence_id in evidence_ids:
-            record = evidence_by_id.get(evidence_id)
-            if record is None:
-                raise reject("unknown_evidence", f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}", proposal)
-            if record.source_id not in section.source_ids:
-                raise reject("cross_section_evidence", f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}", proposal)
-        from {{ cookiecutter.project_slug }}.evidence_relevance import (
-            EVIDENCE_USE_VERSION,
-            content_use,
-            is_evidence_sentence,
-        )
+        try:
+            section = outline_sections.get(proposal.section_id)
+            if section is None:
+                raise reject("unknown_section", f"Claim 引用了未确认提纲中的章节：{proposal.section_id}", proposal)
+            if _FORBIDDEN_CONTENT_RE.search(proposal.statement):
+                raise reject("sensitive_pattern", "Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
+            evidence_ids = tuple(proposal.evidence_ids)
+            if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE} and not evidence_ids:
+                raise reject("missing_evidence", "事实和推断 Claim 必须绑定 EvidenceRecord。", proposal)
+            for evidence_id in evidence_ids:
+                record = evidence_by_id.get(evidence_id)
+                if record is None:
+                    raise reject("unknown_evidence", f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}", proposal)
+                if record.source_id not in section.source_ids:
+                    raise reject("cross_section_evidence", f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}", proposal)
+            from {{ cookiecutter.project_slug }}.evidence_relevance import (
+                EVIDENCE_USE_VERSION,
+                content_use,
+                is_evidence_sentence,
+            )
 
-        evidence_use = "placeholder"
-        if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}:
-            excerpts = [evidence_by_id[key].excerpt for key in evidence_ids]
-            if not is_evidence_sentence(proposal.statement, excerpts):
-                raise reject("not_complete_sentence", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
-            uses = [
-                content_use(evidence_by_id[key].excerpt, question.question_id, outline.report_title, statement=proposal.statement)
-                for key in evidence_ids for question in section.questions
-                if evidence_by_id[key].source_id in (*question.source_ids, *question.background_source_ids)
-            ]
-            evidence_use = next((use for use in ("direct", "company_case", "background") if use in uses), "")
-            if not evidence_use:
-                raise reject("sentence_not_relevant", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
-        claim_id = _claim_id(
-            item.work_id,
-            outline_contract.contract_version,
-            proposal.section_id,
-            proposal.statement,
-            proposal.claim_type,
-            evidence_ids,
-        )
-        usage_by_claim[claim_id] = evidence_use
-        validated.append((proposal, evidence_ids, claim_id))
+            evidence_use = "placeholder"
+            if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}:
+                excerpts = [evidence_by_id[key].excerpt for key in evidence_ids]
+                if not is_evidence_sentence(proposal.statement, excerpts):
+                    raise reject("not_complete_sentence", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
+                uses = [
+                    content_use(evidence_by_id[key].excerpt, question.question_id, outline.report_title, statement=proposal.statement)
+                    for key in evidence_ids for question in section.questions
+                    if evidence_by_id[key].source_id in (*question.source_ids, *question.background_source_ids)
+                ]
+                evidence_use = next((use for use in ("direct", "company_case", "background") if use in uses), "")
+                if not evidence_use:
+                    raise reject("sentence_not_relevant", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
+            claim_id = _claim_id(
+                item.work_id,
+                outline_contract.contract_version,
+                proposal.section_id,
+                proposal.statement,
+                proposal.claim_type,
+                evidence_ids,
+            )
+            usage_by_claim[claim_id] = evidence_use
+            validated.append((proposal, evidence_ids, claim_id))
+        except DraftClaimValidationError as exc:
+            failures.append(exc)
+    if failures:
+        first = failures[0]
+        first.failures = [failure for exc in failures for failure in exc.failures]
+        raise first
     claim_ids = tuple(claim_id for _proposal, _evidence_ids, claim_id in validated)
     if len(set(claim_ids)) != len(claim_ids):
         raise reject("duplicate_claim", "报告初稿不能重复提交相同 Claim。")

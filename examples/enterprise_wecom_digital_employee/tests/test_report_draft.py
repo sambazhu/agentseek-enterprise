@@ -455,6 +455,85 @@ def test_usage_survives_coverage_outline_evidence_and_draft(tmp_path, kind):
         assert "参考" in draft.markdown
 
 
+@pytest.mark.parametrize("mode", ["success", "repair", "invalid_twice", "drop_on_repair"])
+def test_id_selection_end_to_end_seven_facts_one_shared_budget(tmp_path, mode):
+    from enterprise_wecom_digital_employee.draft_generation import generate_draft_claims
+    from enterprise_wecom_digital_employee.sentence_selection import SentenceSelectionBatch, SentenceSelectionError
+
+    source = "".join(f"证券行业利润增长{i}%。" for i in range(1, 8))
+    composition, state, _ = _composition_with_confirmed_outline(tmp_path, content=source)
+    calls = []
+    reads = []
+
+    class Model:
+        def with_structured_output(self, schema, *, method):
+            assert schema is SentenceSelectionBatch
+            assert method == "function_calling"
+            return self
+
+        async def ainvoke(self, messages, config=None):
+            payload = json.loads(messages[1].content)
+            calls.append(payload)
+            assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+            choices = payload["sentence_choices"]
+            assert len(choices) == 7
+            selections = [{"sentence_id": choice["sentence_id"], "section_id": "executive-summary"} for choice in choices]
+            if mode != "success" and (len(calls) == 1 or mode == "invalid_twice"):
+                selections[0]["sentence_id"] = "unknown"
+                selections[1]["section_id"] = "wrong"
+            if len(calls) == 2:
+                assert len(payload["repair_feedback"]["failures"]) == 2
+                if mode == "drop_on_repair":
+                    selections.pop()
+            return {"selections": selections}
+
+    async def invoke(*args):
+        reads.append(args)
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": source}]})
+
+    async def generate(context, callbacks):
+        return await generate_draft_claims(context, model=Model(), callbacks=callbacks)
+
+    def action():
+        return generate_report_draft_action(composition=composition, state=state, runtime_context=None,
+            latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke, claim_generator=generate)
+
+    if mode in {"success", "repair"}:
+        result = _run(action())
+        assert "ReportDraft v1" in result
+        facts = [claim for claim in composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") if claim.claim_type == ClaimType.FACT]
+        assert len(facts) == 7
+        assert all(claim.statement in source for claim in facts)
+        assert _run(action()) == result
+    else:
+        with pytest.raises(SentenceSelectionError):
+            _run(action())
+        assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+        assert composition.repository.get_current_work_contract(tenant_id="tenant-test", work_id="work_draft_001", contract_type=REPORT_DRAFT_CONTRACT_TYPE) is None
+    assert len(calls) == (1 if mode == "success" else 2)
+    assert len(reads) == 1
+
+
+def test_ledger_preflight_reports_every_failed_claim_before_writes(tmp_path):
+    from enterprise_wecom_digital_employee.report_draft import DraftClaimValidationError
+
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    async def invoke(*args):
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": CONTENT}]})
+    context = _run(prepare_report_draft_context(composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke))
+    good = _proposals(outline, context.evidence[0].evidence_id)[0]
+    proposals = [good.model_copy(update={"statement": "证券行业数字化转型提高利润。"}), good.model_copy(update={"evidence_ids": []}), good]
+    with pytest.raises(DraftClaimValidationError) as failure:
+        build_report_draft(composition=composition, state=state, runtime_context=None,
+            latest_user_message=DRAFT_REQUEST, proposals=proposals)
+    assert failure.value.failures == [
+        {"index": 0, "reason": "not_complete_sentence"},
+        {"index": 1, "reason": "missing_evidence"},
+    ]
+    assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+
+
 def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(tmp_path: Path) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
     generated: list[int] = []

@@ -23,6 +23,7 @@ def record_source_diagnostic(*, work_id: str, question_id: str, chunk_id: str, r
 def record_draft_diagnostic(
     *, reason: str, work_id: str, outline_version: int, brief_version: int,
     proposals: Sequence[object], rejected: object | None = None,
+    selection_failures: Sequence[dict[str, object]] = (), selection_count: int | None = None,
 ) -> None:
     """Never persist claim text, excerpts, raw tool arguments or exception strings."""
     from agentseek_enterprise.observability import get_event_writer
@@ -47,6 +48,12 @@ def record_draft_diagnostic(
                 "evidence_fingerprints": [writer.identity_key(key) for key in getattr(rejected, "evidence_ids", ())[:20]],
                 "evidence_count": len(getattr(rejected, "evidence_ids", ())),
             })
+        if selection_count is not None:
+            fields["selection_count"] = selection_count
+            fields["selection_failures"] = [
+                {"index": failure.get("index"), "reason": failure.get("reason")}
+                for failure in selection_failures
+            ]
         writer.emit("report.draft_validation", **fields)
     except Exception:
         # Observability failure must never turn a rejected batch into a write.
