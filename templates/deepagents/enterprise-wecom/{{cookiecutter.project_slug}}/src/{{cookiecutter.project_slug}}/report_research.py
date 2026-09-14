@@ -346,6 +346,7 @@ async def run_internal_research(
         plan,
         hits_by_question,
         chunks_by_id,
+        work_id=item.work_id,
     )
     sources = _persist_sources(
         composition=composition,
@@ -460,7 +461,7 @@ async def _read_selected_chunks(
     hits_by_question: Mapping[str, Sequence[KnowledgeHit]],
     invoke_mcp: MCPInvoker,
 ) -> tuple[tuple[str, ...], dict[str, Mapping[str, Any]]]:
-    selected = tuple(dict.fromkeys(hit.chunk_id for hits in hits_by_question.values() for hit in hits[:2]))
+    selected = tuple(dict.fromkeys(hit.chunk_id for hits in hits_by_question.values() for hit in hits[:4]))
     if not selected:
         return (), {}
     raw = await invoke_mcp(
@@ -476,24 +477,37 @@ def _index_selected_hits(
     plan: ReportResearchPlan,
     hits_by_question: Mapping[str, Sequence[KnowledgeHit]],
     chunks_by_id: Mapping[str, Mapping[str, Any]],
+    *,
+    work_id: str = "",
 ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, KnowledgeHit]]:
     questions_by_chunk: dict[str, set[str]] = {}
     sections_by_chunk: dict[str, set[str]] = {}
     hit_by_chunk: dict[str, KnowledgeHit] = {}
     for section in plan.template.sections:
         for question in section.questions:
-            for hit in hits_by_question.get(question.question_id, ())[:2]:
-                from {{ cookiecutter.project_slug }}.evidence_relevance import relevant_content
+            admitted = 0
+            for rank, hit in enumerate(hits_by_question.get(question.question_id, ())[:4], 1):
+                from {{ cookiecutter.project_slug }}.evidence_relevance import body_lines, relevant_content
+                from {{ cookiecutter.project_slug }}.report_diagnostics import record_source_diagnostic
 
-                if hit.chunk_id not in chunks_by_id or not relevant_content(
-                    _text(chunks_by_id[hit.chunk_id], "content"), question.question_id, plan.report_title,
-                ):
+                content = _text(chunks_by_id.get(hit.chunk_id, {}), "content")
+                reason = (
+                    "chunk_missing" if hit.chunk_id not in chunks_by_id else
+                    "no_body" if not body_lines(content) else
+                    "not_relevant" if not relevant_content(content, question.question_id, plan.report_title) else
+                    "admitted"
+                )
+                record_source_diagnostic(work_id=work_id, question_id=question.question_id, chunk_id=hit.chunk_id, rank=rank, reason=reason)
+                if reason != "admitted":
                     continue
                 questions_by_chunk.setdefault(hit.chunk_id, set()).add(question.question_id)
                 sections_by_chunk.setdefault(hit.chunk_id, set()).add(section.section_id)
                 previous = hit_by_chunk.get(hit.chunk_id)
                 if previous is None or hit.score > previous.score:
                     hit_by_chunk[hit.chunk_id] = hit
+                admitted += 1
+                if admitted == 2:
+                    break
     return questions_by_chunk, sections_by_chunk, hit_by_chunk
 
 
@@ -519,9 +533,9 @@ def _persist_sources(
         if chunk is None or hit is None:
             continue
         content_hash = _digest_text(_text(chunk, "content"))
-        from {{ cookiecutter.project_slug }}.evidence_relevance import RELEVANCE_VERSION
+        from {{ cookiecutter.project_slug }}.evidence_relevance import BODY_ADMISSION_VERSION, RELEVANCE_VERSION
 
-        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}:{RELEVANCE_VERSION}"
+        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}:{RELEVANCE_VERSION}:{BODY_ADMISSION_VERSION}"
         source_id = f"source_sha256_{sha256(identity.encode()).hexdigest()}"
         try:
             source = composition.repository.get_source_record(tenant_id=tenant_id, source_id=source_id)
@@ -560,6 +574,7 @@ def _persist_sources(
                 metadata={
                     "provider": "department-knowledge",
                     "relevance_version": RELEVANCE_VERSION,
+                    "body_admission_version": BODY_ADMISSION_VERSION,
                     "document_id": hit.document_id,
                     "chunk_id": chunk_id,
                     "section_ids": sorted(sections_by_chunk[chunk_id]),

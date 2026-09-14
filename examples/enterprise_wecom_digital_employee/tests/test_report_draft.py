@@ -1231,6 +1231,45 @@ def test_claim_gate_rejects_fabricated_fact_before_any_claim_write(tmp_path, uns
     assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
 
 
+@pytest.mark.parametrize("broken_sink", [False, True])
+def test_claim_rejection_audit_has_no_prose_and_never_changes_rejection(tmp_path, monkeypatch, broken_sink):
+    from agentseek_enterprise.observability import EnterpriseEventWriter, EnterpriseObservabilitySettings
+
+    composition, state, outline = _composition_with_confirmed_outline(tmp_path)
+    audit_path = tmp_path / "audit.jsonl"
+    writer = EnterpriseEventWriter(EnterpriseObservabilitySettings(
+        events_enabled=True, events_log_path=audit_path, hash_secret="test-diagnostic-secret",  # noqa: S106 - isolated test fixture
+    ))
+    if broken_sink:
+        def unavailable():
+            raise OSError("sensitive exception must not be recorded")
+        monkeypatch.setattr("agentseek_enterprise.observability.get_event_writer", unavailable)
+    else:
+        monkeypatch.setattr("agentseek_enterprise.observability.get_event_writer", lambda: writer)
+    statement = "秘密原文：证券公司利润下降20%。"
+    events_before = composition.repository.list_events(tenant_id="tenant-test", work_id="work_draft_001")
+    with pytest.raises(ValueError, match="必须绑定 EvidenceRecord"):
+        build_report_draft(
+            composition=composition, state=state, runtime_context=None,
+            latest_user_message=DRAFT_REQUEST,
+            proposals=[DraftClaimProposal(section_id=outline.sections[0].section_id,
+                                          statement=statement, claim_type=ClaimType.FACT)],
+        )
+    assert composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") == ()
+    assert composition.repository.list_events(tenant_id="tenant-test", work_id="work_draft_001") == events_before
+    if not broken_sink:
+        raw = audit_path.read_text()
+        rows = [json.loads(line) for line in raw.splitlines()]
+        assert [row["reason_code"] for row in rows] == ["proposals_received", "missing_evidence"]
+        assert rows[0]["fact_count"] == 1
+        assert rows[1]["outline_version"] == 1
+        assert "claim_fingerprint" in rows[1]
+        for secret in (statement, "秘密原文", "work_draft_001", outline.sections[0].section_id):
+            assert secret not in raw
+    else:
+        assert not audit_path.exists()
+
+
 def _authorized_state() -> dict[str, Any]:
     return {
         "employee_context": {

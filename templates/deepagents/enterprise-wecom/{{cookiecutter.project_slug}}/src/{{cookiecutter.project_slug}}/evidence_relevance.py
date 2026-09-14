@@ -8,6 +8,7 @@ Unknown question types remain gaps until a reviewed rule is supplied.
 import re
 
 RELEVANCE_VERSION = "securities-content-v1"
+BODY_ADMISSION_VERSION = "securities-body-v1"
 DOMAIN_TERMS = ("证券", "券商", "资本市场", "投行业务", "经纪业务", "两融", "保荐")
 QUESTION_TERMS = {
     "executive-summary.core-trends": ("趋势", "变化", "转型", "不确定", "增长", "下降"),
@@ -18,8 +19,30 @@ QUESTION_TERMS = {
 }
 
 
+def body_lines(content: str) -> tuple[str, ...]:
+    """Ignore structural headings/metadata, not short prose or numeric table rows.
+
+    This is a conservative structural heuristic, not a truth/entailment test.
+    Original excerpts are never rewritten by this function.
+    """
+    result = []
+    for line in content.splitlines():
+        text = line.strip()
+        if re.match(r"^#{1,6}\s|^[-=_]{3,}$", text):
+            continue
+        text = re.sub(r"\*\*|__", "", text).strip()
+        if re.match(r"^(?:[-*]\s+)?(标题|作者|来源|发布日期|更新日期|数据截至|截至日期|文档类型|适用范围|密级|title|author|source|date)\s*[:：]", text, re.IGNORECASE):
+            continue
+        # A title without sentence structure must not qualify merely because it
+        # includes both a securities label and a research keyword.
+        if not re.search(r"[。！？!?；;]|\d\s*(?:%|％|亿元|万元|倍)|增长|下降|提高|降低|达到|占比|为目标|须落实|推动|应当|需要", text):
+            continue
+        result.append(text)
+    return tuple(result)
+
+
 def relevant_content(content: str, question_id: str, report_title: str) -> bool:
-    text = content.casefold()
+    text = "\n".join(body_lines(content)).casefold()
     if not any(term in text for term in DOMAIN_TERMS):
         return False
     if question_id == "executive-summary.topic-specific-evidence":

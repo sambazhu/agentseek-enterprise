@@ -459,6 +459,21 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
     if len(proposals) > MAX_DRAFT_CLAIMS:
         raise ValueError(f"报告初稿最多允许 {MAX_DRAFT_CLAIMS} 条 Claim。")
     item, outline_contract, outline = composition.current_confirmed_report_outline(state, runtime_context)
+    from enterprise_wecom_digital_employee.report_diagnostics import record_draft_diagnostic
+
+    submitted_proposals = tuple(proposals)
+
+    def reject(reason: str, message: str, proposal: DraftClaimProposal | None = None) -> ValueError:
+        record_draft_diagnostic(
+            reason=reason, work_id=item.work_id, outline_version=outline_contract.contract_version,
+            brief_version=outline.report_brief_version, proposals=submitted_proposals, rejected=proposal,
+        )
+        return ValueError(message)
+
+    record_draft_diagnostic(
+        reason="proposals_received", work_id=item.work_id, outline_version=outline_contract.contract_version,
+        brief_version=outline.report_brief_version, proposals=submitted_proposals,
+    )
     evidence = _current_outline_evidence(
         composition,
         tenant_id=item.tenant_id,
@@ -469,7 +484,7 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
     evidence_by_id = {record.evidence_id: record for record in evidence}
     outline_sections = {section.section_id: section for section in outline.sections}
     if any(_FORBIDDEN_CONTENT_RE.search(proposal.statement) for proposal in proposals):
-        raise ValueError("Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
+        raise reject("sensitive_pattern", "Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
     # Keep facts intact for validation; only program-owned placeholders may
     # omit literal evidence binding. Unknown sections still fail below.
     proposals = tuple(
@@ -488,33 +503,35 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
         for section in outline.sections if section.section_id not in proposal_sections
     )
     if len(proposals) > MAX_DRAFT_CLAIMS:
-        raise ValueError(f"补齐章节后超过 {MAX_DRAFT_CLAIMS} 条 Claim，请减少重复事实后重试。")
+        raise reject("claim_limit", f"补齐章节后超过 {MAX_DRAFT_CLAIMS} 条 Claim，请减少重复事实后重试。")
 
     validated: list[tuple[DraftClaimProposal, tuple[str, ...], str]] = []
     for proposal in proposals:
         section = outline_sections.get(proposal.section_id)
         if section is None:
-            raise ValueError(f"Claim 引用了未确认提纲中的章节：{proposal.section_id}")
+            raise reject("unknown_section", f"Claim 引用了未确认提纲中的章节：{proposal.section_id}", proposal)
         if _FORBIDDEN_CONTENT_RE.search(proposal.statement):
-            raise ValueError("Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
+            raise reject("sensitive_pattern", "Claim 包含宿主路径或凭据样式内容，质量门拒绝保存。")
         evidence_ids = tuple(proposal.evidence_ids)
         if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE} and not evidence_ids:
-            raise ValueError("事实和推断 Claim 必须绑定 EvidenceRecord。")
+            raise reject("missing_evidence", "事实和推断 Claim 必须绑定 EvidenceRecord。", proposal)
         for evidence_id in evidence_ids:
             record = evidence_by_id.get(evidence_id)
             if record is None:
-                raise ValueError(f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}")
+                raise reject("unknown_evidence", f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}", proposal)
             if record.source_id not in section.source_ids:
-                raise ValueError(f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}")
+                raise reject("cross_section_evidence", f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}", proposal)
         from enterprise_wecom_digital_employee.evidence_relevance import is_evidence_sentence, relevant_content
 
         if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}:
             excerpts = [evidence_by_id[key].excerpt for key in evidence_ids]
-            if not is_evidence_sentence(proposal.statement, excerpts) or not any(
+            if not is_evidence_sentence(proposal.statement, excerpts):
+                raise reject("not_complete_sentence", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
+            if not any(
                 relevant_content(proposal.statement, question.question_id, outline.report_title)
                 for question in section.questions
             ):
-                raise ValueError("事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。")
+                raise reject("sentence_not_relevant", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
         claim_id = _claim_id(
             item.work_id,
             outline_contract.contract_version,
@@ -526,7 +543,7 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
         validated.append((proposal, evidence_ids, claim_id))
     claim_ids = tuple(claim_id for _proposal, _evidence_ids, claim_id in validated)
     if len(set(claim_ids)) != len(claim_ids):
-        raise ValueError("报告初稿不能重复提交相同 Claim。")
+        raise reject("duplicate_claim", "报告初稿不能重复提交相同 Claim。")
 
     claims: list[ClaimRecord] = []
     for proposal, evidence_ids, claim_id in validated:
