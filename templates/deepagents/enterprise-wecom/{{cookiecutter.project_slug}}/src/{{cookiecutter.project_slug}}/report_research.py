@@ -33,6 +33,7 @@ from {{ cookiecutter.project_slug }}.work_composition import (
 )
 
 MCPInvoker = Callable[[str, str, dict[str, Any], bool], Awaitable[str]]
+QUERY_BUILDER_VERSION = "securities-question-first-v1"
 
 
 class CoverageStatus(StrEnum):
@@ -409,6 +410,11 @@ def research_question_map(plan: ReportResearchPlan) -> dict[str, ResearchQuestio
 def build_research_query(plan: ReportResearchPlan, question: ResearchQuestion) -> str:
     if question.query_strategy == "report_topic":
         return plan.report_title
+    if plan.research_scope == ResearchScope.SECURITIES_INDUSTRY:
+        # The question carries the business concepts; do not repeat the report
+        # title/date boilerplate that dominated the bounded candidate pool.
+        # Other scopes retain their named company/business/event context.
+        return f"{question.prompt} 证券行业"
     return (
         f"报告主题：{plan.report_title}；报告覆盖期：{plan.coverage_period}；"
         f"研究问题：{question.prompt}"
@@ -575,6 +581,7 @@ def _persist_sources(
                     "provider": "department-knowledge",
                     "relevance_version": RELEVANCE_VERSION,
                     "body_admission_version": BODY_ADMISSION_VERSION,
+                    "query_builder_version": QUERY_BUILDER_VERSION,
                     "document_id": hit.document_id,
                     "chunk_id": chunk_id,
                     "section_ids": sorted(sections_by_chunk[chunk_id]),

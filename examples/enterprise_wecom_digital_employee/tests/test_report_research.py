@@ -339,8 +339,9 @@ async def test_internal_research_is_knowledge_only_persists_sources_and_reports_
     contextual_queries = [query for query in search_queries if query != "证券行业数字化转型报告"]
     assert len(topic_queries) == 2
     assert len(contextual_queries) == 10
-    assert all("证券行业数字化转型报告" in query for query in contextual_queries)
-    assert all("2025年至2026年上半年" in query for query in contextual_queries)
+    assert all("证券行业数字化转型报告" not in query for query in contextual_queries)
+    assert all("2025年至2026年上半年" not in query for query in contextual_queries)
+    assert all("证券行业" in query for query in contextual_queries)
     assert first.as_dict()["external_search_used"] is False
 
 
