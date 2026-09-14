@@ -1,0 +1,32 @@
+# agentseek-skill-mcp 插件依赖清单
+
+## 直接依赖
+
+agent-skill-mcp>=0.1.0
+httpx>=0.28
+
+## 间接依赖（agent-skill-mcp 0.1.0 的依赖）
+
+pydantic>=2.0
+httpx>=0.27.0
+
+## 可选依赖（agent-skill-mcp 的 extra）
+
+langchain-mcp-adapters>=0.1.0  # extra = "langchain"
+pytest>=7.0                     # extra = "dev"
+pytest-asyncio>=0.21.0          # extra = "dev"
+respx>=0.20.0                   # extra = "dev"
+
+## 安装方式
+
+pip install agent-skill-mcp>=0.1.0 httpx>=0.28 pydantic>=2.0
+
+或使用 SDK 的 langchain extra：
+
+pip install "agent-skill-mcp[langchain]>=0.1.0" httpx>=0.28
+
+## 备注
+
+- agent-skill-mcp 以本地 whl 包形式分发：third/agent_skill_mcp-0.1.0-py3-none-any.whl
+- 该插件不依赖 Bub 框架的 hook 系统，由生成项目的 agent.py 在启动时直接调用
+- Python 要求：>=3.12, <3.14

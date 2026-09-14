@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, NotRequired, cast
+from typing import Any, ClassVar, NotRequired, cast
 
 from agentseek_enterprise.langgraph_store import build_langgraph_store
 from agentseek_enterprise.long_term_memory import employee_memory_tools
@@ -172,6 +174,114 @@ def _register_enterprise_harness_profile() -> None:
     _ENTERPRISE_HARNESS_REGISTERED = True
 
 
+def _patch_sdk_skill_for_null_category() -> None:
+    """平台侧部分技能的 category 为 null，而 SDK 的 Skill 模型要求 str。
+
+    在 AgentBuilder 构建前把 None 归一化为空串，避免单个技能的元数据
+    问题导致整份 agent 配置加载失败（skills/MCP 同步全部跳过）。
+    """
+    try:
+        from pydantic import field_validator
+
+        from agent_skill_mcp import agent as sdk_agent
+        from agent_skill_mcp.skill import Skill as SdkSkill
+    except ImportError:
+        return
+
+    if getattr(sdk_agent.Skill, "_null_category_tolerant", False):
+        return
+
+    class TolerantSkill(SdkSkill):
+        _null_category_tolerant: ClassVar[bool] = True
+
+        @field_validator("category", mode="before")
+        @classmethod
+        def _none_category_to_empty(cls, v: object) -> object:
+            return "" if v is None else v
+
+    sdk_agent.Skill = TolerantSkill
+
+
+async def _sync_platform_config() -> tuple[Any | None, str]:
+    """Pull skills + MCP config from the Agent Skill MCP Platform (one-shot at startup).
+
+    Returns ``(agent_config, skill_prompt_suffix)``. On any failure returns
+    ``(None, "")`` so the agent degrades gracefully to local static files.
+    """
+    try:
+        from agentseek_skill_mcp import build_skill_system_prompt, load_agent_config, sync_mcp_config, sync_skills
+    except ImportError as e:
+        print(f"[skill-mcp] ImportError: {e}", flush=True)
+        return None, ""
+
+    _patch_sdk_skill_for_null_category()
+
+    try:
+        print(f"[skill-mcp] loading agent config for '{os.environ.get('AGENTSEEK_SKILL_MCP_AGENT_NAME', '')}'...", flush=True)
+        agent_config = await load_agent_config()
+        print(f"[skill-mcp] agent_config = {type(agent_config).__name__ if agent_config else 'None'}", flush=True)
+    except Exception as exc:  # pragma: no cover - platform failures must not block startup.
+        print(f"[skill-mcp] load_agent_config FAILED: {type(exc).__name__}: {exc}", flush=True)
+        return None, ""
+
+    if agent_config is None:
+        print("[skill-mcp] agent_config is None, skipping sync", flush=True)
+        return None, ""
+
+    print(f"[skill-mcp] agent_config has {len(getattr(agent_config, 'skills', []) or [])} skills, {len(getattr(agent_config, 'mcps', []) or [])} mcps", flush=True)
+
+    try:
+        written = sync_skills(agent_config)
+        print(f"[skill-mcp] sync_skills wrote {len(written)} files", flush=True)
+        # Refresh the static-assets snapshot: it was taken at module import,
+        # before sync_skills wrote fresh skill files to disk. Without this,
+        # newly synced skills stay invisible to the agent until the next restart.
+        global _STATIC_ASSETS
+        _STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
+        print("[skill-mcp] refreshed _STATIC_ASSETS after skill sync", flush=True)
+    except Exception as exc:  # pragma: no cover - skill export failures must not block startup.
+        print(f"[skill-mcp] sync_skills FAILED: {type(exc).__name__}: {exc}", flush=True)
+
+    try:
+        result = await sync_mcp_config(agent_config)
+        print(f"[skill-mcp] sync_mcp_config result: {len(result.get('mcpServers', {}))} servers", flush=True)
+    except Exception as exc:  # pragma: no cover - MCP config failures must not block startup.
+        print(f"[skill-mcp] sync_mcp_config FAILED: {type(exc).__name__}: {exc}", flush=True)
+
+    skill_prompt = ""
+    try:
+        skill_prompt = build_skill_system_prompt(agent_config, "")
+    except Exception:  # pragma: no cover
+        pass
+
+    return agent_config, skill_prompt
+
+
+def _run_async(coro: Any) -> Any:
+    """Run a coroutine from sync context, tolerating a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Already inside an event loop — run in a fresh thread.
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+# Module-level cache so we don't pull from the skill-mcp platform more than once
+# per process when build_agent is called multiple times (e.g. for each Playbook).
+_SKILL_MCP_SYNC_RESULT: tuple[Any | None, str] | None = None
+
+
+def _get_skill_mcp_sync_result() -> tuple[Any | None, str]:
+    global _SKILL_MCP_SYNC_RESULT
+    if _SKILL_MCP_SYNC_RESULT is None:
+        _SKILL_MCP_SYNC_RESULT = _run_async(_sync_platform_config())
+    return _SKILL_MCP_SYNC_RESULT
+
+
 def build_agent(
     *,
     binding: PlaybookBinding | None = None,
@@ -182,6 +292,7 @@ def build_agent(
 
     _register_enterprise_harness_profile()
     settings = get_settings()
+    _, skill_prompt = _get_skill_mcp_sync_result()
     store = build_langgraph_store(
         sqlalchemy_url=settings.enterprise_store_sqlalchemy_url,
         sqlite_path=settings.resolved_enterprise_store_path(),
@@ -213,7 +324,7 @@ def build_agent(
             *(production_service_tools() if binding is None else []),
             *enabled_work_tools,
         ],
-        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding),
+        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding, skill_prompt=skill_prompt),
         skills=["/skills"],
         backend=backend,
         context_schema=EnterpriseAgentRuntimeContext,
@@ -319,6 +430,7 @@ def _system_prompt(
     assets: StaticAgentAssets,
     *,
     binding: PlaybookBinding | None,
+    skill_prompt: str = "",
 ) -> str:
     binding_instructions = binding.instructions().strip() if binding is not None else ""
     if binding is None:
@@ -327,7 +439,10 @@ def _system_prompt(
         prompt = f"{DEPARTMENT_SYSTEM_PROMPT}\n\n[SelectedPlaybook]\n{binding_instructions}"
     else:
         prompt = SYSTEM_PROMPT
-    return f"{prompt}\n\n[TrustedDeploymentInstructions]\n{assets.agent_instructions}"
+    prompt = f"{prompt}\n\n[TrustedDeploymentInstructions]\n{assets.agent_instructions}"
+    if skill_prompt:
+        prompt = f"{prompt}\n\n{skill_prompt}"
+    return prompt
 
 
 def _runtime_context_messages(state: Mapping[str, object]) -> list[SystemMessage]:

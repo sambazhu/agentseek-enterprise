@@ -1,0 +1,22 @@
+[project]
+name = "agentseek-skill-mcp"
+version = "0.1.0"
+description = "Agent Skill MCP Platform integration for AgentSeek"
+readme = "README.md"
+authors = [{ name = "Chojan Shang", email = "psiace@apache.org" }]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "agent-skill-mcp>=0.1.0",
+    "httpx>=0.28",
+]
+
+[project.entry-points."bub"]
+skill_mcp = "agentseek_skill_mcp.plugin:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_skill_mcp"]
