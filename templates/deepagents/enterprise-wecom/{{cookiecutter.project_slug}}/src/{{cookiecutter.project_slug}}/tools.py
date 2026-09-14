@@ -9,6 +9,13 @@ from agentseek_enterprise.mcp_policy import MCPPolicy, MCPPolicySettings, confir
 from fastmcp import Client
 from langgraph.prebuilt import ToolRuntime
 
+from {{ cookiecutter.project_slug }}.mcp_compat import (
+    KB_SERVERS,
+    OA_SERVERS,
+    bind_kb_arguments,
+    effective_schema,
+    local_transport_overrides,
+)
 from {{ cookiecutter.project_slug }}.settings import PROJECT_ROOT, get_settings
 
 
@@ -48,10 +55,17 @@ async def list_mcp_tools() -> str:
             tool_name = getattr(tool, "name", "") or ""
             description = getattr(tool, "description", "") or ""
             lines.append(f"  - {tool_name}: {description} [{policy.describe(server_name, tool_name)}]")
+            if server_name in OA_SERVERS or server_name in KB_SERVERS:
+                schema = effective_schema(server_name, tool_name, tool.inputSchema)
+                if server_name in OA_SERVERS:
+                    for key in ("oa_account", "login_name"):
+                        schema.get("properties", {}).pop(key, None)
+                    schema["required"] = [key for key in schema.get("required", []) if key not in {"oa_account", "login_name"}]
+                lines.append("    Parameters (accounts injected; declared defaults filled by client): " + json.dumps(schema, ensure_ascii=False))
     return "\n".join(lines)
 
 
-async def call_mcp_tool(
+async def call_mcp_tool(  # noqa: C901 -- policy, binding and audit stay on the shared call path.
     server_name: str,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
@@ -83,7 +97,7 @@ async def call_mcp_tool(
         return refusal
     decision = policy.evaluate(server_name, tool_name, confirmed=confirmed)
     # OA results and authenticated accounts must not enter diagnostic/audit text.
-    audit_arguments = {} if server_name == "OA流程助手" else call_arguments
+    audit_arguments = {} if server_name in OA_SERVERS else call_arguments
     if decision.action == "deny":
         policy.audit(
             server_name=server_name,
@@ -109,14 +123,17 @@ async def call_mcp_tool(
 
     try:
         async with Client({server_name: _normalize_server_config(server_config)}, init_timeout=20) as client:
-            if server_name == "OA流程助手":
+            if server_name in OA_SERVERS or server_name in KB_SERVERS:
                 from {{ cookiecutter.project_slug }}.production_mcp import bind_oa_schema
 
                 candidates = await client.list_tools()
                 target = next((item for item in candidates if item.name == tool_name), None)
                 if target is None:
-                    return "该 OA 查询工具当前不可用。"
-                call_arguments = bind_oa_schema(tool_name, call_arguments, target.inputSchema, runtime)
+                    return "该 MCP 查询工具当前不可用。"
+                if server_name in OA_SERVERS:
+                    call_arguments = bind_oa_schema(tool_name, call_arguments, target.inputSchema, runtime)
+                else:
+                    call_arguments = bind_kb_arguments(server_name, target.inputSchema, call_arguments)
             result = await client.call_tool(tool_name, call_arguments)
     except Exception as exc:
         policy.audit(
@@ -127,12 +144,20 @@ async def call_mcp_tool(
             arguments=audit_arguments,
             confirmed=confirmed,
             reason=decision.reason,
-            error=ValueError(type(exc).__name__) if server_name == "OA流程助手" else exc,
+            error=ValueError(type(exc).__name__) if server_name in OA_SERVERS or server_name in KB_SERVERS else exc,
         )
-        if server_name == "OA流程助手":
+        if server_name in OA_SERVERS:
             return "OA 查询未完成：请检查查询条件或联系管理员核对接口配置。未执行业务写入。"
+        if server_name in KB_SERVERS:
+            return "知识库查询未完成：请核对工具参数及该库索引配置；这不表示没有相关资料，未转查其他库。"
         raise
     formatted = _format_mcp_result(result)
+    if server_name in KB_SERVERS and (getattr(result, "isError", False) or "kbIndexCode不存在" in formatted):
+        policy.audit(
+            server_name=server_name, tool_name=tool_name, action="failed", risk=decision.risk,
+            arguments={}, confirmed=confirmed, reason="kb_backend_unavailable",
+        )
+        return "知识库后端查询失败：请核对该库索引配置；这不表示没有相关资料，未转查其他库。"
     policy.audit(
         server_name=server_name,
         tool_name=tool_name,
@@ -141,7 +166,7 @@ async def call_mcp_tool(
         arguments=audit_arguments,
         confirmed=confirmed,
         reason=decision.reason,
-        result=None if server_name == "OA流程助手" else formatted,
+        result=None if server_name in OA_SERVERS else formatted,
     )
     return formatted
 
@@ -156,7 +181,7 @@ def _read_mcp_servers() -> dict[str, Any]:
     servers = loaded.get("mcpServers", {})
     if not isinstance(servers, dict):
         raise RuntimeError("MCP config file must contain a mcpServers object")
-    return servers
+    return local_transport_overrides(servers)
 
 
 def _normalize_server_config(server_config: Any) -> dict[str, Any]:

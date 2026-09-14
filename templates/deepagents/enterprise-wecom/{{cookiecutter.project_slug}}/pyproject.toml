@@ -18,6 +18,7 @@ dependencies = [
     "deepagents>=0.5.3",
     "fastmcp>=2.0",
     "jaydebeapi>=1.2.3",
+    "jsonschema>=4.0",
     "JPype1>=1.5",
     "langchain>=1.0",
     "langchain-openai>=0.3.0",

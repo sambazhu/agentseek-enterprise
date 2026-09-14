@@ -8,6 +8,8 @@ from typing import Any, Literal
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
+from enterprise_wecom_digital_employee.mcp_compat import OA_SERVERS, effective_schema
+
 OA_SERVER = "OA流程助手"
 KNOWLEDGE_SERVER = "信息技术部知识库"
 OAQuery = Literal["会议日程", "报销进度", "考勤异常", "人员信息", "会议室安排"]
@@ -42,7 +44,7 @@ def prepare_production_arguments(
     server: str, tool: str, arguments: Mapping[str, Any], runtime: object | None,
 ) -> tuple[dict[str, Any], str | None]:
     result = dict(arguments)
-    if server != OA_SERVER:
+    if server not in OA_SERVERS:
         return result, None
     if tool not in OA_PERSONAL_TOOLS | {"查询会议室会议安排"}:
         return {}, "该 OA 查询能力尚未授权。"
@@ -67,6 +69,7 @@ def prepare_production_arguments(
 
 
 def bind_oa_schema(tool: str, arguments: dict[str, Any], schema: Mapping[str, Any], runtime: object) -> dict[str, Any]:
+    schema = effective_schema(OA_SERVER, tool, dict(schema))
     properties = schema.get("properties", {})
     if not isinstance(properties, Mapping):
         raise ValueError("OA schema unavailable")
@@ -79,10 +82,10 @@ def bind_oa_schema(tool: str, arguments: dict[str, Any], schema: Mapping[str, An
         for key in identity_keys:
             result[key] = account
     for name, spec in properties.items():
-        if name not in result and isinstance(spec, Mapping) and spec.get("default") is not None:
+        if result.get(name) is None and isinstance(spec, Mapping) and spec.get("default") is not None:
             result[name] = spec["default"]
-    if "top_count" in properties:
-        result.setdefault("top_count", 3)
+    if "top_count" in properties and result.get("top_count") is None:
+        result["top_count"] = 3
     if set(result) - properties.keys():
         raise ValueError("OA arguments outside schema")
     if any(result.get(key) is None for key in schema.get("required", [])):
@@ -178,7 +181,7 @@ async def _describe_oa_query(query_type: OAQuery, runtime: ToolRuntime) -> str:
             remote = next((item for item in await client.list_tools() if item.name == name), None)
         if remote is None:
             return "该 OA 查询工具当前不可用。"
-        schema = remote.inputSchema
+        schema = effective_schema(OA_SERVER, name, remote.inputSchema)
         properties = {key: spec for key, spec in schema.get("properties", {}).items() if key not in {"oa_account", "login_name"}}
         return json.dumps({"properties": properties, "required": [key for key in schema.get("required", []) if key in properties]}, ensure_ascii=False)
     except Exception:
