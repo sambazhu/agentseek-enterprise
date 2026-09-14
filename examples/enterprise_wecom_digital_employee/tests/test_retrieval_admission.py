@@ -46,3 +46,55 @@ def test_top_four_checks_body_beyond_two_stubs_and_caps_two_admissions(only_nois
         template=SimpleNamespace(sections=[SimpleNamespace(section_id="summary", questions=[SimpleNamespace(question_id=question)])]))
     indexed, _, _ = _index_selected_hits(plan, hits, chunks)
     assert set(indexed) == (set() if only_noise else {"chunk-2", "chunk-3"})
+
+
+def test_direct_candidates_have_priority_over_background_within_same_top_four():
+    question = "business-line-benchmark.five-lines"
+    hits = {question: tuple(KnowledgeHit("doc", f"chunk-{i}", "title", 0.9, None, None) for i in range(4))}
+    texts = ["券商经营业绩具有周期特征。", "券商财务杠杆为3倍。", "券商财富管理收入增长。", "券商自营投资收入增长。"]
+    chunks = {f"chunk-{i}": {"content": value} for i, value in enumerate(texts)}
+    plan = SimpleNamespace(report_title="证券行业报告", template=SimpleNamespace(sections=[
+        SimpleNamespace(section_id="business", questions=[SimpleNamespace(question_id=question)]),
+    ]))
+    indexed, _, _ = _index_selected_hits(plan, hits, chunks)
+    assert set(indexed) == {"chunk-2", "chunk-3"}
+
+
+def test_background_source_persistence_does_not_close_coverage():
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from agentseek_work import WorkNotFoundError
+    from enterprise_wecom_digital_employee.report_brief import ResearchScope
+    from enterprise_wecom_digital_employee.report_research import (
+        ReportResearchPlan,
+        _coverage,
+        _persist_sources,
+        load_research_template,
+    )
+
+    class Repository:
+        def get_source_record(self, **kwargs):
+            raise WorkNotFoundError("not found")
+
+        def put_source_record(self, record):
+            return record
+
+    template = load_research_template(Path(__file__).parents[1] / "digital_employees/industry-report/skills/report-intake/references/securities-industry-internal-research.yaml")
+    plan = ReportResearchPlan("work-test", 1, "证券行业报告", "2026年", ResearchScope.SECURITIES_INDUSTRY, template)
+    question = "business-line-benchmark.five-lines"
+    hit = KnowledgeHit("doc", "chunk-1", "测试资料", 0.9, None, None)
+    chunks = {"chunk-1": {"content": "券商财务杠杆为3倍。"}}
+    questions, sections, indexed = _index_selected_hits(plan, {question: (hit,)}, chunks)
+    sources = _persist_sources(
+        composition=SimpleNamespace(repository=Repository()), work_id="work-test", tenant_id="tenant-test",
+        contract_version=1, plan=plan, selected_chunk_ids=("chunk-1",), chunks_by_id=chunks,
+        questions_by_chunk=questions, sections_by_chunk=sections, hit_by_chunk=indexed,
+        query_by_question={question: "业务对标"}, clock=lambda: datetime.now(UTC),
+    )
+    assert len(sources) == 1
+    assert sources[0].metadata["background_question_ids"] == [question]
+    assert sources[0].metadata["evidence_use_version"] == "securities-evidence-use-v1"
+    coverage = _coverage(plan, sources)
+    assert coverage.covered_questions == 0
+    assert question in coverage.gaps

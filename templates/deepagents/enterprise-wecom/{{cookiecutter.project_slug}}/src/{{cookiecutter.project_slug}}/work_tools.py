@@ -924,12 +924,14 @@ def _build_current_report_outline(
         gap_decision_contract_version=gap_contract_version,
     )
     source_ids_by_question: dict[str, list[str]] = {}
+    background_ids_by_question: dict[str, list[str]] = {}
     for source in sources:
         question_ids = source.metadata.get("question_ids")
         if not isinstance(question_ids, list):
             continue
         for question_id in question_ids:
-            source_ids_by_question.setdefault(str(question_id), []).append(source.source_id)
+            target = background_ids_by_question if question_id in source.metadata.get("background_question_ids", []) else source_ids_by_question
+            target.setdefault(str(question_id), []).append(source.source_id)
     sections: list[OutlineSection] = []
     for section in internal.plan.template.sections:
         questions = tuple(
@@ -937,6 +939,7 @@ def _build_current_report_outline(
                 question_id=question.question_id,
                 prompt=question.prompt,
                 source_ids=tuple(dict.fromkeys(source_ids_by_question.get(question.question_id, []))),
+                background_source_ids=tuple(dict.fromkeys(background_ids_by_question.get(question.question_id, []))),
             )
             for question in section.questions
             if internal.plan.research_scope in question.applies_to

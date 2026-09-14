@@ -11,6 +11,7 @@ def record_source_diagnostic(*, work_id: str, question_id: str, chunk_id: str, r
         writer.emit(
             "report.source_admission", stage="source_admission", reason_code=reason,
             protocol_version="securities-body-v1",
+            evidence_use_version="securities-evidence-use-v1",
             work_fingerprint=writer.identity_key(work_id),
             question_fingerprint=writer.identity_key(question_id),
             chunk_fingerprint=writer.identity_key(chunk_id), rank=rank,
@@ -31,6 +32,7 @@ def record_draft_diagnostic(
         fields = {
             "stage": "draft_claim_validation", "reason_code": reason,
             "protocol_version": "securities-body-v1",
+            "evidence_use_version": "securities-evidence-use-v1",
             "work_fingerprint": writer.identity_key(work_id),
             "outline_version": outline_version, "brief_version": brief_version,
             "proposal_count": len(proposals),

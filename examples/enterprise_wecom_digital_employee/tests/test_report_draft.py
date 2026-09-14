@@ -413,6 +413,48 @@ def test_draft_repair_is_bounded_and_keeps_batch_atomic(tmp_path: Path, outcome:
     assert len(reads) == 1
 
 
+@pytest.mark.parametrize("kind", ["background", "company_case", "punctuation"])
+def test_usage_survives_coverage_outline_evidence_and_draft(tmp_path, kind):
+    from enterprise_wecom_digital_employee.report_draft import ReportDraft
+
+    source = (
+        "券商经营业绩呈现周期波动。" if kind == "background" else
+        "本公司为适应证券市场数字化转型趋势，完善公司信息技术治理。" if kind == "company_case" else
+        "证券行业的转型目标是服务客户。"
+    )
+    composition, state, outline = _composition_with_confirmed_outline(
+        tmp_path, content=source, background=kind != "punctuation",
+    )
+    research = load_current_research_result(
+        composition=composition, state=state, runtime_context=None,
+        template_path=composition.research_template_path,
+    )
+    assert (research.coverage.covered_questions == 0) == (kind != "punctuation")
+
+    async def invoke(*args):
+        return json.dumps({"chunks": [{"chunk_id": "chunk-1", "content": source}]})
+
+    context = _run(prepare_report_draft_context(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST, invoke_mcp=invoke,
+    ))
+    draft = build_report_draft(
+        composition=composition, state=state, runtime_context=None,
+        latest_user_message=DRAFT_REQUEST,
+        proposals=[DraftClaimProposal(
+            section_id=outline.sections[0].section_id, statement=source.rstrip("。"),
+            claim_type=ClaimType.FACT, evidence_ids=[context.evidence[0].evidence_id],
+        )],
+    )
+    saved = composition.save_report_draft(state, None, draft)
+    assert ReportDraft.from_contract(saved).markdown == draft.markdown
+    fact = next(c for c in composition.repository.list_claim_records(tenant_id="tenant-test", work_id="work_draft_001") if c.claim_type == ClaimType.FACT)
+    assert fact.metadata["evidence_use"] == ("direct" if kind == "punctuation" else kind)
+    if kind != "punctuation":
+        assert "executive-summary.core-trends" in draft.unresolved_question_ids
+        assert "参考" in draft.markdown
+
+
 def test_deterministic_draft_action_prepares_claims_and_replays_ledger_version(tmp_path: Path) -> None:
     composition, state, outline = _composition_with_confirmed_outline(tmp_path)
     generated: list[int] = []
@@ -1132,7 +1174,7 @@ def test_rc_report_lifecycle_is_exact_downloadable_idempotent_and_stale(tmp_path
 
 def _composition_with_confirmed_outline(
     tmp_path: Path,
-    *, confirm: bool = True,
+    *, confirm: bool = True, content: str = CONTENT, background: bool = False,
 ) -> tuple[IndustryReportWorkComposition, dict[str, Any], ReportOutline]:
     composition, state = _confirmed_brief_composition(tmp_path)
     internal = load_current_research_result(
@@ -1151,7 +1193,7 @@ def _composition_with_confirmed_outline(
         retrieved_at=NOW,
         locator="mcp://department-knowledge/doc-1#chunk-1",
         uri_digest="sha256:uri",
-        content_hash=_digest_text(CONTENT),
+        content_hash=_digest_text(content),
         result_digest="sha256:result",
         confidentiality_level="internal",
         authority_level="approved_internal",
@@ -1168,6 +1210,7 @@ def _composition_with_confirmed_outline(
             "chunk_id": "chunk-1",
             "section_ids": ["executive-summary"],
             "question_ids": ["executive-summary.core-trends"],
+            "background_question_ids": ["executive-summary.core-trends"] if background else [],
             "research_plan_digest": internal.plan.digest,
             "report_brief_version": 1,
         },

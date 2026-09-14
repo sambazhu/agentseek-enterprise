@@ -76,8 +76,7 @@ def test_fixed_keyword_control_exposes_title_dominance_not_production_rank() -> 
     assert not relevant_content("IT部门收入利润增长，ROE 为7.28%。", question.question_id, current.report_title)
 
 
-def test_structural_introduction_remains_known_semantic_review_gap() -> None:
-    # F5 must not quietly change the relevance/save contract. This is an
-    # explicit limitation, not evidence that the introduction is useful fact.
+def test_structural_introduction_is_no_longer_fact_evidence() -> None:
+    # Sentence-use follow-up explicitly closes the F5-known introduction gap.
     intro = "本报告从总量周期、政策沿革、分业务线六个维度展开，并给出面向券商投行条线的战略启示。"
-    assert relevant_content(intro, "business-line-benchmark.five-lines", plan().report_title)
+    assert not relevant_content(intro, "business-line-benchmark.five-lines", plan().report_title)

@@ -394,12 +394,12 @@ async def prepare_report_draft_context(
             continue
         if _digest_text(content) != source.content_hash:
             raise RuntimeError(f"source content changed after registration: {source.source_id}")
-        from {{ cookiecutter.project_slug }}.evidence_relevance import relevant_content
+        from {{ cookiecutter.project_slug }}.evidence_relevance import content_use
 
         if not any(
-            relevant_content(content, question.question_id, outline.report_title)
+            content_use(content, question.question_id, outline.report_title)
             for section in outline.sections for question in section.questions
-            if source.source_id in question.source_ids
+            if source.source_id in (*question.source_ids, *question.background_source_ids)
         ):
             continue
         evidence_id = _evidence_id(source, outline_contract.contract_version)
@@ -437,6 +437,11 @@ async def prepare_report_draft_context(
             "title": section.title,
             "question_ids": [question.question_id for question in section.questions],
             "unresolved_question_ids": list(section.unresolved_question_ids),
+            "background_evidence_ids": list(dict.fromkeys(
+                evidence_by_source[source_id]
+                for question in section.questions for source_id in question.background_source_ids
+                if source_id in evidence_by_source
+            )),
             "evidence_ids": [
                 evidence_by_source[source_id]
                 for source_id in section.source_ids
@@ -518,6 +523,7 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
         raise reject("claim_limit", f"补齐章节后超过 {MAX_DRAFT_CLAIMS} 条 Claim，请减少重复事实后重试。")
 
     validated: list[tuple[DraftClaimProposal, tuple[str, ...], str]] = []
+    usage_by_claim: dict[str, str] = {}
     for proposal in proposals:
         section = outline_sections.get(proposal.section_id)
         if section is None:
@@ -533,16 +539,24 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
                 raise reject("unknown_evidence", f"Claim 引用了当前提纲之外的 EvidenceRecord：{evidence_id}", proposal)
             if record.source_id not in section.source_ids:
                 raise reject("cross_section_evidence", f"EvidenceRecord {evidence_id} 未绑定章节 {section.section_id}", proposal)
-        from {{ cookiecutter.project_slug }}.evidence_relevance import is_evidence_sentence, relevant_content
+        from {{ cookiecutter.project_slug }}.evidence_relevance import (
+            EVIDENCE_USE_VERSION,
+            content_use,
+            is_evidence_sentence,
+        )
 
+        evidence_use = "placeholder"
         if proposal.claim_type in {ClaimType.FACT, ClaimType.INFERENCE}:
             excerpts = [evidence_by_id[key].excerpt for key in evidence_ids]
             if not is_evidence_sentence(proposal.statement, excerpts):
                 raise reject("not_complete_sentence", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
-            if not any(
-                relevant_content(proposal.statement, question.question_id, outline.report_title)
-                for question in section.questions
-            ):
+            uses = [
+                content_use(evidence_by_id[key].excerpt, question.question_id, outline.report_title, statement=proposal.statement)
+                for key in evidence_ids for question in section.questions
+                if evidence_by_id[key].source_id in (*question.source_ids, *question.background_source_ids)
+            ]
+            evidence_use = next((use for use in ("direct", "company_case", "background") if use in uses), "")
+            if not evidence_use:
                 raise reject("sentence_not_relevant", "事实和推断必须使用与当前研究问题相关的完整证据原句；改写或新增判断需人工核验。", proposal)
         claim_id = _claim_id(
             item.work_id,
@@ -552,6 +566,7 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
             proposal.claim_type,
             evidence_ids,
         )
+        usage_by_claim[claim_id] = evidence_use
         validated.append((proposal, evidence_ids, claim_id))
     claim_ids = tuple(claim_id for _proposal, _evidence_ids, claim_id in validated)
     if len(set(claim_ids)) != len(claim_ids):
@@ -577,6 +592,8 @@ def build_report_draft(  # noqa: C901 - validates the complete draft ledger boun
                     "report_outline_version": outline_contract.contract_version,
                     "report_brief_version": outline.report_brief_version,
                     "source_set_digest": outline.source_set_digest,
+                    "evidence_use_version": EVIDENCE_USE_VERSION,
+                    "evidence_use": usage_by_claim[claim_id],
                 },
             ))
         claims.append(claim)
@@ -735,7 +752,8 @@ def _render_markdown(
         section_claims = [claim for claim in claims if claim.section_id == section.section_id]
         for claim in section_claims:
             citations = "".join(f" [{citation_labels[evidence_id]}]" for evidence_id in claim.evidence_ids)
-            lines.append(f"{claim.statement}{citations}")
+            usage_label = {"background": "【背景参考】", "company_case": "【公司实践参考，不代表行业结论】"}.get(claim.metadata.get("evidence_use"), "")
+            lines.append(f"{usage_label}{claim.statement}{citations}")
             lines.append("")
         if section.unresolved_question_ids:
             lines.append("**待确认问题：** " + "、".join(

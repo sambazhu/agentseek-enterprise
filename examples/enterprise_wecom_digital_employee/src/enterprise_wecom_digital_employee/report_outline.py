@@ -45,11 +45,15 @@ class OutlineQuestion:
     question_id: str
     prompt: str
     source_ids: tuple[str, ...] = ()
+    background_source_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(self.question_id, "question_id")
         _require_text(self.prompt, "prompt")
         _require_unique_nonblank(self.source_ids, "source_ids")
+        _require_unique_nonblank(self.background_source_ids, "background_source_ids")
+        if set(self.source_ids) & set(self.background_source_ids):
+            raise ValueError("source cannot be both direct and background for one question")
 
     @property
     def evidence_status(self) -> OutlineEvidenceStatus:
@@ -61,6 +65,7 @@ class OutlineQuestion:
             "prompt": self.prompt,
             "evidence_status": self.evidence_status.value,
             "source_ids": list(self.source_ids),
+            "background_source_ids": list(self.background_source_ids),
         }
 
     @classmethod
@@ -69,6 +74,7 @@ class OutlineQuestion:
             question_id=_required_text(payload, "question_id"),
             prompt=_required_text(payload, "prompt"),
             source_ids=_text_tuple(payload, "source_ids"),
+            background_source_ids=_text_tuple({"background_source_ids": payload.get("background_source_ids", [])}, "background_source_ids"),
         )
         if payload.get("evidence_status") != question.evidence_status.value:
             raise ValueError("report outline question evidence_status is inconsistent")
@@ -99,7 +105,7 @@ class OutlineSection:
 
     @property
     def source_ids(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(source_id for question in self.questions for source_id in question.source_ids))
+        return tuple(dict.fromkeys(source_id for question in self.questions for source_id in (*question.source_ids, *question.background_source_ids)))
 
     @property
     def unresolved_question_ids(self) -> tuple[str, ...]:

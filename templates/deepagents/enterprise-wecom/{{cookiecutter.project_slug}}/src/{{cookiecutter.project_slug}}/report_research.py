@@ -491,29 +491,34 @@ def _index_selected_hits(
     hit_by_chunk: dict[str, KnowledgeHit] = {}
     for section in plan.template.sections:
         for question in section.questions:
-            admitted = 0
+            candidates = []
             for rank, hit in enumerate(hits_by_question.get(question.question_id, ())[:4], 1):
-                from {{ cookiecutter.project_slug }}.evidence_relevance import body_lines, relevant_content
+                from {{ cookiecutter.project_slug }}.evidence_relevance import body_lines, content_use
                 from {{ cookiecutter.project_slug }}.report_diagnostics import record_source_diagnostic
 
                 content = _text(chunks_by_id.get(hit.chunk_id, {}), "content")
+                use = content_use(content, question.question_id, plan.report_title)
                 reason = (
                     "chunk_missing" if hit.chunk_id not in chunks_by_id else
                     "no_body" if not body_lines(content) else
-                    "not_relevant" if not relevant_content(content, question.question_id, plan.report_title) else
-                    "admitted"
+                    "not_relevant" if use is None else
+                    "admitted" if use == "direct" else "admitted_background"
                 )
+                candidates.append((hit, rank, reason))
+            # Inspect the same bounded four candidates. Background fills spare
+            # slots; it must not crowd out direct evidence later in that pool.
+            eligible = [entry for entry in candidates if entry[2] in {"admitted", "admitted_background"}]
+            selected = sorted(eligible, key=lambda entry: (entry[2] != "admitted", entry[1]))[:2]
+            for hit, rank, reason in candidates:
+                if (hit, rank, reason) not in selected and reason in {"admitted", "admitted_background"}:
+                    reason = "binding_limit"
                 record_source_diagnostic(work_id=work_id, question_id=question.question_id, chunk_id=hit.chunk_id, rank=rank, reason=reason)
-                if reason != "admitted":
-                    continue
+            for hit, _rank, _reason in selected:
                 questions_by_chunk.setdefault(hit.chunk_id, set()).add(question.question_id)
                 sections_by_chunk.setdefault(hit.chunk_id, set()).add(section.section_id)
                 previous = hit_by_chunk.get(hit.chunk_id)
                 if previous is None or hit.score > previous.score:
                     hit_by_chunk[hit.chunk_id] = hit
-                admitted += 1
-                if admitted == 2:
-                    break
     return questions_by_chunk, sections_by_chunk, hit_by_chunk
 
 
@@ -539,9 +544,14 @@ def _persist_sources(
         if chunk is None or hit is None:
             continue
         content_hash = _digest_text(_text(chunk, "content"))
-        from {{ cookiecutter.project_slug }}.evidence_relevance import BODY_ADMISSION_VERSION, RELEVANCE_VERSION
+        from {{ cookiecutter.project_slug }}.evidence_relevance import (
+            BODY_ADMISSION_VERSION,
+            EVIDENCE_USE_VERSION,
+            RELEVANCE_VERSION,
+            content_use,
+        )
 
-        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}:{RELEVANCE_VERSION}:{BODY_ADMISSION_VERSION}"
+        identity = f"{work_id}:{contract_version}:{hit.document_id}:{chunk_id}:{content_hash}:{RELEVANCE_VERSION}:{BODY_ADMISSION_VERSION}:{EVIDENCE_USE_VERSION}"
         source_id = f"source_sha256_{sha256(identity.encode()).hexdigest()}"
         try:
             source = composition.repository.get_source_record(tenant_id=tenant_id, source_id=source_id)
@@ -582,6 +592,11 @@ def _persist_sources(
                     "relevance_version": RELEVANCE_VERSION,
                     "body_admission_version": BODY_ADMISSION_VERSION,
                     "query_builder_version": QUERY_BUILDER_VERSION,
+                    "evidence_use_version": EVIDENCE_USE_VERSION,
+                    "background_question_ids": sorted(
+                        key for key in questions_by_chunk[chunk_id]
+                        if content_use(_text(chunk, "content"), key, plan.report_title) != "direct"
+                    ),
                     "document_id": hit.document_id,
                     "chunk_id": chunk_id,
                     "section_ids": sorted(sections_by_chunk[chunk_id]),
@@ -605,6 +620,8 @@ def _coverage(plan: ReportResearchPlan, sources: Sequence[SourceRecord]) -> Rese
         if not isinstance(question_ids, list):
             continue
         for question_id in question_ids:
+            if question_id in source.metadata.get("background_question_ids", []):
+                continue
             source_ids_by_question.setdefault(str(question_id), []).append(source.source_id)
     sections: list[SectionCoverage] = []
     covered = 0
