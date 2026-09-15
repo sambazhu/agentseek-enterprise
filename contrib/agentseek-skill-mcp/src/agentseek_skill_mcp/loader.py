@@ -134,7 +134,7 @@ async def sync_mcp_config(agent_config: Any, mcp_json_path: str = "") -> dict[st
         temporary = None
     except Exception:  # pragma: no cover - defensive: filesystem failures must not propagate.
         logger.warning("failed to write MCP config to {}", resolved_path)
-        return converted
+        return {}
     finally:
         if temporary is not None:
             try:

@@ -27,6 +27,8 @@ def test_sync_once_then_merge_cached_platform_and_local(tmp_path, monkeypatch, f
     monkeypatch.setattr(agent, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(agent, "get_settings", lambda: SimpleNamespace(resolved_mcp_config_path=lambda: effective))
     monkeypatch.setattr(agent, "_SKILL_MCP_SYNC_RESULT", None)
+    monkeypatch.setattr(agent, "_SKILL_MCP_SYNC_ATTEMPTS", 0)
+    monkeypatch.setattr(agent, "_SKILL_MCP_SYNC_NEXT", 0.0)
     monkeypatch.delenv("AGENTSEEK_SKILL_MCP_MCP_JSON_PATH", raising=False)
     for _ in range(2):
         agent._get_skill_mcp_sync_result()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -246,11 +248,14 @@ async def _sync_platform_config() -> tuple[Any | None, str]:
         paths = (_platform_mcp_path(), PROJECT_ROOT / ".agents/mcp.local.json", get_settings().resolved_mcp_config_path())
         if len({path.resolve() for path in paths}) != 3:
             print("[skill-mcp] MCP path collision: migrate configuration before syncing", flush=True)
-            return agent_config, ""
+            return None, ""
         result = await sync_mcp_config(agent_config, mcp_json_path=str(_platform_mcp_path()))
+        if "mcpServers" not in result:
+            return None, ""
         print(f"[skill-mcp] sync_mcp_config result: {len(result.get('mcpServers', {}))} servers", flush=True)
     except Exception as exc:  # pragma: no cover - MCP config failures must not block startup.
         print(f"[skill-mcp] sync_mcp_config FAILED: {type(exc).__name__}", flush=True)
+        return None, ""
 
     skill_prompt = ""
     try:
@@ -274,16 +279,40 @@ def _run_async(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-# Module-level cache so we don't pull from the skill-mcp platform more than once
-# per process when build_agent is called multiple times (e.g. for each Playbook).
+# Cache success; failed builds can retry after cooldown, up to three attempts.
 _SKILL_MCP_SYNC_RESULT: tuple[Any | None, str] | None = None
+_SKILL_MCP_SYNC_LOCK = threading.Lock()
+_SKILL_MCP_SYNC_ATTEMPTS = 0
+_SKILL_MCP_SYNC_NEXT = 0.0
+_SKILL_MCP_SYNC_MAX_ATTEMPTS = 3
+_SKILL_MCP_SYNC_COOLDOWN = 60.0
 
 
 def _get_skill_mcp_sync_result() -> tuple[Any | None, str]:
-    global _SKILL_MCP_SYNC_RESULT
-    if _SKILL_MCP_SYNC_RESULT is None:
-        _SKILL_MCP_SYNC_RESULT = _run_async(_sync_platform_config())
-    return _SKILL_MCP_SYNC_RESULT
+    global _SKILL_MCP_SYNC_RESULT, _SKILL_MCP_SYNC_ATTEMPTS, _SKILL_MCP_SYNC_NEXT
+    # Concurrent builders use the existing disk cache; never wait on a network
+    # request while holding up another builder (including event-loop callers).
+    if not _SKILL_MCP_SYNC_LOCK.acquire(blocking=False):
+        return _SKILL_MCP_SYNC_RESULT or (None, "")
+    try:
+        if _SKILL_MCP_SYNC_RESULT is not None:
+            return _SKILL_MCP_SYNC_RESULT
+        if _SKILL_MCP_SYNC_ATTEMPTS >= _SKILL_MCP_SYNC_MAX_ATTEMPTS or time.monotonic() < _SKILL_MCP_SYNC_NEXT:
+            return None, ""
+        _SKILL_MCP_SYNC_ATTEMPTS += 1
+        try:
+            result = _run_async(_sync_platform_config())
+        except Exception:
+            print("[skill-mcp] sync attempt failed", flush=True)
+            result = (None, "")
+        if result[0] is not None:
+            _SKILL_MCP_SYNC_RESULT = result
+        else:
+            _SKILL_MCP_SYNC_NEXT = time.monotonic() + _SKILL_MCP_SYNC_COOLDOWN
+            print(f"[skill-mcp] sync unsuccessful attempt={_SKILL_MCP_SYNC_ATTEMPTS} limit=3 cooldown_s=60", flush=True)
+        return result
+    finally:
+        _SKILL_MCP_SYNC_LOCK.release()
 
 
 def _platform_mcp_path() -> Path:
