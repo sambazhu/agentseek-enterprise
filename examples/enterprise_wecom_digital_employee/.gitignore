@@ -9,3 +9,5 @@ runtime/*
 .agentseek/*
 !.agentseek/lifecycle.toml
 .agents/mcp.local.json
+.agents/mcp.dmcp.json
+.agents/mcp.json

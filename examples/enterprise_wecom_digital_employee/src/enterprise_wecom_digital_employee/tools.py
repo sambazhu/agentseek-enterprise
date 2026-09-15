@@ -175,7 +175,10 @@ def _read_mcp_servers() -> dict[str, Any]:
     config_path = get_settings().resolved_mcp_config_path()
     if not config_path.exists():
         return {}
-    loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
     if not isinstance(loaded, dict):
         raise RuntimeError("MCP config file must contain a JSON object")
     servers = loaded.get("mcpServers", {})

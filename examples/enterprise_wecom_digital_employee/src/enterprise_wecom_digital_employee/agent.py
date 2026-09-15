@@ -6,6 +6,7 @@ import asyncio
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar, NotRequired, cast
 
 from agentseek_enterprise.langgraph_store import build_langgraph_store
@@ -181,10 +182,9 @@ def _patch_sdk_skill_for_null_category() -> None:
     问题导致整份 agent 配置加载失败（skills/MCP 同步全部跳过）。
     """
     try:
-        from pydantic import field_validator
-
         from agent_skill_mcp import agent as sdk_agent
         from agent_skill_mcp.skill import Skill as SdkSkill
+        from pydantic import field_validator
     except ImportError:
         return
 
@@ -210,18 +210,18 @@ async def _sync_platform_config() -> tuple[Any | None, str]:
     """
     try:
         from agentseek_skill_mcp import build_skill_system_prompt, load_agent_config, sync_mcp_config, sync_skills
-    except ImportError as e:
-        print(f"[skill-mcp] ImportError: {e}", flush=True)
+    except ImportError:
+        print("[skill-mcp] SDK unavailable", flush=True)
         return None, ""
 
     _patch_sdk_skill_for_null_category()
 
     try:
-        print(f"[skill-mcp] loading agent config for '{os.environ.get('AGENTSEEK_SKILL_MCP_AGENT_NAME', '')}'...", flush=True)
+        print("[skill-mcp] loading agent config", flush=True)
         agent_config = await load_agent_config()
         print(f"[skill-mcp] agent_config = {type(agent_config).__name__ if agent_config else 'None'}", flush=True)
     except Exception as exc:  # pragma: no cover - platform failures must not block startup.
-        print(f"[skill-mcp] load_agent_config FAILED: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[skill-mcp] load_agent_config FAILED: {type(exc).__name__}", flush=True)
         return None, ""
 
     if agent_config is None:
@@ -240,19 +240,23 @@ async def _sync_platform_config() -> tuple[Any | None, str]:
         _STATIC_ASSETS = load_static_agent_assets(PROJECT_ROOT)
         print("[skill-mcp] refreshed _STATIC_ASSETS after skill sync", flush=True)
     except Exception as exc:  # pragma: no cover - skill export failures must not block startup.
-        print(f"[skill-mcp] sync_skills FAILED: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[skill-mcp] sync_skills FAILED: {type(exc).__name__}", flush=True)
 
     try:
-        result = await sync_mcp_config(agent_config)
+        paths = (_platform_mcp_path(), PROJECT_ROOT / ".agents/mcp.local.json", get_settings().resolved_mcp_config_path())
+        if len({path.resolve() for path in paths}) != 3:
+            print("[skill-mcp] MCP path collision: migrate configuration before syncing", flush=True)
+            return agent_config, ""
+        result = await sync_mcp_config(agent_config, mcp_json_path=str(_platform_mcp_path()))
         print(f"[skill-mcp] sync_mcp_config result: {len(result.get('mcpServers', {}))} servers", flush=True)
     except Exception as exc:  # pragma: no cover - MCP config failures must not block startup.
-        print(f"[skill-mcp] sync_mcp_config FAILED: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[skill-mcp] sync_mcp_config FAILED: {type(exc).__name__}", flush=True)
 
     skill_prompt = ""
     try:
         skill_prompt = build_skill_system_prompt(agent_config, "")
     except Exception:  # pragma: no cover
-        pass
+        print("[skill-mcp] skill prompt unavailable", flush=True)
 
     return agent_config, skill_prompt
 
@@ -282,6 +286,11 @@ def _get_skill_mcp_sync_result() -> tuple[Any | None, str]:
     return _SKILL_MCP_SYNC_RESULT
 
 
+def _platform_mcp_path() -> Path:
+    path = Path(os.environ.get("AGENTSEEK_SKILL_MCP_MCP_JSON_PATH", ".agents/mcp.dmcp.json"))
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def build_agent(
     *,
     binding: PlaybookBinding | None = None,
@@ -293,6 +302,9 @@ def build_agent(
     _register_enterprise_harness_profile()
     settings = get_settings()
     _, skill_prompt = _get_skill_mcp_sync_result()
+    from enterprise_wecom_digital_employee.mcp_config_merge import merge_mcp_config
+
+    merge_mcp_config(_platform_mcp_path(), PROJECT_ROOT / ".agents/mcp.local.json", settings.resolved_mcp_config_path())
     store = build_langgraph_store(
         sqlalchemy_url=settings.enterprise_store_sqlalchemy_url,
         sqlite_path=settings.resolved_enterprise_store_path(),

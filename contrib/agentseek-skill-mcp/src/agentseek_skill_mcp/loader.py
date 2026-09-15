@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -119,13 +120,27 @@ async def sync_mcp_config(agent_config: Any, mcp_json_path: str = "") -> dict[st
     converted = _convert_to_mcp_servers_format(sdk_config)
 
     resolved_path = mcp_json_path or os.environ.get("AGENTSEEK_SKILL_MCP_MCP_JSON_PATH", ".agents/mcp.json")
+    temporary = None
     try:
         path = Path(resolved_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(converted, ensure_ascii=False, indent=2), encoding="utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=".mcp-cache-", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(converted, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
     except Exception:  # pragma: no cover - defensive: filesystem failures must not propagate.
         logger.warning("failed to write MCP config to {}", resolved_path)
         return converted
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                logger.warning("MCP cache temporary cleanup failed")
 
     server_count = len(converted.get("mcpServers", {}))
     logger.info("wrote {} MCP servers to {}", server_count, resolved_path)
