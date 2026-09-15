@@ -59,7 +59,7 @@ def merge_mcp_config(dmcp: Path, local: Path, effective: Path) -> bool:
         fd, temporary = tempfile.mkstemp(prefix=".mcp-", dir=effective.parent)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             os.fchmod(stream.fileno(), 0o600)
-            json.dump({"mcpServers": merged}, stream, ensure_ascii=False)
+            json.dump({"mcpServers": merged}, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, effective)

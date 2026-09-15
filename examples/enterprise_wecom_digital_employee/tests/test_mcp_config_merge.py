@@ -20,6 +20,7 @@ def test_whole_server_merge(tmp_path, caplog, platform, local, expected):
     caplog.set_level(logging.INFO)
     assert module.merge_mcp_config(dmcp, override, output)
     assert json.loads(output.read_text()) == {"mcpServers": expected}
+    assert '\n  "mcpServers":' in output.read_text()
     assert output.stat().st_mode & 0o777 == 0o600
     for path in (dmcp, override):
         if path.exists():

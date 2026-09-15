@@ -9,7 +9,9 @@ cd "$REPO_ROOT"
 mkdir -p runtime examples/enterprise_wecom_digital_employee/runtime
 
 export AGENTSEEK_ENV_FILE="${AGENTSEEK_ENV_FILE:-examples/enterprise_wecom_digital_employee/.env}"
-export PYTHONPATH="${REPO_ROOT}/examples/enterprise_wecom_digital_employee/src${PYTHONPATH:+:${PYTHONPATH}}"
+# Resolve the integration from this checkout, not an operator's .pth or overlay.
+# The external agent_skill_mcp SDK remains supplied by the existing venv.
+export PYTHONPATH="${REPO_ROOT}/examples/enterprise_wecom_digital_employee/src:${REPO_ROOT}/contrib/agentseek-skill-mcp/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 GATEWAY_LOG="${AGENTSEEK_GATEWAY_LOG:-$HOME/Library/Logs/agentseek-wecom/gateway.log}"
 mkdir -p "$(dirname "$GATEWAY_LOG")"
