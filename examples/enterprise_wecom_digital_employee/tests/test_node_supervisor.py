@@ -93,6 +93,25 @@ def _sup(client, manifest, tmp_path, clocks=None):
     )
 
 
+def test_disappearance_clears_live_target_but_preserves_registration(manifest, tmp_path):
+    """M3 successor admission must not interpret historical registration as liveness."""
+    manifest.register_sandbox("old-vm")
+    before = manifest.path.read_bytes()
+    record = SandboxRecord(sandbox_id="old-vm", template_id=TPL, state="running",
+                           started_at=1000.0, run_marker=RUN)
+    client = FakeClient([record])
+    supervisor, _ = _sup(client, manifest, tmp_path)
+    assert supervisor.poll_once() == []
+    assert "old-vm" in supervisor._targets
+    client.records.clear()
+    assert supervisor.poll_once() == []
+    assert not supervisor._targets and not client.kill_calls
+    manifest.reload()
+    assert manifest.registered_ids() == {"old-vm"}
+    assert manifest.path.read_bytes() == before
+    assert not (tmp_path / "alarm").exists()
+
+
 def _rec(sid, tpl=TPL, state="running", started=None, marker=None):
     return SandboxRecord(sid, tpl, state, started_at=started, run_marker=marker)
 

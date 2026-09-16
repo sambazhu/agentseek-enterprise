@@ -1,0 +1,14 @@
+[project]
+name = "agentseek-execution-r1"
+version = "0.1.3a0"
+description = "Isolated R1 validation candidate; not the full execution package"
+requires-python = ">=3.10,<3.14"
+dependencies = ["cryptography==49.0.0", "httpx==0.28.1"]
+
+[build-system]
+requires = ["pdm-backend==2.4.9"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_execution"]
