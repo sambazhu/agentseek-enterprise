@@ -9,14 +9,17 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from agentseek_execution import m3_closeout_evidence as closeout_module
 from agentseek_execution import m3_create_process as module
 from agentseek_execution import m3_evidence_process as evidence_module
+from agentseek_execution import m3_launcher as launcher
 from agentseek_execution.m3_create_receipt import CreateBinding, CreateReceiptVault
 from agentseek_execution.models import ContractError, canonical
 from test_m3_history_installation import (  # noqa: F401 -- shared fixture dependency chain
@@ -32,7 +35,8 @@ from test_m3_history_installation import (  # noqa: F401 -- shared fixture depen
 
 @pytest.mark.parametrize("size", [2, 4])
 @pytest.mark.parametrize("corrupt_receipt", [False, True])
-def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, size, corrupt_receipt):
+@pytest.mark.parametrize("launcher_flow", [False, True])
+def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, size, corrupt_receipt, launcher_flow):  # noqa: C901 -- sequence/fault matrix
     s = request.getfixturevalue("launch_fixture")
     original_plan = s.plan
     bodies = []
@@ -48,6 +52,8 @@ def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, si
     base_launch = json.loads((s.root / "launch").read_bytes())
     history = []
     posts = []
+    active = []
+    launchers = []
 
     def handle(req):
         if req.method == "POST":
@@ -55,8 +61,13 @@ def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, si
             value = {"sandboxID": f"old-{len(posts)}", "templateID": "tpl", "domain": "example.invalid",
                      "trafficAccessToken": "synthetic-token", "envdAccessToken": None}
             posts.append(req.content)
+            if launcher_flow:
+                active[:] = [{"sandboxID": value["sandboxID"], "templateID": "tpl", "state": "running",
+                              "domain": s.plan.domain, "metadata": {"agentseek_run_id": s.plan.run_id,
+                                                                     "agentseek_create_token": s.plan.create_token}}]
         else:
-            value = s.template if req.url.path.startswith("/templates/") else []
+            value = s.template if req.url.path.startswith("/templates/") else (
+                active if req.url.path == "/sandboxes" else active[0])
         return httpx.Response(201 if req.method == "POST" else 200,
                               headers={"Content-Type": "application/json"},
                               stream=httpx.ByteStream(json.dumps(value).encode()))
@@ -66,6 +77,38 @@ def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, si
     monkeypatch.setattr(closeout_module, "verify_identity", evidence_module.verify_identity)
     supervisor = (Path(__file__).resolve().parents[3] / "examples" /
                   "enterprise_wecom_digital_employee/sandbox_poc/node_supervisor.py")
+    if launcher_flow:
+        script = s.root / "supervisor.py"
+        script.write_bytes(supervisor.read_bytes())
+        script.chmod(0o600)
+        monkeypatch.setattr(launcher, "sys", SimpleNamespace(platform="linux", executable=sys.executable))
+        monkeypatch.setattr(launcher, "os", SimpleNamespace(getuid=lambda: __import__("os").getuid(), geteuid=lambda: 0))
+        # Host authorization is simulated without modifying file-owner checks.
+        real_attach = launcher.attach
+        def bounded(argv, raw, **kwargs):
+            payload = json.loads(raw)
+            with monkeypatch.context() as patch:
+                patch.setattr(launcher, "os", SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+                return canonical(real_attach(payload, closeout=argv[-1] == "--closeout")).encode()
+        def creating(path, *, installation_digest, candidate_sha256):
+            return CreateBinding(**module.perform({"path": str(path), "installation_digest": installation_digest,
+                                                   "candidate_sha256": candidate_sha256})["binding"])
+        def heartbeat(delay):
+            path = s.root / "manifest.json.heartbeat"
+            value = json.loads(path.read_bytes())
+            value["ts"] = time.time()
+            path.write_text(json.dumps(value))
+        monkeypatch.setattr(launcher, "run_worker", bounded)
+        monkeypatch.setattr(launcher, "launch_isolated", creating)
+        monkeypatch.setattr(launcher, "SupervisorReader", evidence_module.SupervisorReader)
+        monkeypatch.setattr(launcher, "verify_identity", evidence_module.verify_identity)
+        monkeypatch.setattr(launcher, "time", SimpleNamespace(monotonic=time.monotonic, sleep=heartbeat))
+
+    def private(name, data):
+        path = s.root / name
+        path.write_bytes(data)
+        path.chmod(0o600)
+        return str(path), hashlib.sha256(data).hexdigest()
     for index, plan in enumerate(sequence):
         s.plan, s.body = plan, bodies[index]
         (s.root / "request").write_bytes(s.body)
@@ -84,7 +127,29 @@ def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, si
                           previous_tracking_directory=str(s.root / f"tracking-{index - 1}"))
         (s.root / "launch").write_text(json.dumps(config))
         s.launch["installation_digest"] = hashlib.sha256((s.root / "launch").read_bytes()).hexdigest()
-        result = module.perform(s.launch)
+        if launcher_flow:
+            # Each slot retains its pinned installation; never overwrite A to prepare B.
+            approval_path, _ = private(f"approval-{index}", (s.root / "approval").read_bytes())
+            installation["approval_file"] = approval_path
+            pre_path, pre_hash = private(f"precreate-{index}", json.dumps(installation).encode())
+            config.update(precreate_file=pre_path, precreate_sha256=pre_hash)
+            request_path, _ = private(f"request-{index}", s.body)
+            config["request_file"] = request_path
+            create_path, create_hash = private(f"create-{index}", json.dumps(config).encode())
+            tracking = s.root / f"tracking-{index}"
+            tracking.mkdir(mode=0o700)
+            launch_path, launch_hash = private(f"launcher-{index}", canonical({
+                "schema": 1, "create_file": create_path, "create_sha256": create_hash,
+                "candidate_sha256": plan.candidate_sha256, "supervisor_script": str(script),
+                "supervisor_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+                "tracking_directory": str(tracking)}).encode())
+            if index:
+                result = launcher.launch_successor(Path(launch_path), launch_hash, *launchers[-1], history[-1])
+            else:
+                result = launcher.launch(Path(launch_path), launch_hash)
+            launchers.append((Path(launch_path), launch_hash))
+        else:
+            result = module.perform(s.launch)
         binding = CreateBinding(**result["binding"])
         if corrupt_receipt and index == 0:
             before_corruption = (s.root / "manifest.json").read_bytes()
@@ -108,10 +173,12 @@ def test_complete_installation_sequence_uses_sealed_ids(request, monkeypatch, si
         assert all(after[k] == v for k, v in before.items())
         assert set(after) == {vault.read(b).sandbox_id for b in [*history, binding]}
         # Helpers use the fixed temporary name; retain each target directory after observation.
-        (s.root / "tracking").mkdir(mode=0o700)
-        _observe_running(s, replace(binding, intent_sha256="0" * 64), index + 1, monkeypatch, wrong_marker=False)
-        (s.root / "tracking").rename(s.root / f"tracking-{index}")
+        if not launcher_flow:
+            (s.root / "tracking").mkdir(mode=0o700)
+            _observe_running(s, replace(binding, intent_sha256="0" * 64), index + 1, monkeypatch, wrong_marker=False)
+            (s.root / "tracking").rename(s.root / f"tracking-{index}")
         _supervise_disappearance(s, index + 1, monkeypatch, disappear=True)
+        active.clear()
         history.append(binding)
         with pytest.raises(ContractError):
             module.perform(s.launch)
