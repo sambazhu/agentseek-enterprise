@@ -37,7 +37,8 @@ def main():
         if not source.is_relative_to(installation) or hashlib.sha256(source.read_bytes()).hexdigest() != hashes[source.name]:
             stop("installed source mismatch")
     # Fixed entries only: never take an executable/module name from the manifest.
-    entries = ("m3_create_process", "m3_case_process", "m3_precreate_process", "m3_receipt_probe", "m3_launcher")
+    entries = ("m3_create_process", "m3_case_process", "m3_precreate_process", "m3_receipt_probe", "m3_launcher",
+               "m3_slot", "m3_lifecycle")
     for name in entries:
         result = subprocess.run(  # noqa: S603 -- fixed interpreter and module allowlist
             [sys.executable, "-I", "-m", f"agentseek_execution.{name}"], input=b"{}",

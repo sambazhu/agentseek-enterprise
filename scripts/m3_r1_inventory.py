@@ -15,10 +15,11 @@ from pathlib import Path
 PACKAGE = Path("contrib/agentseek-execution/src/agentseek_execution")
 TESTS = Path("contrib/agentseek-execution/tests")
 EXAMPLE = Path("examples/enterprise_wecom_digital_employee")
-ENTRIES = ("m3_create_process", "m3_case_process", "m3_precreate_process", "m3_receipt_probe", "m3_launcher")
+ENTRIES = ("m3_create_process", "m3_case_process", "m3_precreate_process", "m3_receipt_probe", "m3_launcher",
+           "m3_slot", "m3_lifecycle")
 EXTRA_TESTS = ("test_m3_batch_integration", "test_m3_history_installation",
                "test_m3_create_crash", "test_m3_fence_handoff", "test_m3_supervisor_process",
-               "test_m3_installation_sequence")
+               "test_m3_installation_sequence", "test_m3_cross_guest")
 
 
 def imports(tree, package):

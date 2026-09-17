@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -115,6 +116,23 @@ def collect_dispatch_evidence(payload: dict, *, binding: Binding) -> Evidence:
     return _collect(payload, expected_binding=binding)
 
 
+def collect_gate_isolated(path: Path, *, installation_digest: str, approval_digest: str,
+                          binding: Binding) -> Evidence:
+    """Bounded live evidence for the slot caller, never a saved report input."""
+    raw = run_worker(
+        [sys.executable, "-I", "-m", "agentseek_execution.m3_evidence_process", "--gate"],
+        canonical({"path": str(path), "installation_digest": installation_digest,
+                   "approval_digest": approval_digest, "binding": asdict(binding)}).encode(),
+        budget=10, environment={},
+    )
+    value = _decode(raw)
+    value["approval"] = Binding(**value["approval"])
+    value["receipt"] = Binding(**value["receipt"])
+    result = Evidence(**value)
+    result.verify(binding, time.monotonic())
+    return result
+
+
 def _collect(payload: dict, *, expected_binding: Binding | None = None):  # noqa: C901
     """Production child requires root; tests substitute OS ownership locally."""
     _require_root()
@@ -193,6 +211,7 @@ def _collect(payload: dict, *, expected_binding: Binding | None = None):  # noqa
         platform = reader.collect(binding, paths["probe_config"])
     else:
         source = ReceiptProbeSource.from_wire(config["receipt_source"])
+        require(source.donor is None or (version == 4 and expected_binding is not None), Code.DENIED)
         require(source.domain == control["domain"] and source.proxy_port == control["proxy_port"], Code.DENIED)
         require(config_bytes(source.api_key_file).decode("ascii") == control["api_key"], Code.DENIED)
         prepare_receipted(paths["probe_config"], binding=binding, source=source)
@@ -215,6 +234,10 @@ def _collect(payload: dict, *, expected_binding: Binding | None = None):  # noqa
             network = read_network_intent(Path(config["create_request_file"]), create=source.create, vault=vault)
             require(network.sandbox_id == binding.sandbox_id, Code.DENIED)
         platform = reader.collect_created(source.create, vault)
+        # X1 private preparation has proved distinct A/B receipts plus archived
+        # A->B fence handoff. collect_created requires the complete platform
+        # list to contain exactly B, so A is absent at this live observation.
+        # This is not an atomic snapshot or a claim of per-guest termination.
     # No claim that the sequential reads form an atomic platform snapshot.
     final = supervisor.read(**expected)
     final_identity = verify_identity(final, identity_pins)
@@ -308,7 +331,15 @@ def _window(value: dict, plan: CreatePlan, supervisor: SupervisorReader):
 
 def main() -> None:
     try:
-        sys.stdout.write(canonical(perform(_decode(sys.stdin.buffer.read(65537)))))
+        payload = _decode(sys.stdin.buffer.read(65537))
+        if sys.argv[1:] == ["--gate"]:
+            require(set(payload) == {"path", "installation_digest", "approval_digest", "binding"}, Code.DENIED)
+            binding = Binding(**payload.pop("binding"))
+            result = asdict(collect_dispatch_evidence(payload, binding=binding))
+        else:
+            require(not sys.argv[1:], Code.DENIED)
+            result = perform(payload)
+        sys.stdout.write(canonical(result))
     except Exception:
         sys.exit(2)
 
