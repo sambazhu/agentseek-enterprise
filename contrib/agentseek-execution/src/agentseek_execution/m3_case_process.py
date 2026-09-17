@@ -25,18 +25,23 @@ from .m3_template_evidence import TemplatePins
 from .models import Code, canonical, require
 from .worker_process import run_worker
 
+CASE_BUDGET_SECONDS = 15
+CLEANUP_RESERVE_SECONDS = 1
+
 
 def dispatch_isolated(installation: Path, directory: Path, *, installation_digest: str,
                       approval_digest: str, deadline: float) -> dict:
-    """At most 30s total plus 1s cleanup; OS launch is not a realtime guarantee.
+    """At most 15s total plus 1s cleanup; OS launch is not a realtime guarantee.
 
     Deadline uses the same host's monotonic clock. Timeout is UNKNOWN, never
     evidence that the row did not run or that its guest has terminated.
     """
     require(type(deadline) in {int, float} and math.isfinite(deadline), Code.DENIED)
     now = time.monotonic()
-    require(deadline - now >= 12, Code.DENIED)
-    stop = min(deadline - 1, now + 30)
+    # Never start a truncated row near the guest/approval cutoff. The caller
+    # supplies the earlier trusted cutoff, not a fresh per-row guest lifetime.
+    require(deadline - now >= CASE_BUDGET_SECONDS + CLEANUP_RESERVE_SECONDS, Code.DENIED)
+    stop = now + CASE_BUDGET_SECONDS
     raw = run_worker(
         [sys.executable, "-I", "-m", "agentseek_execution.m3_case_process"],
         canonical({"installation": str(installation), "directory": str(directory),
@@ -64,7 +69,8 @@ def perform(payload: dict) -> dict:
         "installation", "directory", "installation_digest", "approval_digest", "deadline",
     }, Code.DENIED)
     stop = payload["deadline"]
-    require(type(stop) in {int, float} and math.isfinite(stop) and 11 <= stop - time.monotonic() <= 30, Code.DENIED)
+    require(type(stop) in {int, float} and math.isfinite(stop)
+            and 11 <= stop - time.monotonic() <= CASE_BUDGET_SECONDS, Code.DENIED)
     installation = Path(payload["installation"])
     raw = config_bytes(installation)
     require(hashlib.sha256(raw).hexdigest() == payload["installation_digest"], Code.DENIED)
