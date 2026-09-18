@@ -171,6 +171,7 @@ def build_agent(
     binding: PlaybookBinding | None = None,
     profile_tool_grants: tuple[str, ...] | None = None,
     shared_capability_tools: Sequence[Any] = (),
+    sandbox_tools: Sequence[Any] = (),
 ) -> Any:
     """Build the local DeepAgents runnable."""
 
@@ -204,6 +205,7 @@ def build_agent(
             *direct_capability_tools,
             *employee_memory_tools(),
             *enabled_work_tools,
+            *sandbox_tools,
         ],
         system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding),
         skills=["/skills"],
@@ -234,12 +236,15 @@ def _direct_capability_tools(*, tool_grants: tuple[str, ...] | None) -> list[Any
     return tools
 
 
-def build_spec():
+def build_spec(*, sandbox_tools: Sequence[Any] = ()):
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
     settings = get_settings()
     registry = get_playbook_registry() if settings.work_enabled else None
-    routed_runnable = _build_runtime_runnable(registry)
+    routed_runnable = (
+        _build_runtime_runnable(registry, sandbox_tools=sandbox_tools)
+        if sandbox_tools else _build_runtime_runnable(registry)
+    )
     base_spec = messages_spec(routed_runnable, include_agents_md=False)
 
     def build_input(context: InvocationContext) -> object:
@@ -247,6 +252,8 @@ def build_spec():
         if not isinstance(runnable_input, dict):
             return runnable_input
         runnable_input = dict(runnable_input)
+        if sandbox_tools and isinstance(context.state.get("current_files"), list):
+            runnable_input["current_files"] = list(context.state["current_files"])
         if latest_user_message := _clean(context.state.get("latest_user_message")):
             runnable_input["latest_user_message"] = latest_user_message
         if isinstance(context.state.get("playbook_route"), Mapping):
@@ -285,20 +292,27 @@ def build_spec():
     )
 
 
-def _build_runtime_runnable(registry: PlaybookRegistry | None) -> object:
+def _build_runtime_runnable(registry: PlaybookRegistry | None, *, sandbox_tools: Sequence[Any] = ()) -> object:
     if registry is None:
-        return build_agent()
+        return build_agent(sandbox_tools=sandbox_tools) if sandbox_tools else build_agent()
     shared_tools = registry.shared_capability_tools()
+    # A server must explicitly opt in and the profile must grant the capability.
+    sandbox_kwargs = (
+        {"sandbox_tools": sandbox_tools}
+        if sandbox_tools and "run_sandbox_task" in registry.profile.tool_grants else {}
+    )
     return RoutedAgentRunnable(
         direct=build_agent(
             profile_tool_grants=registry.profile.tool_grants,
             shared_capability_tools=shared_tools,
+            **sandbox_kwargs,
         ),
         by_playbook={
             reference: build_agent(
                 binding=registry.get(reference),
                 profile_tool_grants=registry.profile.tool_grants,
                 shared_capability_tools=shared_tools,
+                **sandbox_kwargs,
             )
             for reference in registry.playbook_refs
         },

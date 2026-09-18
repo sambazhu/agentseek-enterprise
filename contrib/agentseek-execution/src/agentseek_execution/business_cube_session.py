@@ -1,0 +1,204 @@
+"""Private, bounded CSV command/termination worker for an approved same-host pilot.
+
+Not a public broker or a replacement for lifecycle admission. No create endpoint,
+shell fallback, SDK implicit retry or arbitrary model command is exposed.
+"""
+
+import base64
+from dataclasses import asdict, replace
+import hashlib
+import json
+import math
+import os
+import shlex
+import struct
+import sys
+import time
+
+from .csv_business import CSV_PROGRAM, MAX_CSV_BYTES, decode_csv_result
+from .m3_create_process import _path, _pinned
+from .m3_create_receipt import CreateBinding, CreateReceiptVault
+from .m3_platform_evidence import PlatformReader
+from .m3_probe_process import _decode, config_bytes
+from .m3_probe_protocol import _CommandState
+from .m3_supervisor_identity import IdentityPins, verify_identity
+from .m3_supervisor_snapshot import SupervisorReader, system_clock
+from .models import Code, canonical, require
+from .worker_process import run_worker
+
+LIMIT = 200000
+
+
+def read_plan(path, digest):
+    value = _decode(_pinned(path, digest))
+    require(set(value) == {"schema", "csv_approved", "termination_approved", "expires_epoch",
+        "expected_create", "input_sha256", "instruction_sha256", "vault_directory", "vault_key_file",
+        "control", "supervisor_directory", "supervisor_identity"}, Code.DENIED)
+    require(type(value["schema"]) is int and value["schema"] == 1
+            and value["csv_approved"] is True and value["termination_approved"] is True, Code.DENIED)
+    expected = CreateBinding(**value["expected_create"])
+    expected.validate()
+    require(expected.intent_sha256 == "0" * 64 and expected.restricted is True, Code.DENIED)
+    for name in ("input_sha256", "instruction_sha256"):
+        require(type(value[name]) is str and len(value[name]) == 64
+                and all(c in "0123456789abcdef" for c in value[name]), Code.DENIED)
+    expiry = value["expires_epoch"]
+    require(type(expiry) in (int, float) and math.isfinite(expiry) and expiry > time.time(), Code.DENIED)
+    return value
+
+
+class ApprovedCsvSessionFactory:
+    """Bind one immutable business plan before create and its real receipt after."""
+
+    def __init__(self, path, digest):
+        self.path, self.digest = _path(str(path)), digest
+
+    def validate_request(self, request, data):
+        plan = read_plan(self.path, self.digest)
+        require(hashlib.sha256(data).hexdigest() == plan["input_sha256"]
+                and hashlib.sha256(request.instruction.encode()).hexdigest() == plan["instruction_sha256"], Code.DENIED)
+        return plan["expected_create"]
+
+    def __call__(self, binding):
+        plan = read_plan(self.path, self.digest)
+        created = CreateBinding(**binding)
+        created.validate()
+        require(created.intent_sha256 != "0" * 64
+                and asdict(replace(created, intent_sha256="0" * 64)) == plan["expected_create"], Code.DENIED)
+        return ApprovedCsvSession(self.path, self.digest, binding)
+
+    def validate_installation(self, installed, precreate):
+        plan = read_plan(self.path, self.digest)
+        require(_path(plan["vault_directory"]) == _path(installed["vault_directory"])
+                and _path(plan["vault_key_file"]) == _path(installed["receipt_key_file"]), Code.DENIED)
+        for name in ("supervisor_directory", "supervisor_identity"):
+            require(plan[name] == precreate[name], Code.DENIED)
+        control = plan["control"]
+        require(set(control) == {"endpoint", "api_key", "ca_file", "domain", "proxy_port"}
+                and control["endpoint"] == precreate["plan"]["endpoint"]
+                and control["domain"] == precreate["plan"]["domain"]
+                and type(control["proxy_port"]) is int and control["proxy_port"] == 13080
+                and _path(control["ca_file"]) == _path(precreate["ca_file"])
+                and control["api_key"].encode("ascii") == config_bytes(_path(precreate["api_key_file"])), Code.DENIED)
+
+
+class ApprovedCsvSession:
+    def __init__(self, path, digest, binding):
+        self.path, self.digest, self.binding = path, digest, binding
+
+    def _invoke(self, operation, data=""):
+        payload = dict(path=str(self.path), sha256=self.digest, binding=self.binding, operation=operation, data=data)
+        raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.business_cube_session"],
+                         canonical(payload).encode(), budget=25 if operation == "run" else 10, environment={})
+        return _decode(raw)
+
+    def run(self, command, timeout):
+        args = shlex.split(command)
+        require(timeout == 15 and len(args) == 5 and args[:3] == ["python3", "-I", "-c"]
+                and args[3] == CSV_PROGRAM, Code.DENIED)
+        result = self._invoke("run", args[4])
+        require(set(result) == {"stdout"}, Code.UNKNOWN)
+        decode_csv_result(result["stdout"])
+        return result["stdout"]
+
+    def terminate(self):
+        require(self._invoke("terminate") == {"delete_accepted": True}, Code.UNKNOWN)
+
+    def close(self):
+        pass  # All HTTP clients live in bounded children and are already closed.
+
+
+def command_stdout(body):
+    """Bounded Connect stream; zero exit and complete terminator required."""
+    require(type(body) is bytes and len(body) <= LIMIT, Code.UNKNOWN)
+    state, offset, ended = _CommandState(), 0, False
+    while offset < len(body):
+        require(not ended and len(body) - offset >= 5, Code.UNKNOWN)
+        flag = body[offset]
+        size = struct.unpack(">I", body[offset + 1:offset + 5])[0]
+        offset += 5
+        require(flag in (0, 2) and size <= LIMIT and offset + size <= len(body), Code.UNKNOWN)
+        value = _decode(body[offset:offset + size])
+        offset += size
+        if flag == 2:
+            require(not value.get("error"), Code.UNKNOWN)
+            ended = True
+        else:
+            state.event(value)
+    require(ended and state.ended and state.exit_code == 0 and not state.stderr, Code.UNKNOWN)
+    return bytes(state.stdout).decode("utf-8")
+
+
+def perform(payload):
+    import httpx
+    require(sys.platform == "linux" and os.getuid() == os.geteuid() == 0, Code.DENIED)
+    require(set(payload) == {"path", "sha256", "binding", "operation", "data"}, Code.DENIED)
+    plan = read_plan(_path(payload["path"]), payload["sha256"])
+    binding = CreateBinding(**payload["binding"])
+    binding.validate()
+    require(binding.intent_sha256 != "0" * 64
+            and asdict(replace(binding, intent_sha256="0" * 64)) == plan["expected_create"], Code.DENIED)
+    require(binding.boot_id == system_clock().boot_id, Code.DENIED)
+    vault = CreateReceiptVault(_path(plan["vault_directory"]), config_bytes(_path(plan["vault_key_file"])))
+    intent, receipt = vault.read_intent(binding), vault.read(binding)
+    require(receipt.domain == binding.domain and receipt.template_id == binding.template_id, Code.DENIED)
+    control = dict(plan["control"])
+    control["ca_file"] = _path(control["ca_file"])
+    reader = PlatformReader(**control)
+    snapshot = reader.collect_created(binding, vault)
+    operation = payload["operation"]
+    require(operation in {"run", "terminate"}, Code.DENIED)
+    if operation == "terminate":
+        require(payload["data"] == "", Code.DENIED)
+        # Target identity was verified above; absence confirmation remains the
+        # independent lifecycle closeout. A lost DELETE response is not success.
+        with httpx.Client(verify=reader._tls, timeout=2, trust_env=False, follow_redirects=False) as client:
+            response = client.delete(control["endpoint"].rstrip("/") + "/sandboxes/" + receipt.sandbox_id,
+                                     headers={"X-API-Key": control["api_key"]})
+            require(response.status_code in {200, 204}, Code.UNKNOWN)
+        return {"delete_accepted": True}
+    verify_identity(IdentityPins(**plan["supervisor_identity"]))
+    SupervisorReader(_path(plan["supervisor_directory"])).read(
+        run_id=binding.run_id, template_id=binding.template_id, sandbox_id=receipt.sandbox_id)
+    now = system_clock()
+    require(now.monotonic >= intent["sent_mono"] and now.monotonic - intent["sent_mono"] <= 90
+            and snapshot.started_epoch is not None and time.time() + 30 <= snapshot.started_epoch + 120
+            and time.time() + 30 <= plan["expires_epoch"], Code.DENIED)
+    data = base64.b64decode(payload["data"], validate=True)
+    require(0 < len(data) <= MAX_CSV_BYTES and hashlib.sha256(data).hexdigest() == plan["input_sha256"], Code.DENIED)
+    require(receipt.traffic_token and receipt.envd_state in {"null", "absent"}, Code.DENIED)
+    # v0.7 receipt has no envd credential; this pilot relies on the verified
+    # private CubeProxy traffic token. It does not claim envd-token enforcement.
+    headers = {"Host": f"49983-{receipt.sandbox_id}.{receipt.domain}", "X-API-Key": control["api_key"],
+        "e2b-traffic-access-token": receipt.traffic_token, "Authorization": "Basic cm9vdDo=",
+        "Content-Type": "application/connect+json", "Connect-Protocol-Version": "1",
+        "Connect-Timeout-Ms": "15000", "Accept-Encoding": "identity", "Connect-Content-Encoding": "identity"}
+    value = dict(process=dict(cmd="python3", args=["-I", "-c", CSV_PROGRAM, payload["data"]], envs={}), stdin=False)
+    encoded = json.dumps(value).encode()
+    body = b"\x00" + struct.pack(">I", len(encoded)) + encoded
+    with httpx.Client(timeout=2, trust_env=False, follow_redirects=False) as client:
+        with client.stream("POST", f"http://127.0.0.1:{control['proxy_port']}/process.Process/Start",
+                           headers=headers, content=body) as response:
+            require(response.status_code == 200 and response.headers.get("Content-Encoding", "identity") == "identity"
+                    and response.headers.get("Content-Type", "").split(";")[0] == "application/connect+json", Code.UNKNOWN)
+            buffer = bytearray()
+            for part in response.iter_raw(chunk_size=4096):
+                require(len(buffer) + len(part) <= LIMIT, Code.UNKNOWN)
+                buffer.extend(part)
+    stdout = command_stdout(bytes(buffer))
+    decode_csv_result(stdout)
+    return {"stdout": stdout}
+
+
+def main():
+    try:
+        require(sys.flags.isolated, Code.DENIED)
+        raw = sys.stdin.buffer.read(65537)
+        require(len(raw) <= 65536, Code.DENIED)
+        print(canonical(perform(_decode(raw))))
+    except Exception:
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
