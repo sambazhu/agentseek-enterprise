@@ -22,7 +22,8 @@ MAX_RESULT_BYTES = 65536
 
 # Executed ONLY in the guest by a trusted command adapter. No model-written code.
 CSV_PROGRAM = r'''
-import base64, csv, io, json, sys
+import base64, csv, io, json, sys, tempfile
+from pathlib import Path
 from decimal import Decimal
 data = base64.b64decode(sys.argv[1], validate=True)
 if len(data) > 32768: raise ValueError("input limit")
@@ -46,6 +47,10 @@ for key in sorted(totals):
     writer.writerow([label, format(totals[key], "f")])
 result = output.getvalue().encode("utf-8")
 if len(result) > 65536: raise ValueError("output limit")
+with tempfile.TemporaryDirectory(prefix="agentseek-csv-") as workspace:
+    path = Path(workspace) / "summary.csv"
+    path.write_bytes(result)
+    result = path.read_bytes()
 print(json.dumps({"csv": base64.b64encode(result).decode("ascii"), "groups": len(totals)}))
 '''.strip()
 
@@ -145,10 +150,52 @@ class BusinessStore:
         if state not in {"succeeded", "failed", "reconciling"}:
             raise ValueError("invalid outcome")
         with self._connect() as db:
-            row = db.execute("SELECT artifact FROM attempts WHERE id=?", (attempt,)).fetchone()
-            if row is None or (artifact is not None and row[0] != artifact):
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT artifact,state FROM attempts WHERE id=?", (attempt,)).fetchone()
+            if (row is None or (artifact is not None and row[0] != artifact)
+                    or (row[1] in {"succeeded", "failed"} and row[1] != state)):
                 raise ValueError("outcome mismatch")
             db.execute("UPDATE attempts SET state=? WHERE id=?", (state, attempt))
+
+    def persist_remote(self, request, outcome, data):
+        """Mirror a validated remote artifact without resetting local uncertainty."""
+        if type(data) is not bytes or not 0 < len(data) <= MAX_RESULT_BYTES:
+            raise ValueError("invalid artifact")
+        current = self.snapshot(request)
+        if current is None or current.attempt != outcome.attempt:
+            raise ValueError("missing intent")
+        digest = hashlib.sha256(data).hexdigest()
+        ref = "artifact_" + hashlib.sha256((current.attempt + digest).encode()).hexdigest()
+        if ref != outcome.artifact_ref:
+            raise ValueError("artifact binding mismatch")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT artifact,state FROM attempts WHERE id=?", (current.attempt,)).fetchone()
+            if row[0] is None and row[1] in {"reserved", "reconciling"}:
+                db.execute("INSERT INTO artifacts VALUES (?,?,?,?)", (ref, request.owner_id, digest, data))
+                db.execute("UPDATE attempts SET artifact=? WHERE id=?", (ref, current.attempt))
+            elif row[0] != ref:
+                raise ValueError("artifact changed")
+        if self.read(request.owner_id, ref) != data:
+            raise ValueError("readback failed")
+
+    def snapshot(self, request: BusinessRequest):
+        """Read exact-request status; never schedules work or resets a reservation."""
+        from .business_execution import BusinessOutcome
+        attempt = hashlib.sha256(json.dumps([request.owner_id, request.request_id]).encode()).hexdigest()
+        with self._connect() as db:
+            row = db.execute("SELECT owner,request,state,artifact FROM attempts WHERE id=?", (attempt,)).fetchone()
+        if row is None:
+            return None
+        if row[:2] != (request.owner_id, json.dumps(asdict(request), sort_keys=True)):
+            raise ValueError("request identity collision")
+        state = row[2] if row[2] != "reserved" else "reconciling"
+        return BusinessOutcome(attempt, state, row[3], state in {"succeeded", "failed"})
+
+    def latest_request(self, owner):
+        with self._connect() as db:
+            row = db.execute("SELECT request FROM attempts WHERE owner=? ORDER BY rowid DESC LIMIT 1", (owner,)).fetchone()
+        return None if row is None else BusinessRequest(**json.loads(row[0]))
 
 
 class CsvBusinessBackend:
@@ -159,11 +206,12 @@ class CsvBusinessBackend:
     provider.destroy(attempt) verifies absence, including uncertain-create cases.
     """
 
-    def __init__(self, *, request, store, provider, authorize, load_input):
+    def __init__(self, *, request, store, provider, authorize, load_input, workspace=None):
         self.request, self.store, self.provider = request, store, provider
         self._authorize, self._load_input = authorize, load_input
         self._data = None
         self._result = None
+        self.workspace = workspace
 
     def authorize(self, request):
         if request != self.request or self._authorize(request) is not True:
@@ -194,7 +242,10 @@ class CsvBusinessBackend:
     def persist(self, attempt, result_ref):
         if result_ref != "result" or self._authorize(self.request) is not True:
             raise ValueError("output no longer authorized")
-        return self.store.persist(attempt, self.request.owner_id, self._result)
+        artifact = self.store.persist(attempt, self.request.owner_id, self._result)
+        if self.workspace is not None:
+            self.workspace.publish(self.request, attempt, artifact, self._result)
+        return artifact
 
     def destroy(self, attempt):
         return self.provider.destroy(attempt)

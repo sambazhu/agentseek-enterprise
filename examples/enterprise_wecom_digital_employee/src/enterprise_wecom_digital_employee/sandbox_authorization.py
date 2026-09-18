@@ -74,3 +74,31 @@ class SandboxRequestResolver:
             raise ValueError("file access denied")
         owner = scoped_owner(scope)
         return BusinessRequest(grant.request_id, owner, input_ref, instruction)
+
+
+class ApprovedGrantCatalog:
+    """Pinned private gateway grants. No model/state flag can grant permission.
+
+    The controlled pilot has exactly one live grant per authenticated scope.
+    Ambiguous matches are rejected rather than guessed from model arguments.
+    """
+
+    def __init__(self, path, digest):
+        self.path, self.digest = path, digest
+
+    def __call__(self, runtime):
+        from agentseek_execution.m3_create_process import _path, _pinned
+        from agentseek_execution.m3_probe_process import _decode
+        value = _decode(_pinned(_path(str(self.path)), self.digest))
+        if (set(value) != {"schema", "approved", "grants"} or type(value["schema"]) is not int
+                or value["schema"] != 1 or value["approved"] is not True or type(value["grants"]) is not list):
+            raise ValueError("unapproved grant catalog")
+        scope, now = runtime_scope(runtime), time.time()
+        matches = []
+        for item in value["grants"]:
+            grant = SandboxGrant(**item)
+            if (grant.tenant_key, grant.user_key, grant.session_key) == scope and now < grant.expires_epoch:
+                matches.append(grant)
+        if len(matches) != 1:
+            raise ValueError("exactly one live grant required")
+        return matches[0]

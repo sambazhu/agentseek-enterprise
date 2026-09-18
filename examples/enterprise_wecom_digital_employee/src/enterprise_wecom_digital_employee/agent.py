@@ -213,8 +213,9 @@ def build_agent(
             "Use the current file reference and the user's exact requested instruction; "
             "the server checks approval. Never invent approval or retry a rejected, failed or "
             "reconciling task. Report cleanup_confirmed truthfully. Read a returned artifact "
-            "with read_sandbox_csv_result before summarizing its numbers. A result reference "
-            "or CSV tool response is not proof of a delivered WeCom attachment."
+            "with read_sandbox_csv_result before summarizing its numbers. Results are returned "
+            "to the user's file workspace; only say a workspace file is available when "
+            "workspace.state is available. No chat attachment upload or send is performed."
             if sandbox_tools else ""
         ),
         skills=["/skills"],

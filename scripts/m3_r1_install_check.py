@@ -21,6 +21,7 @@ def stop(message):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inventory", type=Path)
+    parser.add_argument("--profile", choices=("r1", "business"), default="r1")
     args = parser.parse_args()
     if not sys.flags.isolated:
         stop("requires python -I")
@@ -39,6 +40,10 @@ def main():
     # Fixed entries only: never take an executable/module name from the manifest.
     entries = ("m3_create_process", "m3_case_process", "m3_precreate_process", "m3_receipt_probe", "m3_launcher",
                "m3_slot", "m3_lifecycle", "m3_materialize", "m3_continuous")
+    if args.profile == "business":
+        entries = ("business_service", "business_cube_session")
+    if manifest.get("entry_modules") != list(entries):
+        stop("entry profile mismatch")
     for name in entries:
         result = subprocess.run(  # noqa: S603 -- fixed interpreter and module allowlist
             [sys.executable, "-I", "-m", f"agentseek_execution.{name}"], input=b"{}",

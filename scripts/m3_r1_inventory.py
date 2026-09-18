@@ -73,7 +73,8 @@ def closure(root, modules, seeds, external):
     return selected
 
 
-def inventory(root: Path) -> dict:
+def inventory(root: Path, *, entries=ENTRIES, extra_tests=EXTRA_TESTS,
+              scope="static R1 source/test closure, not a release approval") -> dict:
     modules = {}
     for prefix, directory in (("agentseek_execution", PACKAGE), ("", TESTS),
                               ("sandbox_poc", EXAMPLE / "sandbox_poc")):
@@ -83,17 +84,17 @@ def inventory(root: Path) -> dict:
     modules["test_node_supervisor"] = EXAMPLE / "tests/test_node_supervisor.py"
     external = set()
 
-    runtime = closure(root, modules, [f"agentseek_execution.{name}" for name in ENTRIES], external)
+    runtime = closure(root, modules, [f"agentseek_execution.{name}" for name in entries], external)
     tests = {"test_" + name.rsplit(".", 1)[-1] for name in runtime}
-    tests = (tests & modules.keys()) | set(EXTRA_TESTS) | {"test_node_supervisor"}
+    tests = (tests & modules.keys()) | set(extra_tests) | {"test_node_supervisor"}
     if "conftest" in modules:
         tests.add("conftest")
     complete = closure(root, modules, runtime | tests, external)
     paths = sorted({modules[name] for name in complete})
     files = [{"path": path.as_posix(), "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest()}
              for path in paths]
-    return {"schema": 1, "scope": "static R1 source/test closure, not a release approval",
-            "entry_modules": list(ENTRIES), "runtime_modules": sorted(runtime),
+    return {"schema": 1, "scope": scope,
+            "entry_modules": list(entries), "runtime_modules": sorted(runtime),
             "test_paths": sorted(modules[name].as_posix() for name in complete if name.startswith("test_")),
             "import_roots": sorted(external - {"", "__future__"}), "files": files,
             "limitations": ["No dependency version lock or installable wheel is produced.",
@@ -117,7 +118,8 @@ def stage(root: Path, destination: Path, manifest: dict) -> None:
     (destination / "R1_INVENTORY.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
-def stage_package(root: Path, destination: Path, manifest: dict) -> None:
+def stage_package(root: Path, destination: Path, manifest: dict,
+                  *, template=Path("scripts/m3_r1_package.toml")) -> None:
     """Stage only runtime modules into a separate wheel project, never production."""
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
     expected = {item["path"]: item["sha256"] for item in manifest["files"]}
@@ -131,7 +133,7 @@ def stage_package(root: Path, destination: Path, manifest: dict) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as stream:
             stream.write(data)
-    (destination / "pyproject.toml").write_bytes((root / "scripts/m3_r1_package.toml").read_bytes())
+    (destination / "pyproject.toml").write_bytes((root / template).read_bytes())
     (destination / "R1_INVENTORY.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

@@ -15,35 +15,39 @@ from .sandbox_authorization import SandboxRequestResolver, runtime_scope, scoped
 from .sandbox_tools import sandbox_business_tools
 
 
+def scoped_csv_bytes(file_store, runtime, scope, file_id):
+    from agentseek_execution.csv_business import MAX_CSV_BYTES
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    matches = []
+    for item in state.get("current_files", []):
+        if isinstance(item, FileRecord):
+            item = item.to_dict()
+        if isinstance(item, dict) and item.get("file_id") == file_id:
+            matches.append(FileRecord.from_dict(item))
+    if len(matches) != 1:
+        raise ValueError("file not uniquely available in this turn")
+    expected = matches[0]
+    record = file_store.load_record(expected.relative_dir)
+    if (record.file_id != file_id or record.relative_dir != expected.relative_dir
+            or (record.tenant_key, record.employee_key, record.session_key) != scope
+            or record.direction != "inbound" or not record.filename.lower().endswith(".csv")
+            or not 0 < record.size_bytes <= MAX_CSV_BYTES):
+        raise ValueError("file scope or format mismatch")
+    if record.expires_at and datetime.fromisoformat(record.expires_at) <= datetime.now(timezone.utc):
+        raise ValueError("file expired")
+    with file_store.original_path(record).open("rb") as stream:
+        data = stream.read(MAX_CSV_BYTES + 1)
+    if len(data) != record.size_bytes or hashlib.sha256(data).hexdigest() != record.sha256:
+        raise ValueError("file content mismatch")
+    return data
+
+
 def csv_pilot_tools(*, grant_for, file_store, business_store, provider_for):
     """Build real tools with trusted grant/file/provider adapters supplied explicitly."""
-    from agentseek_execution.csv_business import CsvBusinessBackend, MAX_CSV_BYTES
+    from agentseek_execution.csv_business import CsvBusinessBackend
 
     def file_bytes(runtime, scope, file_id):
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        matches = []
-        for item in state.get("current_files", []):
-            if isinstance(item, FileRecord):
-                item = item.to_dict()
-            if isinstance(item, dict) and item.get("file_id") == file_id:
-                matches.append(FileRecord.from_dict(item))
-        if len(matches) != 1:
-            raise ValueError("file not uniquely available in this turn")
-        expected = matches[0]
-        record = file_store.load_record(expected.relative_dir)
-        if (record.file_id != file_id or record.relative_dir != expected.relative_dir
-                or (record.tenant_key, record.employee_key, record.session_key) != scope
-                or record.direction != "inbound" or not record.filename.lower().endswith(".csv")
-                or not 0 < record.size_bytes <= MAX_CSV_BYTES):
-            raise ValueError("file scope or format mismatch")
-        if record.expires_at:
-            if datetime.fromisoformat(record.expires_at) <= datetime.now(timezone.utc):
-                raise ValueError("file expired")
-        with file_store.original_path(record).open("rb") as stream:
-            data = stream.read(MAX_CSV_BYTES + 1)
-        if len(data) != record.size_bytes or hashlib.sha256(data).hexdigest() != record.sha256:
-            raise ValueError("file content mismatch")
-        return data
+        return scoped_csv_bytes(file_store, runtime, scope, file_id)
 
     def resolver_for(runtime):
         def allowed(scope, file_id):
