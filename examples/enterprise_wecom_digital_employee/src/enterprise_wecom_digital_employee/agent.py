@@ -207,7 +207,16 @@ def build_agent(
             *enabled_work_tools,
             *sandbox_tools,
         ],
-        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding),
+        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding) + (
+            "\nSandbox CSV pilot: run_sandbox_task is only for an uploaded CSV with "
+            "group,amount columns and a group-wise sum request. Ordinary questions need no sandbox. "
+            "Use the current file reference and the user's exact requested instruction; "
+            "the server checks approval. Never invent approval or retry a rejected, failed or "
+            "reconciling task. Report cleanup_confirmed truthfully. Read a returned artifact "
+            "with read_sandbox_csv_result before summarizing its numbers. A result reference "
+            "or CSV tool response is not proof of a delivered WeCom attachment."
+            if sandbox_tools else ""
+        ),
         skills=["/skills"],
         backend=backend,
         context_schema=EnterpriseAgentRuntimeContext,
