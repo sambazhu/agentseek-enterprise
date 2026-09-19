@@ -11,6 +11,7 @@ def build_spec():
     from agentseek_execution.m3_probe_process import _decode, config_bytes
     from agentseek_files.settings import FilesSettings
     from agentseek_files.store import LocalFileStore
+    from agentseek_files.workspace_download import configured_workspace_downloads
 
     from .agent import build_spec as build_agent_spec
     from .sandbox_authorization import ApprovedGrantCatalog
@@ -27,6 +28,8 @@ def build_spec():
         token=config_bytes(_path(config["broker_token_file"])).decode("ascii"))
     grants = ApprovedGrantCatalog(_path(config["grants_file"]), config["grants_sha256"])
     store = BusinessStore(_path(config["mirror_directory"]))
-    tools = remote_csv_tools(grant_for=grants, file_store=LocalFileStore(FilesSettings.from_env()),
-                             runner=RemoteCsvRunner(client=client, store=store))
+    files = LocalFileStore(FilesSettings.from_env())
+    tools = remote_csv_tools(grant_for=grants, file_store=files,
+                             runner=RemoteCsvRunner(client=client, store=store),
+                             downloads=configured_workspace_downloads(files))
     return build_agent_spec(sandbox_tools=tools)

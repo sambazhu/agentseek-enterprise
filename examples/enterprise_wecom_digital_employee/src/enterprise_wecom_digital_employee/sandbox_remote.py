@@ -51,7 +51,7 @@ class RemoteCsvRunner:
         return self._receive(request, self.client.exchange(request))
 
 
-def remote_csv_tools(*, grant_for, file_store, runner):
+def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
     """Explicit opt-in; workspace files only, no channel media upload/send."""
 
     def workspace_result(runtime, outcome):
@@ -67,11 +67,20 @@ def remote_csv_tools(*, grant_for, file_store, runner):
             if file_store.original_path(record).read_bytes() != data:
                 raise ValueError("workspace readback failed")
             result["workspace"] = dict(state="available", file_id=record.file_id, filename=record.filename,
-                                       sha256=record.sha256, size_bytes=record.size_bytes)
+                                       sha256=record.sha256, size_bytes=record.size_bytes,
+                                       download={"state": "disabled"})
         except Exception:
             result["execution_state"] = result["state"]
             result["state"] = "workspace_pending"
             result["workspace"] = {"state": "unavailable"}
+            return result
+        if downloads is not None:
+            try:
+                result["workspace"]["download"] = downloads.issue(FileScope(*scope), record)
+            except Exception:
+                result["workspace"]["download"] = {"state": "unavailable"}
+                result["execution_state"] = result["state"]
+                result["state"] = "download_pending"
         return result
 
     def resolver(runtime):
@@ -86,7 +95,8 @@ def remote_csv_tools(*, grant_for, file_store, runner):
 
         Ordinary questions need no sandbox. Do not retry uncertain work; use
         get_sandbox_task_result, which never creates. Return is a workspace file,
-        not a chat attachment. No recipient argument or send action exists.
+        including a short-lived download URL when enabled. Display that URL
+        unchanged so the user can open summary.csv; never invent a URL.
         """
         try:
             request = resolver(runtime)(runtime, input_ref, instruction)
@@ -98,7 +108,7 @@ def remote_csv_tools(*, grant_for, file_store, runner):
 
     @tool
     async def get_sandbox_task_result(runtime: ToolRuntime) -> dict:
-        """Read/reconcile your last sandbox task; never creates or sends a file."""
+        """Read/reconcile your last task and renew its file link; never recreates."""
         try:
             outcome = await asyncio.to_thread(runner.recover, scoped_owner(runtime_scope(runtime)))
             return await asyncio.to_thread(workspace_result, runtime, outcome)

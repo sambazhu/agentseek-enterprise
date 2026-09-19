@@ -220,12 +220,23 @@ class WeComChannel(Channel):
             self._app_transport.bind_inbound(self._handle_application_plain_message)
         app = self._transport.app
         self.app = app
+        workspace_downloads = None
+        if os.getenv("AGENTSEEK_WORKSPACE_DOWNLOAD_MODE", "disabled").strip() != "disabled":
+            from agentseek_files.workspace_download import configured_workspace_downloads
+
+            workspace_downloads = configured_workspace_downloads()
         if app is not None:
             if self._app_transport is not None:
                 self._app_transport.mount(app)
             self._register_artifact_routes(app)
+            if workspace_downloads is not None:
+                from agentseek_wecom.workspace_routes import register_workspace_routes
+
+                register_workspace_routes(app, workspace_downloads)
         elif settings.artifact_delivery_mode == "signed_link":
             raise RuntimeError("signed-link artifact delivery requires a WeCom transport with an ASGI application")
+        elif workspace_downloads is not None:
+            raise RuntimeError("workspace downloads require a transport with an ASGI application")
 
     @property
     def enabled(self) -> bool:

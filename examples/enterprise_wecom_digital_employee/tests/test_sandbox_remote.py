@@ -86,10 +86,20 @@ def test_lost_response_recovered_without_second_submit(remote):
     with pytest.raises(ValueError): s.runner.recover("other")
 
 
-def test_real_graph_remote_result_returns_workspace_file(remote):
+def test_real_graph_remote_result_returns_workspace_file(remote, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from urllib.parse import urlsplit
+    from agentseek_files.workspace_download import WorkspaceDownloads, WorkspaceDownloadSettings
+    from agentseek_wecom.workspace_routes import register_workspace_routes
+
     s = remote
+    grants = tmp_path / "downloads"
+    grants.mkdir(mode=0o700)
+    downloads = WorkspaceDownloads(store=s.files, settings=WorkspaceDownloadSettings(
+        "https://files.example.test/ai-server/workspace-files", grants))
     tools = remote_csv_tools(grant_for=lambda runtime: s.grant, file_store=s.files,
-                             runner=s.runner)
+                             runner=s.runner, downloads=downloads)
     assert set(tools[0].tool_call_schema.model_json_schema()["properties"]) == {"input_ref", "instruction"}
     model = ScriptedModel(responses=[AIMessage(content="", tool_calls=[dict(name="run_sandbox_task",
         id="csv-call", type="tool_call", args=dict(input_ref=s.record.file_id, instruction=s.request.instruction))]),
@@ -100,7 +110,34 @@ def test_real_graph_remote_result_returns_workspace_file(remote):
     outcome = json.loads(next(m.content for m in result["messages"] if isinstance(m, ToolMessage)))
     assert outcome["state"] == "succeeded" and outcome["workspace"]["state"] == "available"
     assert outcome["workspace"]["sha256"] == hashlib.sha256(s.output).hexdigest()
+    parsed = urlsplit(outcome["workspace"]["download"]["url"])
+    app = FastAPI()
+    register_workspace_routes(app, downloads)
+    response = TestClient(app).post(parsed.path + "/redeem", content=parsed.fragment)
+    assert response.status_code == 200 and response.content == s.output
     assert "delivery" not in outcome
+    assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
+
+
+def test_link_failure_and_renewal_never_resubmit(remote, tmp_path, monkeypatch):
+    from agentseek_files.workspace_download import WorkspaceDownloads, WorkspaceDownloadSettings
+
+    s = remote
+    directory = tmp_path / "downloads"
+    directory.mkdir(mode=0o700)
+    downloads = WorkspaceDownloads(store=s.files, settings=WorkspaceDownloadSettings(
+        "https://files.example.test/ai-server/workspace-files", directory))
+    issue = downloads.issue
+    monkeypatch.setattr(downloads, "issue", lambda *args: (_ for _ in ()).throw(OSError("synthetic")))
+    tools = remote_csv_tools(grant_for=lambda runtime: s.grant, file_store=s.files,
+                             runner=s.runner, downloads=downloads)
+    failed = asyncio.run(tools[0].coroutine(s.record.file_id, s.request.instruction, s.runtime))
+    assert failed["state"] == "download_pending" and failed["cleanup_confirmed"]
+    assert failed["workspace"]["state"] == "available"
+    monkeypatch.setattr(downloads, "issue", issue)
+    recovered = asyncio.run(tools[1].coroutine(s.runtime))
+    assert recovered["state"] == "succeeded"
+    assert recovered["workspace"]["download"]["state"] == "available"
     assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
 
 

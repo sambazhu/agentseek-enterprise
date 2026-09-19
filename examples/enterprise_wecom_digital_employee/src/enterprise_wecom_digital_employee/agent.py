@@ -215,7 +215,10 @@ def build_agent(
             "reconciling task. Report cleanup_confirmed truthfully. Read a returned artifact "
             "with read_sandbox_csv_result before summarizing its numbers. Results are returned "
             "to the user's file workspace; only say a workspace file is available when "
-            "workspace.state is available. No chat attachment upload or send is performed."
+            "workspace.state is available. When workspace.download.state is available, "
+            "include its exact URL as the summary.csv download link; never invent or alter the URL. "
+            "Otherwise explain that browser access is not ready; use get_sandbox_task_result "
+            "to renew a link without recreating a sandbox. No chat attachment upload or send is performed."
             if sandbox_tools else ""
         ),
         skills=["/skills"],
