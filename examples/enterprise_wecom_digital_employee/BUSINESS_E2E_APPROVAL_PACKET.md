@@ -42,11 +42,22 @@ AGENTSEEK_WORKSPACE_DOWNLOAD_TTL_SECONDS=600
 | runtime | 统一 examples runtime 沿用；MCP 三层/生产定制保留；WORK=false |
 | 恢复 | 去 spec/config env + 标准脚本重启回生产行为；下载开关回 disabled 后路由不注册，文件与授权账本保留 |
 
-## D. 身份与输入绑定（.171——**PENDING：待用户实际上传**）
+## D. 身份与输入绑定（.171——**已取得：用户实际 DM 上传 2026-09-20 13:25:14 UTC**）
 
-取得方式：用户在**原生产网关同一 DM 会话**上传 `sandbox-business-input.csv`（41 字节，sha256=0ec7d232…；此步只取得文件与身份，不发执行问题）→ .171 **调用候选函数**（scoped_key/scoped_owner，不手写公式）从可信运行上下文与盘上记录取得 tenant/user/session、owner_id、input_ref（=file_id，内容派生前 16 位）、并核对输入+固定问题摘要（5941d047…）→ request_id 由 .171 铸造并两端一致钉入 grants/permits/plans。
+取得方式合规：用户在原生产网关同一 DM 会话以**文件消息**上传（未发执行问题）；.171 调用候选函数（scoped_owner/instruction_digest，未手写公式）+ 盘上记录交叉验证。
 
-**当前值：全部 PENDING（上传尚未发生，不猜测补齐）**。注意：重启丢 current_files；同字节 file_id 相同不代表完整授权相同——窗口内须同会话重传并核对完整绑定（FINAL_WINDOW §3.4 硬时序）。
+| 绑定项 | 值 | 核验 |
+| --- | --- | --- |
+| input_ref | `file_0ec7d232fcf9e415` | 内容派生；实际字节 41B 逐字节 sha256=`0ec7d232…576e0` ✅；mime=text/csv；extract_status=done |
+| tenant_key | `hmac-9b9987…934371`（前缀，全文留受控材料） | ==scoped(tenant, env TENANT_ID) ✅ |
+| user_key | `hmac-81297b5…cf9d0d`（前缀） | ==scoped(employee,"zhuchunlin") ✅（**本轮上传再次实证 userid=OA 账号同串**） |
+| session_key | `hmac-043001d4…cc876f`（前缀） | 与 2026-09-10 同 DM 文件会话**同键**（该会话跨日稳定）；全文留受控材料 |
+| **owner_id** | `f97d455c…`（64hex，经候选 scoped_owner 计算全文入本包供 .172 permits/plans 使用） | 三键紧凑 JSON 派生 ✅ |
+| **request_id**（两端一致，.171 铸造） | `4d760701569d8d4d452b4b0087b64d91654480007edc828f186e4cd58d07c31f` | 钉入 grants/permits/plans |
+| instruction_sha256 | `5941d047…f96f5` | 候选 instruction_digest 复算 ==预计算 ✅ |
+| 文件 expires_at | 2026-09-27T13:25:14Z（TTL 7 天） | 窗口须在此之前 |
+
+**窗口内仍须同会话重传相同 CSV 并核对完整绑定**（重启丢 current_files；同字节 file_id 相同不代表完整授权相同——FINAL_WINDOW §3.4 硬时序不变）。
 
 ## E. 节点方案（.172——**PENDING：待 zcode §1.2/§1.5 回传**）
 
