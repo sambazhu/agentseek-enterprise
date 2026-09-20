@@ -25,10 +25,16 @@ UNIT = "agentseek-m3-r1-supervisor.service"
 PROPERTIES = ("ActiveState", "SubState", "MainPID", "ControlGroup", "FragmentPath", "DropInPaths")
 
 
-def _show() -> dict[str, str]:
+def _validate_unit(unit: str) -> None:
+    require(type(unit) is str and len(unit) <= 255
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*\.service", unit) is not None, Code.DENIED)
+
+
+def _show(unit: str = UNIT) -> dict[str, str]:
     """Same process group as enclosing bounded collector, never a detached child."""
-    process = subprocess.Popen(  # noqa: S603 -- fixed, read-only command
-        ["/usr/bin/systemctl", "show", "--no-pager", "--property=" + ",".join(PROPERTIES), "--", UNIT],
+    _validate_unit(unit)
+    process = subprocess.Popen(  # noqa: S603 -- validated single unit, read-only command
+        ["/usr/bin/systemctl", "show", "--no-pager", "--property=" + ",".join(PROPERTIES), "--", unit],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -84,8 +90,10 @@ class IdentityPins:
     unit_file: str
     unit_sha256: str
     cmdline_sha256: str
+    unit: str = UNIT
 
     def validate(self) -> None:
+        _validate_unit(self.unit)
         for text in (self.executable, self.script, self.unit_file):
             require(type(text) is str and Path(text).is_absolute() and Path(text).resolve() == Path(text), Code.DENIED)
         for digest in (self.executable_sha256, self.script_sha256, self.unit_sha256, self.cmdline_sha256):
@@ -134,7 +142,7 @@ def verify_identity(snapshot: SupervisorSnapshot | PreCreateSupervisorSnapshot, 
     pins.validate()
     require(type(snapshot.heartbeat_pid) is int and snapshot.heartbeat_pid > 0, Code.DENIED)
     pid = snapshot.heartbeat_pid
-    before = _show()
+    before = _show(pins.unit)
     require(
         before["ActiveState"] == "active"
         and before["SubState"] == "running"
@@ -144,7 +152,7 @@ def verify_identity(snapshot: SupervisorSnapshot | PreCreateSupervisorSnapshot, 
         Code.DENIED,
     )
     group = before["ControlGroup"]
-    require(group == "/system.slice/" + UNIT, Code.DENIED)
+    require(group == "/system.slice/" + pins.unit, Code.DENIED)
     start = _start(_proc(pid, "stat"), pid)
     clock = system_clock()
     ticks = os.sysconf("SC_CLK_TCK")
@@ -169,8 +177,8 @@ def verify_identity(snapshot: SupervisorSnapshot | PreCreateSupervisorSnapshot, 
     ):
         _pinned_file(path, digest)
     # Detect PID reuse or service changes during the read window.
-    require(_start(_proc(pid, "stat"), pid) == start and _show() == before, Code.DENIED)
+    require(_start(_proc(pid, "stat"), pid) == start and _show(pins.unit) == before, Code.DENIED)
     require(_proc(pid, "cmdline") == command and os.readlink(f"/proc/{pid}/exe") == pins.executable, Code.DENIED)
     now = time.monotonic()
     require(0 <= now - snapshot.observed_mono <= 2 and 0 <= now - snapshot.heartbeat_mono <= 31, Code.DENIED)
-    return ProcessIdentity(pid, start, now)
+    return ProcessIdentity(pid, start, now, pins.unit)

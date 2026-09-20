@@ -32,7 +32,7 @@ def fixture(tmp_path, monkeypatch):
         "ControlGroup": "/system.slice/" + module.UNIT,
     }
     proc = {"stat": proc_stat(), "cmdline": command, "cgroup": ("0::" + properties["ControlGroup"] + "\n").encode()}
-    monkeypatch.setattr(module, "_show", lambda: dict(properties))
+    monkeypatch.setattr(module, "_show", lambda unit=module.UNIT: dict(properties))
     monkeypatch.setattr(module, "_proc", lambda pid, name: proc[name])
     monkeypatch.setattr(module.os, "readlink", lambda path: pins.executable)
     monkeypatch.setattr(module.os, "sysconf", lambda name: 100)
@@ -48,6 +48,39 @@ def test_identity_requires_unit_proc_and_hashes(fixture):
     result = module.verify_identity(snapshot, pins)
     assert result.pid == 42 and result.start_ticks == 100
     assert len(hashes) == 3
+    assert result.unit == module.UNIT
+
+
+def test_business_unit_is_used_for_both_reads_and_result(fixture, monkeypatch):
+    pins, snapshot, properties, proc, hashes = fixture
+    unit = "agentseek-m3-business-supervisor.service"
+    pins = replace(pins, unit=unit)
+    properties["ControlGroup"] = "/system.slice/" + unit
+    proc["cgroup"] = ("0::" + properties["ControlGroup"] + "\n").encode()
+    calls = []
+    def show(selected):
+        calls.append(selected)
+        return dict(properties)
+    monkeypatch.setattr(module, "_show", show)
+    assert module.verify_identity(snapshot, pins).unit == unit
+    assert calls == [unit, unit] and len(hashes) == 3
+
+
+def test_business_pin_cannot_match_r1_group(fixture):
+    pins, snapshot, _, _, _ = fixture
+    with pytest.raises(ContractError):
+        module.verify_identity(snapshot, replace(pins, unit="agentseek-m3-business-supervisor.service"))
+
+
+@pytest.mark.parametrize("unit", ["", "--all", "*.service", "../x.service", "/x.service",
+    "x.service y.service", "x.service\n", "x@foo.service", "x.timer", None, "x" * 256 + ".service"])
+def test_invalid_unit_rejected_before_systemctl(fixture, monkeypatch, unit):
+    pins, snapshot, _, _, _ = fixture
+    def forbidden(*args, **kwargs):
+        pytest.fail("systemctl must not run")
+    monkeypatch.setattr(module, "_show", forbidden)
+    with pytest.raises(ContractError):
+        module.verify_identity(snapshot, replace(pins, unit=unit))
 
 
 @pytest.mark.parametrize(
@@ -105,20 +138,22 @@ def test_bad_stat_fields_rejected():
             module._start(raw, 42)
 
 
-@pytest.mark.parametrize("mode", ["valid", "oversize", "timeout"])
+@pytest.mark.parametrize("mode", ["valid", "business", "oversize", "timeout"])
 def test_bounded_systemctl_capture_with_real_child(monkeypatch, mode):
     original = subprocess.Popen
     children = []
     output = "\n".join(key + "=value" for key in module.PROPERTIES) + "\n"
+    unit = "agentseek-m3-business-supervisor.service" if mode == "business" else module.UNIT
     script = {
         "valid": "print(" + repr(output) + ", end='')",
+        "business": "print(" + repr(output) + ", end='')",
         "oversize": "print('x' * 20000)",
         "timeout": "import time; time.sleep(20)",
     }[mode]
 
     def spawn(command, **kwargs):
         assert command[0:3] == ["/usr/bin/systemctl", "show", "--no-pager"]
-        assert command[-2:] == ["--", module.UNIT]
+        assert command[-2:] == ["--", unit]
         assert "start_new_session" not in kwargs
         assert kwargs["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}
         process = original([sys.executable, "-I", "-c", script], **kwargs)
@@ -126,8 +161,8 @@ def test_bounded_systemctl_capture_with_real_child(monkeypatch, mode):
         return process
 
     monkeypatch.setattr(module.subprocess, "Popen", spawn)
-    if mode == "valid":
-        assert module._show() == dict.fromkeys(module.PROPERTIES, "value")
+    if mode in {"valid", "business"}:
+        assert module._show(unit) == dict.fromkeys(module.PROPERTIES, "value")
     else:
         with pytest.raises(ContractError):
             module._show()
