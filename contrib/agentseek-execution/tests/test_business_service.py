@@ -5,6 +5,7 @@ import json
 import pytest
 
 from agentseek_execution.business_service import load_config
+from agentseek_execution.models import ContractError
 from test_business_broker import broker_case
 
 
@@ -42,4 +43,48 @@ def test_unapproved_or_ambiguous_service_config_rejected(broker_case, key, value
     config[key] = value
     path, digest = write("server.json", config)
     with pytest.raises(ValueError): load_config(broker_case.path / "server.json", digest)
+    assert not broker_case.provider.events
+
+
+def test_lab_host_requires_explicit_versioned_approval(broker_case):
+    config, write = setup_config(broker_case)
+    config["bind_host"] = "192.10.50.172"
+    path, digest = write("server.json", config)
+    with pytest.raises(ValueError):
+        load_config(broker_case.path / "server.json", digest)
+    config.update(schema=2, approved_bind_host="192.10.50.172")
+    path, digest = write("server.json", config)
+    loaded, permits, plans = load_config(broker_case.path / "server.json", digest)
+    assert loaded == config and permits == (broker_case.permit,)
+    assert len(plans) == 1 and not broker_case.provider.events
+    config["bind_host"] = "192.10.50.173"
+    write("server.json", config)
+    with pytest.raises(ContractError):
+        load_config(broker_case.path / "server.json", digest)  # pinned digest still enforced
+    path, digest = write("server.json", config)
+    with pytest.raises(ValueError):
+        load_config(broker_case.path / "server.json", digest)  # pin mismatch even after rehash
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "0.1.2.3", "224.0.0.1", "255.255.255.255",
+    "240.0.0.1", "169.254.1.1", "::1", "192.10.0.0/16", "localhost", "192.010.50.172", 3221885612])
+def test_explicit_approval_does_not_allow_special_or_ambiguous_hosts(broker_case, host):
+    config, write = setup_config(broker_case)
+    config.update(schema=2, bind_host=host, approved_bind_host=host)
+    path, digest = write("server.json", config)
+    with pytest.raises(ValueError):
+        load_config(broker_case.path / "server.json", digest)
+    assert not broker_case.provider.events
+
+
+@pytest.mark.parametrize("changes", [dict(schema=2), dict(schema=1, approved_bind_host="127.0.0.1"),
+    dict(schema=2, approved_bind_host=None), dict(schema=2, approved_bind_host=["127.0.0.1"]),
+    dict(schema=2, approved_bind_host="127.0.0.1", approved=False),
+    dict(schema=3, approved_bind_host="127.0.0.1")])
+def test_listener_schema_is_exact_and_approval_required(broker_case, changes):
+    config, write = setup_config(broker_case)
+    config.update(changes)
+    path, digest = write("server.json", config)
+    with pytest.raises(ValueError):
+        load_config(broker_case.path / "server.json", digest)
     assert not broker_case.provider.events

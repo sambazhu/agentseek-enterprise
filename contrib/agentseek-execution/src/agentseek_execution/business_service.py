@@ -20,14 +20,26 @@ def load_config(path, digest):
     config = _decode(_pinned(path, digest))
     fields = {"schema", "approved", "bind_host", "bind_port", "certificate_file", "private_key_file",
               "permits_file", "permits_sha256", "store_directory", "workspace_directory", "plans"}
-    if (set(config) != fields or type(config["schema"]) is not int or config["schema"] != 1
+    schema = config.get("schema")
+    if schema == 2:
+        fields = fields | {"approved_bind_host"}
+    if (set(config) != fields or type(schema) is not int or schema not in (1, 2)
             or config["approved"] is not True):
         raise ValueError("unapproved service configuration")
+    if type(config["bind_host"]) is not str:
+        raise ValueError("explicit IPv4 listener required")
     address = ipaddress.ip_address(config["bind_host"])
+    explicit_host = schema == 2
+    if explicit_host and (type(config["approved_bind_host"]) is not str
+                          or config["approved_bind_host"] != str(address)
+                          or config["bind_host"] != str(address)):
+        raise ValueError("approved listener address mismatch")
     if (address.version != 4 or address.is_unspecified or address.is_multicast
-            or not (address.is_private or address.is_loopback)
+            or (explicit_host and (address.is_reserved or address.is_link_local
+                                   or int(address) < 16777216))
+            or not (explicit_host or address.is_private or address.is_loopback)
             or type(config["bind_port"]) is not int or not 1024 <= config["bind_port"] <= 65535):
-        raise ValueError("explicit private IPv4 listener required")
+        raise ValueError("private or explicitly approved IPv4 listener required")
     for key in ("certificate_file", "private_key_file"):
         config_bytes(_path(config[key]))
     permits = load_approved_permits(_path(config["permits_file"]), config["permits_sha256"])
