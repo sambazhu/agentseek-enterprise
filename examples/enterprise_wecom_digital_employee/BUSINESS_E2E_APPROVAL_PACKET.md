@@ -59,9 +59,18 @@ AGENTSEEK_WORKSPACE_DOWNLOAD_TTL_SECONDS=600
 
 **窗口内仍须同会话重传相同 CSV 并核对完整绑定**（重启丢 current_files；同字节 file_id 相同不代表完整授权相同——FINAL_WINDOW §3.4 硬时序不变）。
 
-## E. 节点方案（.172——**PENDING：待 zcode §1.2/§1.5 回传**）
+## E. 节点方案（.172——**bind 复验已闭合（BUSINESS_BIND_OFFLINE_PASS @ 66c5cd2f，a052723 归档）**）
 
-11 字段核对结论、:13100 规则/恢复、CA/证书、token 交接、目录树、新 run+监督、生命周期与恢复——以 zcode 新目录回传为准汇入本包 v2。旧 run 额度/manifest/栅栏/回执保留不动；新 run 与一次创建额度另批。
+| 项 | 值 |
+| --- | --- |
+| **拟部署节点版本** | **`3009d82`（schema 2，wheel `3d17d872…382ce2`）——实际安装未切换**，/opt 四版本与旧业务 venv 原样；历史 schema 1"精确 11 字段"结论保留不改写 |
+| 复验证据 | 170/170 到货；新 venv-bind 17 发行版严格离线；**44/2/isolated**；**853 passed（13.83s，+18）**；业务清单 1 passed；零残留 |
+| schema 2 禁用草案 | 重钉摘要 `a353954a8c0321aba520ec98db13133100ca571ec3fe31aa8821da25d8177b77`：12 字段=11+approved_bind_host；bind_host=approved_bind_host="192.10.50.172"（双地址同值，代码 :33-34 核对）；approved=false+plans=[] 双重禁用；**值级 8/8 检查 PASS**（拒 unspecified/multicast/reserved/link-local/0-8） |
+| **bind 冲突已解除**（原 BLOCKED_DESIGN：192.10.50.172 非 RFC1918 私网段，schema 1 is_private 检查不过） | 方案 a 单地址显式批准；证书 SAN=IP:192.10.50.172、防火墙规则目标、服务最终件基准=**schema 2（12 字段双地址同值）** |
+| 仍 PENDING（分工） | **.171**：§1.3 反代实测与方案、§1.4 下载四配置、§1.6 网关绑定（scope/owner/input_ref/request_id 已取得见 D 节——供 permits/plans 引用闭合）；**用户**：W0 新窗口+逐人确认、一次创建额度、最终批准（approved=true 另建重钉+启用窗口）；**zcode §1.2/§1.5**（final-window 回传） |
+| 记录口径 | 清单 170 行 vs 工单"171 件"已按实测记录（小差异不影响判定）；README"192.10.50.50.172"笔误按 §配置变化 2 准确值执行 |
+
+旧 run 额度/manifest/栅栏/回执保留不动；新 run 与一次创建额度另批；离线通过不自动获批——执行仍按主工单 §2 一次批准+§3 硬时序，实际部署/恢复命令由现场端在批准轮列出。
 
 ## F. §2 用户一次批准清单（骨架）
 
