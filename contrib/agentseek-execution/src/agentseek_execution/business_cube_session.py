@@ -157,9 +157,9 @@ def perform(payload):
                                      headers={"X-API-Key": control["api_key"]})
             require(response.status_code in {200, 204}, Code.UNKNOWN)
         return {"delete_accepted": True}
-    verify_identity(IdentityPins(**plan["supervisor_identity"]))
-    SupervisorReader(_path(plan["supervisor_directory"])).read(
+    supervisor = SupervisorReader(_path(plan["supervisor_directory"])).read(
         run_id=binding.run_id, template_id=binding.template_id, sandbox_id=receipt.sandbox_id)
+    verify_identity(supervisor, IdentityPins(**plan["supervisor_identity"]))
     now = system_clock()
     require(now.monotonic >= intent["sent_mono"] and now.monotonic - intent["sent_mono"] <= 90
             and snapshot.started_epoch is not None and time.time() + 30 <= snapshot.started_epoch + 120

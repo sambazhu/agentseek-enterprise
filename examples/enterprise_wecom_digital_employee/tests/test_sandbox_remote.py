@@ -86,6 +86,34 @@ def test_lost_response_recovered_without_second_submit(remote):
     with pytest.raises(ValueError): s.runner.recover("other")
 
 
+def test_proven_pre_send_failure_closes_without_retry(remote, monkeypatch):
+    from dataclasses import replace
+    from agentseek_execution.business_http import BusinessRequestNotSent
+    calls = []
+    def fail(*args, **kwargs):
+        calls.append("connect")
+        raise BusinessRequestNotSent()
+    monkeypatch.setattr(remote.client, "exchange", fail)
+    result = remote.runner.execute(remote.request, remote.data)
+    assert result.state == "failed" and result.cleanup_confirmed
+    assert remote.runner.execute(remote.request, remote.data) == result
+    assert remote.runner.recover(remote.owner) == result
+    assert calls == ["connect"] and remote.events == []
+    # A different approved request is not blocked by this terminal reservation.
+    remote.gateway.reserve(replace(remote.request, request_id="new-approved-request"))
+
+
+def test_not_found_is_not_proof_of_no_submission(remote, monkeypatch):
+    from dataclasses import replace
+    remote.gateway.reserve(remote.request)
+    monkeypatch.setattr(remote.client, "exchange", lambda *a, **k: {"state": "not_found"})
+    with pytest.raises(ValueError):
+        remote.runner.recover(remote.owner)
+    assert remote.gateway.snapshot(remote.request).state == "reconciling"
+    with pytest.raises(ValueError):
+        remote.gateway.reserve(replace(remote.request, request_id="new-request"))
+
+
 def test_real_graph_remote_result_returns_workspace_file(remote, tmp_path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

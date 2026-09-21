@@ -30,12 +30,18 @@ class RemoteCsvRunner:
         return outcome
 
     def execute(self, request, data):
+        from agentseek_execution.business_http import BusinessRequestNotSent
         existing = self.store.snapshot(request)
         if existing is not None:
             return existing
         attempt = self.store.reserve(request)
         try:
             return self._receive(request, self.client.exchange(request, data=data))
+        except BusinessRequestNotSent:
+            # Only explicit pre-send transport evidence permits local closure.
+            # Read/write timeout, HTTP rejection and not_found remain uncertain.
+            self.store.record(attempt, "failed", None)
+            return self.store.snapshot(request)
         except Exception:
             self.store.record(attempt, "reconciling", None)
             return self.store.snapshot(request)
@@ -56,6 +62,9 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
 
     def workspace_result(runtime, outcome):
         result = asdict(outcome)
+        if outcome.state == "failed":
+            result["retry_allowed"] = False
+            result["next_action"] = "This request is terminal; a distinct approved request may be submitted."
         result["workspace"] = {"state": "not_available"}
         if outcome.state != "succeeded":
             return result

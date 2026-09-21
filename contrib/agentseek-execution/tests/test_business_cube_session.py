@@ -15,6 +15,7 @@ from agentseek_execution.business_execution import BusinessRequest
 from agentseek_execution.csv_business import csv_command
 from agentseek_execution.models import ContractError
 from test_m3_receipt_probe import setup
+from test_m3_supervisor_identity import fixture as identity_fixture
 
 
 def frame(value, flag=0):
@@ -98,19 +99,29 @@ def test_worker_argv_never_contains_csv_or_credentials(monkeypatch, plan):
 
 
 @pytest.mark.parametrize("operation", ["run", "terminate"])
-def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation):
+def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation, identity_fixture):
     import httpx
     plan.value["control"] = dict(endpoint="https://example.invalid", api_key="synthetic",
         ca_file=str(setup.root / "ca"), domain="example.invalid", proxy_port=13080)
+    pins, supervisor, _, _, _ = identity_fixture
+    plan.value["supervisor_identity"] = asdict(pins)
     plan.digest = plan.write()
     monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(module, "os", SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
-    monkeypatch.setattr(module, "system_clock", lambda: SimpleNamespace(boot_id="boot", monotonic=time.monotonic()))
+    vault = module.CreateReceiptVault(setup.source.vault_directory,
+                                     module.config_bytes(setup.source.vault_key_file))
+    sent = vault.read_intent(module.CreateBinding(**plan.binding))["sent_mono"]
+    monkeypatch.setattr(module, "system_clock", lambda: SimpleNamespace(boot_id="boot", monotonic=sent))
     monkeypatch.setattr(module, "PlatformReader", lambda **kwargs: SimpleNamespace(_tls=True,
         collect_created=lambda *a: SimpleNamespace(started_epoch=time.time())))
-    monkeypatch.setattr(module, "IdentityPins", lambda **kwargs: kwargs)
-    monkeypatch.setattr(module, "verify_identity", lambda pins: None)
-    monkeypatch.setattr(module, "SupervisorReader", lambda path: SimpleNamespace(read=lambda **kwargs: None))
+    real_verify = module.verify_identity
+    identity_calls = []
+    def verify(snapshot, pins):
+        assert snapshot is supervisor
+        identity_calls.append(pins)
+        return real_verify(snapshot, pins)
+    monkeypatch.setattr(module, "verify_identity", verify)
+    monkeypatch.setattr(module, "SupervisorReader", lambda path: SimpleNamespace(read=lambda **kwargs: supervisor))
     output = json.dumps({"csv": base64.b64encode(b"group,total\nA,1\n").decode(), "groups": 1})
     calls = []
     class Response:
@@ -138,4 +149,5 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
     result = module.perform(dict(path=str(plan.path), sha256=plan.digest, binding=plan.binding,
         operation=operation, data=base64.b64encode(plan.data).decode() if operation == "run" else ""))
     assert calls == [operation]
+    assert len(identity_calls) == (1 if operation == "run" else 0)
     assert result == ({"stdout": output} if operation == "run" else {"delete_accepted": True})

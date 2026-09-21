@@ -13,6 +13,8 @@ from pathlib import Path
 
 
 def _load_project_env_file() -> None:
+    # Preserve explicit process aliases before loading lower-priority file values.
+    _apply_project_bub_aliases()
     env_file = os.environ.get("AGENTSEEK_ENV_FILE", "").strip()
     if not env_file:
         return
@@ -22,7 +24,7 @@ def _load_project_env_file() -> None:
         path = Path.cwd() / path
 
     for key, value in _read_dotenv_values(path).items():
-        os.environ[key] = value
+        os.environ.setdefault(key, value)
 
 
 def _read_dotenv_values(path: Path) -> dict[str, str]:
@@ -55,7 +57,7 @@ def _apply_project_bub_aliases() -> None:
             continue
         suffix = key.removeprefix("AGENTSEEK_")
         if suffix:
-            os.environ[f"BUB_{suffix}"] = value
+            os.environ.setdefault(f"BUB_{suffix}", value)
 
 
 def _guard_logfire_configure() -> None:

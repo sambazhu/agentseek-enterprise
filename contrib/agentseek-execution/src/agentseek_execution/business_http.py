@@ -35,6 +35,10 @@ def decode_wire(raw):
     return value
 
 
+class BusinessRequestNotSent(Exception):
+    """Connection setup failed before any HTTP request bytes were sent."""
+
+
 class BusinessHttpClient:
     def __init__(self, *, endpoint, token, ca_file):
         parsed = urlsplit(endpoint)
@@ -47,6 +51,13 @@ class BusinessHttpClient:
         self._tls = ssl.create_default_context(cafile=str(ca_file))
 
     def exchange(self, request, *, data=None):
+        import httpx
+        try:
+            return self._exchange(request, data=data)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            raise BusinessRequestNotSent("connection establishment failed") from None
+
+    def _exchange(self, request, *, data=None):
         import httpx
         payload = dict(operation="result" if data is None else "execute", request=asdict(request),
                        input="" if data is None else base64.b64encode(data).decode())

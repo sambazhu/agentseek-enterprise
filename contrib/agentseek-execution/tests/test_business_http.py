@@ -59,3 +59,14 @@ def test_bad_token_does_not_reach_provider(tls_broker):
 @pytest.mark.parametrize("endpoint", ["http://127.0.0.1:1234", "https://user:pass@example.invalid", "https://example.invalid/path"])
 def test_client_requires_dedicated_https_origin(endpoint):
     with pytest.raises(ValueError): BusinessHttpClient(endpoint=endpoint, token="x"*32, ca_file="unused")
+@pytest.mark.parametrize("name,not_sent", [("ConnectError", True), ("ConnectTimeout", True),
+    ("PoolTimeout", True), ("WriteTimeout", False), ("ReadTimeout", False)])
+def test_only_connection_setup_errors_prove_not_sent(monkeypatch, name, not_sent):
+    import httpx
+    from agentseek_execution.business_http import BusinessHttpClient, BusinessRequestNotSent
+    client = object.__new__(BusinessHttpClient)
+    def fail(*args, **kwargs):
+        raise getattr(httpx, name)("synthetic")
+    monkeypatch.setattr(client, "_exchange", fail)
+    with pytest.raises(BusinessRequestNotSent if not_sent else getattr(httpx, name)):
+        client.exchange(None, data=b"synthetic")
