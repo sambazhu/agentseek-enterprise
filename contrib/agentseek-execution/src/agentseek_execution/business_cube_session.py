@@ -8,6 +8,7 @@ import base64
 from dataclasses import asdict, replace
 import hashlib
 import json
+import logging
 import math
 import os
 import shlex
@@ -27,6 +28,31 @@ from .models import Code, canonical, require
 from .worker_process import run_worker
 
 LIMIT = 200000
+READY_BUDGET = 5
+COMMAND_BUDGET = 15
+
+
+def wait_ready(client, origin, headers, deadline, diagnostic):
+    """Only a read-only health request may be retried; never Process.Start."""
+    import httpx
+    diagnostic["stage"] = "readiness"
+    for attempt in range(1, 7):
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, Code.DENIED)
+        diagnostic["ready_attempts"] = attempt
+        try:
+            with client.stream("GET", origin + "/health", headers=headers,
+                               timeout=httpx.Timeout(min(1.0, remaining))) as response:
+                diagnostic["http_status"] = response.status_code
+                if response.status_code in {200, 204}:
+                    require(time.monotonic() < deadline, Code.DENIED)
+                    return
+                require(response.status_code in {502, 503, 504}, Code.DENIED)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+            pass
+        if attempt < 6:
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+    raise RuntimeError("readiness exhausted")
 
 
 def read_plan(path, digest):
@@ -88,9 +114,27 @@ class ApprovedCsvSession:
 
     def _invoke(self, operation, data=""):
         payload = dict(path=str(self.path), sha256=self.digest, binding=self.binding, operation=operation, data=data)
-        raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.business_cube_session"],
-                         canonical(payload).encode(), budget=25 if operation == "run" else 10, environment={})
-        return _decode(raw)
+        try:
+            raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.business_cube_session"],
+                             canonical(payload).encode(), budget=25 if operation == "run" else 10, environment={})
+        except Exception:
+            logging.getLogger(__name__).warning("csv_worker operation=%s status=worker_unknown", operation)
+            raise
+        value = _decode(raw)
+        if set(value) == {"result", "diagnostic"}:
+            diagnostic = value["diagnostic"]
+            # Never log child exception messages, headers, paths or payloads.
+            allowed_stages = {"validation", "identity", "readiness", "command", "stream", "decode", "terminate", "complete"}
+            allowed_errors = {"none", "timeout", "connect", "contract", "protocol", "internal"}
+            require(type(diagnostic) is dict and set(diagnostic) ==
+                    {"stage", "error", "elapsed_ms", "ready_attempts", "http_status"}
+                    and diagnostic["stage"] in allowed_stages and diagnostic["error"] in allowed_errors
+                    and all(type(diagnostic[k]) is int and 0 <= diagnostic[k] <= 600000
+                            for k in ("elapsed_ms", "ready_attempts", "http_status")), Code.UNKNOWN)
+            logging.getLogger(__name__).warning("csv_worker operation=%s diagnostic=%s", operation, canonical(diagnostic))
+            require(value["result"] is not None, Code.UNKNOWN)
+            return value["result"]
+        return value
 
     def run(self, command, timeout):
         args = shlex.split(command)
@@ -129,8 +173,11 @@ def command_stdout(body):
     return bytes(state.stdout).decode("utf-8")
 
 
-def perform(payload):
+def perform(payload, diagnostic=None):
     import httpx
+    diagnostic = diagnostic if diagnostic is not None else {}
+    diagnostic["stage"] = "validation"
+    worker_deadline = time.monotonic() + 23  # outer worker remains 25s; reserve IPC/exit
     require(sys.platform == "linux" and os.getuid() == os.geteuid() == 0, Code.DENIED)
     require(set(payload) == {"path", "sha256", "binding", "operation", "data"}, Code.DENIED)
     plan = read_plan(_path(payload["path"]), payload["sha256"])
@@ -149,6 +196,7 @@ def perform(payload):
     operation = payload["operation"]
     require(operation in {"run", "terminate"}, Code.DENIED)
     if operation == "terminate":
+        diagnostic["stage"] = "terminate"
         require(payload["data"] == "", Code.DENIED)
         # Target identity was verified above; absence confirmation remains the
         # independent lifecycle closeout. A lost DELETE response is not success.
@@ -157,6 +205,7 @@ def perform(payload):
                                      headers={"X-API-Key": control["api_key"]})
             require(response.status_code in {200, 204}, Code.UNKNOWN)
         return {"delete_accepted": True}
+    diagnostic["stage"] = "identity"
     supervisor = SupervisorReader(_path(plan["supervisor_directory"])).read(
         run_id=binding.run_id, template_id=binding.template_id, sandbox_id=receipt.sandbox_id)
     verify_identity(supervisor, IdentityPins(**plan["supervisor_identity"]))
@@ -176,28 +225,58 @@ def perform(payload):
     value = dict(process=dict(cmd="python3", args=["-I", "-c", CSV_PROGRAM, payload["data"]], envs={}), stdin=False)
     encoded = json.dumps(value).encode()
     body = b"\x00" + struct.pack(">I", len(encoded)) + encoded
-    with httpx.Client(timeout=2, trust_env=False, follow_redirects=False) as client:
-        with client.stream("POST", f"http://127.0.0.1:{control['proxy_port']}/process.Process/Start",
+    origin = f"http://127.0.0.1:{control['proxy_port']}"
+    with httpx.Client(timeout=httpx.Timeout(15, connect=2, write=2, pool=2),
+                      trust_env=False, follow_redirects=False) as client:
+        require(worker_deadline - time.monotonic() >= READY_BUDGET + COMMAND_BUDGET, Code.DENIED)
+        wait_ready(client, origin, headers, min(time.monotonic() + READY_BUDGET,
+                                               worker_deadline - COMMAND_BUDGET), diagnostic)
+        # Readiness time consumes existing budgets, never extends the guest or approval.
+        require(worker_deadline - time.monotonic() >= COMMAND_BUDGET
+                and time.time() + 20 <= snapshot.started_epoch + 120
+                and time.time() + 20 <= plan["expires_epoch"], Code.DENIED)
+        diagnostic["stage"] = "command"
+        with client.stream("POST", origin + "/process.Process/Start",
                            headers=headers, content=body) as response:
+            diagnostic["http_status"] = response.status_code
             require(response.status_code == 200 and response.headers.get("Content-Encoding", "identity") == "identity"
                     and response.headers.get("Content-Type", "").split(";")[0] == "application/connect+json", Code.UNKNOWN)
             buffer = bytearray()
+            diagnostic["stage"] = "stream"
             for part in response.iter_raw(chunk_size=4096):
+                require(time.monotonic() < worker_deadline, Code.UNKNOWN)
                 require(len(buffer) + len(part) <= LIMIT, Code.UNKNOWN)
                 buffer.extend(part)
+    diagnostic["stage"] = "decode"
     stdout = command_stdout(bytes(buffer))
     decode_csv_result(stdout)
     return {"stdout": stdout}
 
 
 def main():
+    import httpx
+    started = time.monotonic()
+    diagnostic = dict(stage="validation", error="none", elapsed_ms=0, ready_attempts=0, http_status=0)
+    result = None
     try:
         require(sys.flags.isolated, Code.DENIED)
         raw = sys.stdin.buffer.read(65537)
         require(len(raw) <= 65536, Code.DENIED)
-        print(canonical(perform(_decode(raw))))
+        payload = _decode(raw)
+        require(set(payload) == {"path", "sha256", "binding", "operation", "data"}, Code.DENIED)
     except Exception:
         sys.exit(2)
+    try:
+        result = perform(payload, diagnostic)
+        diagnostic["stage"] = "complete"
+    except Exception as exc:
+        from .models import ContractError
+        diagnostic["error"] = ("timeout" if isinstance(exc, httpx.TimeoutException) else
+            "connect" if isinstance(exc, httpx.ConnectError) else
+            "contract" if isinstance(exc, ContractError) else
+            "protocol" if isinstance(exc, (ValueError, UnicodeError)) else "internal")
+    diagnostic["elapsed_ms"] = min(600000, max(0, int((time.monotonic() - started) * 1000)))
+    print(canonical(dict(result=result, diagnostic=diagnostic)))
 
 
 if __name__ == "__main__":

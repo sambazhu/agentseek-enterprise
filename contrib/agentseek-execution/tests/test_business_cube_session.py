@@ -33,6 +33,54 @@ def test_complete_command_stream():
     assert module.command_stdout(stream()) == "ok"
 
 
+@pytest.mark.parametrize("statuses,success", [([503, 502, 204], True), ([200], True),
+    ([401], False), ([403], False), ([404], False), ([302], False), ([503] * 6, False)])
+def test_readiness_only_retries_read_only_transient_responses(monkeypatch, statuses, success):
+    values = iter(statuses)
+    calls = []
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+    class Response:
+        def __init__(self, status): self.status_code = status
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    class Client:
+        def stream(self, method, url, **kwargs):
+            calls.append((method, url))
+            assert "content" not in kwargs
+            return Response(next(values))
+    diagnostic = {}
+    if success:
+        module.wait_ready(Client(), "http://localhost", {}, 5, diagnostic)
+    else:
+        with pytest.raises((ContractError, RuntimeError)):
+            module.wait_ready(Client(), "http://localhost", {}, 5, diagnostic)
+    assert calls == [("GET", "http://localhost/health")] * len(statuses)
+
+
+def test_readiness_deadline_prevents_request(monkeypatch):
+    monkeypatch.setattr(module.time, "monotonic", lambda: 6)
+    with pytest.raises(ContractError):
+        module.wait_ready(None, "http://localhost", {}, 5, {})
+
+
+def test_worker_diagnostic_is_redacted_and_not_success(plan, monkeypatch, caplog):
+    diagnostic = dict(stage="command", error="timeout", elapsed_ms=15000, ready_attempts=2, http_status=0)
+    monkeypatch.setattr(module, "run_worker", lambda *a, **k:
+                        json.dumps(dict(result=None, diagnostic=diagnostic)).encode())
+    session = module.ApprovedCsvSession(plan.path, plan.digest, plan.binding)
+    with pytest.raises(ContractError):
+        session._invoke("run")
+    assert '"stage":"command"' in caplog.text
+    assert str(plan.path) not in caplog.text
+    caplog.clear()
+    diagnostic["secret"] = "synthetic-do-not-log"
+    with pytest.raises(ContractError):
+        session._invoke("run")
+    assert "synthetic-do-not-log" not in caplog.text
+
+
 @pytest.mark.parametrize("body", [b"", b"\x00", stream()[:-5], stream(code=1),
     stream() + frame({}), frame({"event": {"end": {}}}) + frame({}, 2),
     frame({"event": {"end": {"exitCode": 0}}}) + frame({"error": {"code": "unknown"}}, 2),
@@ -98,7 +146,7 @@ def test_worker_argv_never_contains_csv_or_credentials(monkeypatch, plan):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("operation", ["run", "terminate"])
+@pytest.mark.parametrize("operation", ["run", "terminate", "run_timeout"])
 def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation, identity_fixture):
     import httpx
     plan.value["control"] = dict(endpoint="https://example.invalid", api_key="synthetic",
@@ -134,18 +182,30 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
         def __init__(self, **kwargs):
             assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
         def stream(self, method, url, **kwargs):
+            if method == "GET":
+                assert url == "http://127.0.0.1:13080/health"
+                return Response()
             assert method == "POST" and url == "http://127.0.0.1:13080/process.Process/Start"
             assert kwargs["headers"]["Host"] == "49983-vm.example.invalid"
             request = json.loads(kwargs["content"][5:])
             assert request["process"]["cmd"] == "python3"
             assert request["process"]["args"][2] == module.CSV_PROGRAM
             calls.append("run")
+            if operation == "run_timeout":
+                raise httpx.ReadTimeout("synthetic no retry")
             return Response()
         def delete(self, url, **kwargs):
             assert url == "https://example.invalid/sandboxes/vm"
             calls.append("terminate")
             return Response()
     monkeypatch.setattr(httpx, "Client", Client)
+    if operation == "run_timeout":
+        diagnostic = {}
+        with pytest.raises(httpx.ReadTimeout):
+            module.perform(dict(path=str(plan.path), sha256=plan.digest, binding=plan.binding,
+                operation="run", data=base64.b64encode(plan.data).decode()), diagnostic)
+        assert calls == ["run"] and diagnostic["stage"] == "command"
+        return
     result = module.perform(dict(path=str(plan.path), sha256=plan.digest, binding=plan.binding,
         operation=operation, data=base64.b64encode(plan.data).decode() if operation == "run" else ""))
     assert calls == [operation]
