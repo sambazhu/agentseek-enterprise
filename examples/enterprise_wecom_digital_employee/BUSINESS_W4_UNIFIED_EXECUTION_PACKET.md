@@ -47,3 +47,10 @@
 - **/health 仍 PENDING**：下次已授权业务执行的 wait_ready 首调自动实证（不单独验证、不额外消耗创建；400/403/404 均不作就绪成功）
 - **窗口五标准流程**（待用户启动批准）：新 request_id（.171 铸造）→新 quota-w5/fence-w5/lifecycle-v5→W0 四方新确认（.172 台账）→≤2h 有效期→材料 v5（复用 W5 修订件+更新 expires/plan token）→**真实 DeepAgent 发起（不人工直驱）**→一次创建授权→工作区自动回写验收 376b7875
 - 过程披露：zcode 本轮已将 broker 切至 W5 配置（在批准修复范围内先行，零执行能力变化——无有效授权请求时 broker 不创建）
+
+## 窗口六就绪更新（2026-09-21 第 10 号修复+补证后）
+
+- **GRANT_VISIBILITY_OFFLINE_PASS**（b58b8b9）：网关 272 passed——模型将能通过 get_sandbox_task_result 看到 grant_available/authorization（新授权可区分于历史终态）；候选 b9d971c
+- **W5 store 清除补证归位**（23c8e67c）：正当动机（W4 终态阻塞）+程序瑕疵（未先报告即操作）如实分列；不可复原项标注；broker 双实证 9d54662+W5-v2
+- **链路状态：十缺陷全部修复实证，零已知缺口**
+- **W6 流程**（待用户批准）：新 request_id #6+新 quota-w6/fence-w6/lifecycle-v6→W0 四方→≤2h 有效期→grants/配置 v6→网关切换（b9d971c 树）→重传+绑定核对→固定问题→**真实 DeepAgent 全链**→/health 首次活体→CSV→终止/closeout→工作区回写验收 376b7875
