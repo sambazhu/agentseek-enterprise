@@ -9,6 +9,8 @@ from dataclasses import asdict
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
+import os
 import ssl
 import threading
 import time
@@ -39,6 +41,52 @@ class BusinessRequestNotSent(Exception):
     """Connection setup failed before any HTTP request bytes were sent."""
 
 
+def safe_error(exc):
+    """Finite exception type vocabulary; never serialize messages or trace info."""
+    allowed = {"ConnectError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout",
+               "ReadError", "WriteError", "RemoteProtocolError", "LocalProtocolError",
+               "SSLError", "SSLCertVerificationError", "TimeoutError", "CancelledError",
+               "ValueError", "TypeError", "RuntimeError", "OSError", "PermissionError",
+               "BusinessRequestNotSent"}
+    name = type(exc).__name__
+    return name if name in allowed else "other"
+
+
+class ExchangeDiagnostic:
+    """Per-call scalar trace, independent of HTTP debug logs and request bodies."""
+
+    def __init__(self, request, operation):
+        self.started = time.monotonic()
+        self.operation = operation
+        self.exchange_id = os.urandom(8).hex()
+        self.attempt = (hashlib.sha256(json.dumps([request.owner_id, request.request_id]).encode()).hexdigest()
+                        if request is not None else "unbound")
+        self.stage, self.event, self.failed_stage = "prepare", "started", None
+        self.http_status = 0
+
+    def emit(self, status, exc=None):
+        value = dict(exchange_id=self.exchange_id, attempt=self.attempt, operation=self.operation,
+            stage=self.failed_stage or self.stage, event=self.event, status=status,
+            error="none" if exc is None else safe_error(exc),
+            cause_error="none" if exc is None or exc.__cause__ is None else safe_error(exc.__cause__),
+            elapsed_ms=max(0, int((time.monotonic()-self.started)*1000)),
+            http_status=self.http_status, pid=os.getpid(), thread_id=threading.get_native_id())
+        logging.getLogger(__name__).warning("business_exchange %s", json.dumps(value, sort_keys=True))
+
+    def trace(self, name, info):
+        # info contains headers, exception text and SSL/socket objects. Ignore it.
+        phases = {"connection.connect_tcp": "tcp", "connection.start_tls": "tls",
+                  "http11.send_request_headers": "send_headers", "http11.send_request_body": "send_body",
+                  "http11.receive_response_headers": "response_headers",
+                  "http11.receive_response_body": "response_body"}
+        phase, _, event = name.rpartition(".")
+        if phase in phases and event in {"started", "complete", "failed"}:
+            self.stage, self.event = phases[phase], event
+            if event == "failed" and self.failed_stage is None:
+                self.failed_stage = self.stage
+            self.emit("trace")
+
+
 class BusinessHttpClient:
     def __init__(self, *, endpoint, token, ca_file):
         parsed = urlsplit(endpoint)
@@ -52,12 +100,21 @@ class BusinessHttpClient:
 
     def exchange(self, request, *, data=None):
         import httpx
+        diagnostic = ExchangeDiagnostic(request, "result" if data is None else "execute")
+        diagnostic.emit("started")
         try:
-            return self._exchange(request, data=data)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            result = self._exchange(request, data=data, diagnostic=diagnostic)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            diagnostic.emit("not_sent", exc)
             raise BusinessRequestNotSent("connection establishment failed") from None
+        except BaseException as exc:
+            diagnostic.emit("unknown", exc)
+            raise  # Observability must not change cancellation or uncertainty semantics.
+        diagnostic.stage, diagnostic.event = "complete", "complete"
+        diagnostic.emit("succeeded")
+        return result
 
-    def _exchange(self, request, *, data=None):
+    def _exchange(self, request, *, data=None, diagnostic):
         import httpx
         payload = dict(operation="result" if data is None else "execute", request=asdict(request),
                        input="" if data is None else base64.b64encode(data).decode())
@@ -65,11 +122,16 @@ class BusinessHttpClient:
         if len(encoded) > WIRE_LIMIT:
             raise ValueError("request too large")
         deadline = time.monotonic() + 70
+        diagnostic.stage = "client"
         with httpx.Client(verify=self._tls, timeout=httpx.Timeout(65, connect=5, write=5, pool=5),
                           trust_env=False, follow_redirects=False) as client:
+            diagnostic.stage = "pool"
             with client.stream("POST", self.endpoint + "/v1/csv", content=encoded,
+                               extensions={"trace": diagnostic.trace},
                                headers={"Authorization": "Bearer " + self._token,
                                         "Content-Type": "application/json", "Accept-Encoding": "identity"}) as response:
+                diagnostic.stage = "response_validation"
+                diagnostic.http_status = response.status_code
                 if (response.status_code != 200 or response.headers.get("Content-Encoding", "identity") != "identity"
                         or response.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                     raise ValueError("broker request rejected")
@@ -78,6 +140,7 @@ class BusinessHttpClient:
                     if time.monotonic() > deadline or len(raw) + len(chunk) > WIRE_LIMIT:
                         raise ValueError("broker response limit")
                     raw.extend(chunk)
+        diagnostic.stage = "decode"
         return decode_wire(bytes(raw))
 
 

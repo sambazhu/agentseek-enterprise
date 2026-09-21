@@ -70,3 +70,28 @@ def test_only_connection_setup_errors_prove_not_sent(monkeypatch, name, not_sent
     monkeypatch.setattr(client, "_exchange", fail)
     with pytest.raises(BusinessRequestNotSent if not_sent else getattr(httpx, name)):
         client.exchange(None, data=b"synthetic")
+
+
+def test_trace_ignores_sensitive_payloads_and_unknown_event_names(caplog):
+    import json
+    from agentseek_execution.business_http import ExchangeDiagnostic
+    diagnostic = ExchangeDiagnostic(None, "result")
+    secret = "synthetic-secret-path-token-body"
+    diagnostic.trace("connection.start_tls.started", {"headers": secret, "ssl_context": secret})
+    diagnostic.trace(secret, {"exception": RuntimeError(secret)})
+    diagnostic.emit("unknown", RuntimeError(secret))
+    assert secret not in caplog.text
+    records = [json.loads(r.message.removeprefix("business_exchange ")) for r in caplog.records]
+    assert len(records) == 2 and records[-1]["stage"] == "tls"
+    assert records[-1]["error"] == "RuntimeError"
+
+
+def test_http_error_classification_does_not_log_unknown_exception_names(monkeypatch, caplog):
+    from agentseek_execution.business_http import BusinessHttpClient
+    SecretError = type("private_token_in_class_name", (Exception,), {})
+    client = object.__new__(BusinessHttpClient)
+    def fail(*args, **kwargs): raise SecretError("private-message")
+    monkeypatch.setattr(client, "_exchange", fail)
+    with pytest.raises(SecretError): client.exchange(None)
+    assert "private_token" not in caplog.text and "private-message" not in caplog.text
+    assert '"error": "other"' in caplog.text

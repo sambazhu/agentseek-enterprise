@@ -69,7 +69,7 @@ def remote(tmp_path):
     runtime = SimpleNamespace(context=context, state={"current_files": [record.to_dict()]})
     return SimpleNamespace(node=node, gateway=gateway, files=files, data=data, output=output,
         request=request, grant=grant, record=record, events=events, calls=calls, client=client,
-        runner=runner, scope=scope, owner=owner, context=context, runtime=runtime)
+        runner=runner, scope=scope, owner=owner, context=context, runtime=runtime, broker=broker, token=token)
 
 
 def test_lost_response_recovered_without_second_submit(remote):

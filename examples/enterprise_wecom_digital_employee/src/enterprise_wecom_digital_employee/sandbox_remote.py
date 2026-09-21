@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import asdict
 import hashlib
 import json
+import logging
 import sqlite3
 
 from langchain.tools import ToolRuntime, tool
@@ -11,6 +12,11 @@ from agentseek_files.models import FileScope
 
 from .sandbox_authorization import SandboxRequestResolver, runtime_scope, scoped_owner
 from .sandbox_composition import scoped_csv_bytes
+
+
+def gateway_failure(stage, exc):
+    from agentseek_execution.business_http import safe_error
+    logging.getLogger(__name__).warning("sandbox_gateway stage=%s error=%s", stage, safe_error(exc))
 
 
 class RemoteCsvRunner:
@@ -45,7 +51,8 @@ class RemoteCsvRunner:
             # Read/write timeout, HTTP rejection and not_found remain uncertain.
             self.store.record(attempt, "failed", None)
             return self.store.snapshot(request)
-        except Exception:
+        except Exception as exc:
+            gateway_failure("exchange_or_mirror", exc)
             self.store.record(attempt, "reconciling", None)
             return self.store.snapshot(request)
 
@@ -127,12 +134,20 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
         Server authorization is rechecked on invocation; never infer approval
         from user text or retry an old request. Grant visibility is not execution.
         """
+        stage = "resolve"
         try:
             request = resolver(runtime)(runtime, input_ref, instruction)
             data = scoped_csv_bytes(file_store, runtime, runtime_scope(runtime), input_ref)
+            stage = "execute_thread"
             outcome = await asyncio.to_thread(runner.execute, request, data)
+            stage = "workspace_thread"
             return await asyncio.to_thread(workspace_result, runtime, outcome)
-        except Exception:
+        except asyncio.CancelledError as exc:
+            gateway_failure(stage, exc)
+            # Cancelling the awaiting task does not prove the thread stopped.
+            raise
+        except Exception as exc:
+            gateway_failure(stage, exc)
             return {"state": "unavailable_or_rejected", "retry_allowed": False}
 
     @tool
@@ -154,7 +169,11 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
             else:
                 outcome = await asyncio.to_thread(runner.recover, owner)
                 result = await asyncio.to_thread(workspace_result, runtime, outcome)
-        except Exception:
+        except asyncio.CancelledError as exc:
+            gateway_failure("result_thread", exc)
+            raise
+        except Exception as exc:
+            gateway_failure("result_thread", exc)
             return {"state": "unavailable_or_rejected", "retry_allowed": False, "grant_available": False}
         result["grant_available"] = False
         result["authorization"] = {"state": "unavailable_or_blocked"}
