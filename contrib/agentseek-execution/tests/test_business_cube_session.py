@@ -16,6 +16,7 @@ from agentseek_execution.csv_business import csv_command
 from agentseek_execution.models import ContractError
 from test_m3_receipt_probe import setup
 from test_m3_supervisor_identity import fixture as identity_fixture
+from test_business_broker import broker_case
 
 
 def frame(value, flag=0):
@@ -121,6 +122,66 @@ def test_request_and_created_binding_are_exact(plan):
         factory(dict(plan.binding, run_id="other"))
 
 
+@pytest.fixture
+def installation(plan):
+    key = plan.path.parent / "synthetic-key"
+    key.write_bytes(b"synthetic")
+    key.chmod(0o600)
+    ca = str(plan.path.parent / "ca")
+    plan.value["control"] = dict(endpoint="https://example.invalid", api_key="synthetic",
+        ca_file=ca, domain="example.invalid", proxy_port=80)
+    installed = dict(vault_directory=plan.value["vault_directory"],
+                     receipt_key_file=plan.value["vault_key_file"])
+    precreate = dict(plan=dict(endpoint="https://example.invalid", domain="example.invalid"),
+        ca_file=ca, api_key_file=str(key), supervisor_directory=plan.value["supervisor_directory"],
+        supervisor_identity=plan.value["supervisor_identity"])
+    return installed, precreate
+
+
+@pytest.mark.parametrize("port,accepted", [(80, True), (13080, False), (443, False),
+    (8080, False), (0, False), (True, False), (80.0, False), ("80", False)])
+def test_installation_accepts_only_http_data_plane(plan, installation, port, accepted):
+    plan.value["control"]["proxy_port"] = port
+    factory = module.ApprovedCsvSessionFactory(plan.path, plan.write())
+    if accepted:
+        factory.validate_installation(*installation)
+    else:
+        with pytest.raises(ContractError):
+            factory.validate_installation(*installation)
+
+
+@pytest.mark.parametrize("field", ["endpoint", "domain", "ca_file", "api_key"])
+def test_http_data_plane_keeps_control_binding_checks(plan, installation, field):
+    plan.value["control"][field] += "-different"
+    factory = module.ApprovedCsvSessionFactory(plan.path, plan.write())
+    with pytest.raises(ContractError):
+        factory.validate_installation(*installation)
+
+
+def test_result_bypasses_installation_but_execute_checks_before_reserve(plan, installation, broker_case):
+    s = broker_case
+    plan.value["input_sha256"] = hashlib.sha256(s.data).hexdigest()
+    plan.value["control"]["proxy_port"] = 13080
+    factory = module.ApprovedCsvSessionFactory(plan.path, plan.write())
+    calls = []
+    def validate(request, data):
+        calls.append("validate")
+        factory.validate_request(request, data)
+        factory.validate_installation(*installation)
+    s.provider.validate_request = validate
+    auth = "Bearer " + s.token
+    assert s.broker.dispatch(auth, dict(s.payload, operation="result", input="")) == {"state": "not_found"}
+    assert calls == []
+    with pytest.raises(ContractError):
+        s.broker.dispatch(auth, s.payload)
+    assert calls == ["validate"] and s.provider.events == []
+    assert s.store.snapshot(s.request) is None
+    plan.value["control"]["proxy_port"] = 80
+    factory.digest = plan.write()
+    assert s.broker.dispatch(auth, s.payload)["outcome"]["state"] == "succeeded"
+    assert s.provider.events == ["create", "execute", "destroy"]
+
+
 @pytest.mark.parametrize("field,value", [("csv_approved", False), ("termination_approved", False),
     ("expires_epoch", 0), ("expires_epoch", float("inf")), ("schema", True)])
 def test_unapproved_plan_rejected(plan, field, value):
@@ -150,7 +211,7 @@ def test_worker_argv_never_contains_csv_or_credentials(monkeypatch, plan):
 def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation, identity_fixture):
     import httpx
     plan.value["control"] = dict(endpoint="https://example.invalid", api_key="synthetic",
-        ca_file=str(setup.root / "ca"), domain="example.invalid", proxy_port=13080)
+        ca_file=str(setup.root / "ca"), domain="example.invalid", proxy_port=80)
     pins, supervisor, _, _, _ = identity_fixture
     plan.value["supervisor_identity"] = asdict(pins)
     plan.digest = plan.write()
@@ -183,9 +244,9 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
             assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
         def stream(self, method, url, **kwargs):
             if method == "GET":
-                assert url == "http://127.0.0.1:13080/health"
+                assert url == "http://127.0.0.1:80/health"
                 return Response()
-            assert method == "POST" and url == "http://127.0.0.1:13080/process.Process/Start"
+            assert method == "POST" and url == "http://127.0.0.1:80/process.Process/Start"
             assert kwargs["headers"]["Host"] == "49983-vm.example.invalid"
             request = json.loads(kwargs["content"][5:])
             assert request["process"]["cmd"] == "python3"

@@ -103,7 +103,7 @@ class ApprovedCsvSessionFactory:
         require(set(control) == {"endpoint", "api_key", "ca_file", "domain", "proxy_port"}
                 and control["endpoint"] == precreate["plan"]["endpoint"]
                 and control["domain"] == precreate["plan"]["domain"]
-                and type(control["proxy_port"]) is int and control["proxy_port"] == 13080
+                and type(control["proxy_port"]) is int and control["proxy_port"] == 80
                 and _path(control["ca_file"]) == _path(precreate["ca_file"])
                 and control["api_key"].encode("ascii") == config_bytes(_path(precreate["api_key_file"])), Code.DENIED)
 
