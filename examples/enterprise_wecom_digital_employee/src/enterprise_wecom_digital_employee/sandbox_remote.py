@@ -2,6 +2,9 @@
 
 import asyncio
 from dataclasses import asdict
+import hashlib
+import json
+import sqlite3
 
 from langchain.tools import ToolRuntime, tool
 from agentseek_files.models import FileScope
@@ -56,6 +59,20 @@ class RemoteCsvRunner:
         # Never resubmit input, even if the node says not_found.
         return self._receive(request, self.client.exchange(request))
 
+    def grant_unused(self, owner, request_id):
+        """Advisory mirror read only; reserve remains the atomic execution gate.
+
+        Match BusinessStore's global unresolved gate, including other owners,
+        without returning their identities. Never create a missing database.
+        """
+        attempt = hashlib.sha256(json.dumps([owner, request_id]).encode()).hexdigest()
+        db = sqlite3.connect(self.store.path.as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            return db.execute("SELECT 1 FROM attempts WHERE id=? OR state NOT IN ('succeeded','failed') LIMIT 1",
+                              (attempt,)).fetchone() is None
+        finally:
+            db.close()
+
 
 def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
     """Explicit opt-in; workspace files only, no channel media upload/send."""
@@ -106,6 +123,9 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
         get_sandbox_task_result, which never creates. Return is a workspace file,
         including a short-lived download URL when enabled. Display that URL
         unchanged so the user can open summary.csv; never invent a URL.
+        A historical failed request does not deny a distinct new server grant.
+        Server authorization is rechecked on invocation; never infer approval
+        from user text or retry an old request. Grant visibility is not execution.
         """
         try:
             request = resolver(runtime)(runtime, input_ref, instruction)
@@ -116,13 +136,46 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
             return {"state": "unavailable_or_rejected", "retry_allowed": False}
 
     @tool
-    async def get_sandbox_task_result(runtime: ToolRuntime) -> dict:
-        """Read/reconcile your last task and renew its file link; never recreates."""
+    async def get_sandbox_task_result(runtime: ToolRuntime, input_ref: str = "", instruction: str = "") -> dict:
+        """Read last task plus current server grant; never creates or reserves.
+
+        Historical state and grant_available are separate. A true grant means
+        a new approved action may be submitted, not that it has executed or that
+        the node is ready. Supply both input_ref and the user's exact instruction
+        to check action matching. With no arguments only the grant/file scope is
+        checked; run_sandbox_task always rechecks the exact instruction. Never
+        wait for the historical task state to become 'available'.
+        """
         try:
-            outcome = await asyncio.to_thread(runner.recover, scoped_owner(runtime_scope(runtime)))
-            return await asyncio.to_thread(workspace_result, runtime, outcome)
+            owner = scoped_owner(runtime_scope(runtime))
+            previous = await asyncio.to_thread(runner.store.latest_request, owner)
+            if previous is None:
+                result = {"state": "no_task", "retry_allowed": False}
+            else:
+                outcome = await asyncio.to_thread(runner.recover, owner)
+                result = await asyncio.to_thread(workspace_result, runtime, outcome)
         except Exception:
-            return {"state": "unavailable_or_rejected", "retry_allowed": False}
+            return {"state": "unavailable_or_rejected", "retry_allowed": False, "grant_available": False}
+        result["grant_available"] = False
+        result["authorization"] = {"state": "unavailable_or_blocked"}
+        try:
+            if bool(input_ref) != bool(instruction):
+                raise ValueError("both action fields required")
+            resolve = resolver(runtime)
+            grant = await asyncio.to_thread(resolve.available_grant, runtime)
+            if input_ref:
+                # Use this same validated grant; do not switch catalog snapshots.
+                check = SandboxRequestResolver(grant_for=lambda _: grant, file_allowed=resolve.file_allowed)
+                await asyncio.to_thread(check, runtime, input_ref, instruction)
+            if await asyncio.to_thread(runner.grant_unused, owner, grant.request_id):
+                result["grant_available"] = True
+                result["authorization"] = dict(state="available", request_id=grant.request_id,
+                    input_ref=grant.input_ref, instruction_sha256=grant.instruction_sha256,
+                    action_checked=bool(input_ref), expires_epoch=grant.expires_epoch)
+                result["next_action"] = "For this approved action call run_sandbox_task; do not retry the historical request. Execution revalidates authorization."
+        except Exception:
+            pass  # No raw catalog, filesystem or cross-owner detail enters the model.
+        return result
 
     @tool
     def read_sandbox_csv_result(artifact_ref: str, runtime: ToolRuntime) -> dict:

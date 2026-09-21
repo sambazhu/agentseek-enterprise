@@ -57,6 +57,13 @@ class SandboxRequestResolver:
             raise ValueError("invalid file reference")
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 16000:
             raise ValueError("invalid instruction")
+        grant = self.available_grant(runtime)
+        if grant.input_ref != input_ref or grant.instruction_sha256 != instruction_digest(instruction):
+            raise ValueError("exact action approval required")
+        return BusinessRequest(grant.request_id, scoped_owner(runtime_scope(runtime)), input_ref, instruction)
+
+    def available_grant(self, runtime):
+        """Validate the server grant and current file without minting a request."""
         scope = runtime_scope(runtime)
         grant = self.grant_for(runtime)
         if not isinstance(grant, SandboxGrant) or not grant.request_id:
@@ -68,12 +75,13 @@ class SandboxRequestResolver:
                 or type(now) not in (int, float) or not math.isfinite(now)
                 or not now < grant.expires_epoch):
             raise ValueError("approval expired")
-        if grant.input_ref != input_ref or grant.instruction_sha256 != instruction_digest(instruction):
-            raise ValueError("exact action approval required")
-        if self.file_allowed(scope, input_ref) is not True:
+        if (not isinstance(grant.input_ref, str) or not 0 < len(grant.input_ref) <= 256
+                or not isinstance(grant.instruction_sha256, str) or len(grant.instruction_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in grant.instruction_sha256)):
+            raise ValueError("invalid grant action")
+        if self.file_allowed(scope, grant.input_ref) is not True:
             raise ValueError("file access denied")
-        owner = scoped_owner(scope)
-        return BusinessRequest(grant.request_id, owner, input_ref, instruction)
+        return grant
 
 
 class ApprovedGrantCatalog:

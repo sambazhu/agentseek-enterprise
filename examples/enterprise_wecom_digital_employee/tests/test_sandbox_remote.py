@@ -192,3 +192,89 @@ def test_pinned_gateway_catalog_rejects_false_or_ambiguous_grants(remote, tmp_pa
     assert catalog(True, [asdict(s.grant)])(s.runtime) == s.grant
     with pytest.raises(ValueError): catalog(False, [asdict(s.grant)])(s.runtime)
     with pytest.raises(ValueError): catalog(True, [asdict(s.grant), asdict(s.grant)])(s.runtime)
+
+
+@pytest.mark.parametrize("history", ["none", "failed", "succeeded"])
+def test_grant_visible_separately_from_history_without_writes(remote, history):
+    from dataclasses import replace
+    s = remote
+    if history != "none":
+        old = replace(s.request, request_id="old")
+        attempt = s.gateway.reserve(old)
+        s.gateway.record(attempt, history, None)
+    tools = remote_csv_tools(grant_for=lambda _: s.grant, file_store=s.files, runner=s.runner)
+    before = s.gateway.path.read_bytes()
+    result = asyncio.run(tools[1].coroutine(s.runtime))
+    assert result["state"] == ("no_task" if history == "none" else
+                               "workspace_pending" if history == "succeeded" else history)
+    assert result["grant_available"] is True
+    assert result["authorization"]["request_id"] == s.grant.request_id
+    assert result["authorization"]["action_checked"] is False
+    assert s.gateway.path.read_bytes() == before
+    assert s.calls == s.events == []
+
+
+@pytest.mark.parametrize("case", ["expired", "scope", "no_file", "wrong_action", "half_action",
+                                   "used", "older_used", "unresolved", "other_owner", "catalog_error", "tampered"])
+def test_grant_visibility_fails_closed(remote, case):
+    from dataclasses import replace
+    s = remote
+    grant = s.grant
+    kwargs = dict(input_ref=s.record.file_id, instruction=s.request.instruction)
+    if case == "expired": grant = replace(grant, expires_epoch=time.time()-1)
+    if case == "scope": grant = replace(grant, session_key="other")
+    if case == "no_file": s.runtime.state["current_files"] = []
+    if case == "wrong_action": kwargs["instruction"] = "different action"
+    if case == "half_action": kwargs.pop("instruction")
+    if case == "tampered": s.files.original_path(s.record).write_bytes(b"tampered")
+    if case in {"used", "older_used", "unresolved", "other_owner"}:
+        request = replace(s.request, owner_id="other") if case == "other_owner" else s.request
+        attempt = s.gateway.reserve(request)
+        if case in {"used", "older_used"}: s.gateway.record(attempt, "failed", None)
+        if case == "older_used":
+            newer = s.gateway.reserve(replace(s.request, request_id="newer"))
+            s.gateway.record(newer, "failed", None)
+    def catalog(_):
+        if case == "catalog_error": raise ValueError("secret-path-and-token")
+        return grant
+    tools = remote_csv_tools(grant_for=catalog, file_store=s.files, runner=s.runner)
+    before = s.gateway.path.read_bytes()
+    result = asyncio.run(tools[1].coroutine(s.runtime, **kwargs))
+    assert result["grant_available"] is False
+    assert "secret-path-and-token" not in json.dumps(result)
+    assert s.gateway.path.read_bytes() == before
+    assert "execute" not in s.calls and s.events == []
+
+
+def test_grant_check_does_not_reserve_and_execution_rechecks_expiry(remote):
+    from dataclasses import replace
+    s = remote
+    tools = remote_csv_tools(grant_for=lambda _: s.grant, file_store=s.files, runner=s.runner)
+    result = asyncio.run(tools[1].coroutine(s.runtime, s.record.file_id, s.request.instruction))
+    assert result["grant_available"] and result["authorization"]["action_checked"]
+    s.grant = replace(s.grant, expires_epoch=time.time()-1)
+    denied = asyncio.run(tools[0].coroutine(s.record.file_id, s.request.instruction, s.runtime))
+    assert denied["state"] == "unavailable_or_rejected"
+    assert s.gateway.latest_request(s.owner) is None and s.calls == s.events == []
+
+
+def test_graph_reads_new_grant_then_executes_once_despite_old_failure(remote):
+    from dataclasses import replace
+    s = remote
+    old = s.gateway.reserve(replace(s.request, request_id="old-failed"))
+    s.gateway.record(old, "failed", None)
+    tools = remote_csv_tools(grant_for=lambda _: s.grant, file_store=s.files, runner=s.runner)
+    args = dict(input_ref=s.record.file_id, instruction=s.request.instruction)
+    model = ScriptedModel(responses=[
+        AIMessage(content="", tool_calls=[dict(name="get_sandbox_task_result", id="check", type="tool_call", args=args)]),
+        AIMessage(content="", tool_calls=[dict(name="run_sandbox_task", id="run", type="tool_call", args=args)]),
+        AIMessage(content="done")])
+    graph = create_deep_agent(model=model, tools=tools, context_schema=Context, state_schema=State)
+    result = asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=s.request.instruction)],
+        "current_files": [s.record.to_dict()]}, context=s.context))
+    outputs = [json.loads(m.content) for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert outputs[0]["state"] == "failed" and outputs[0]["grant_available"]
+    assert outputs[1]["workspace"]["state"] == "available"
+    assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
+    again = asyncio.run(tools[1].coroutine(s.runtime))
+    assert again["grant_available"] is False and s.calls == ["execute"]
