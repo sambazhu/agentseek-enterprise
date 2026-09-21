@@ -53,3 +53,16 @@ zcode-172 ✅（1/4）；**待收：cc-171（已物理送达 .172 /root/W0-ledge
 ## 七、批准后时序
 
 批复→.172 登记 cc-171+收 codex/user 确认→四方实收齐→**用户指定窗口**（UTC+北京双注；start≥最晚实收）→窗口内：.172 切换+材料→.171 网关切换→用户同会话重传 CSV→程序化绑定核对→固定问题→一次创建连续执行→工作区验收→一次性回传判定。
+
+## 更新（2026-09-21 readiness 轮后——节点拟部署版本刷新）
+
+| 项 | 值 |
+| --- | --- |
+| **节点拟部署版本** | **`9d54662` / wheel `3efe201b…8f30c`**（READINESS_OFFLINE_PASS @ 591bbce5：882/44-2/六项覆盖逐一确认；第十一次确定性构建） |
+| readiness 修复 | 经 .172 Linux 独立复验通过，代码侧无阻塞 |
+| GET /health 存在性 | **PENDING**——将在下次执行时 wait_ready 首次调用自动实证（200/204→继续；非白名单→DENIED+脱敏诊断信封；非阻塞项） |
+| .172 现场 | broker active（09949c8，待切 9d54662）+监督 active+guest=0+旧状态全保留 |
+
+**重要精确化（.171 补注）**：request `2497…fbf9` 的执行权**已随 W3 终态耗尽**（attempt 8c22bcfe=failed terminal、closeout next_create_authorized=false；broker 对其重复 execute 只读返回旧终态）。**下次执行（窗口四）需要：新 run + 新 request_id（两端重新程序化对齐）+ 新 permits/plans/grants/lifecycle 材料 + 新一次创建授权**——不得沿用 2497 或 run 20260921 的额度。网关侧流程全部现成（生成器/切换/绑定核对）。
+
+**窗口四执行序**（批准后）：新 request_id 铸造与两端对齐→.172 落位 9d54662+材料 v4→.171 grants/配置 v4+网关切换→W0 四方新确认→用户重传 CSV→绑定核对→固定问题→一次真实全链（wait_ready 活体实证）→工作区回写验收 `376b7875…`。
