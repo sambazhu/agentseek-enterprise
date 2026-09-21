@@ -1,5 +1,5 @@
 ---
-title: CSV 沙箱业务全链最终批准包（v4 收敛版，基线 007cbb2）
+title: CSV 沙箱业务全链最终批准包（v5：节点拟部署版本=4ebd197，UNIT 阻塞解除）
 type: how-to
 audience: [A4]
 runs: no
@@ -20,7 +20,7 @@ sources:
 | 端 | 版本 | 证据 |
 | --- | --- | --- |
 | 网关候选 | `0595b47`（含工作区下载） | 240 passed @ 5376080；下载代码本轮后未再变更 |
-| 节点候选（拟部署） | **`3009d82` schema 2，wheel `3d17d872…382ce2`** | BUSINESS_BIND_OFFLINE_PASS @ 66c5cd2f（853/44-2/值级 8/8，a052723）；**实际安装未切换**（/opt 四版本+旧业务 venv 原样） |
+| 节点候选（拟部署） | **`4ebd197`（schema 2 + 8 字段 pins-v2），wheel `2290eaf6…ff97b`** | BUSINESS_SUPERVISOR_UNIT_OFFLINE_PASS @ 246d4f39（867/44-2，ace55f2）+ 现场只读身份核验 PASS（verify_identity×1 exit 0，pins-v2 `8c1555ac…afcd`，UNIT 硬编码阻塞解除）；前身 3009d82 bind 复验 853/值级 8/8 @ 66c5cd2f；**实际安装未切换**（/opt 各版本原样，venv-unit 仅 scratch） |
 | 绑定 | 2026-09-20 13:25:14Z 用户实际 DM 上传 | D 节（保留，不重新上传） |
 | 基线 | `007cbb2` | 双端一致 |
 
@@ -74,11 +74,11 @@ AGENTSEEK_WORKSPACE_DOWNLOAD_TTL_SECONDS=600
 
 | 项 | 值 |
 | --- | --- |
-| 业务 venv（部署） | /opt/agentseek-business-releases/3009d82/venv（新目录；新 wheel 3d17d872；36-2 复验随部署轮） |
+| 业务 venv（部署） | /opt/agentseek-business-releases/4ebd197/venv（新目录；wheel 2290eaf6；44/2 复验随部署轮）——**待用户批准落位** |
 | 业务根 | /var/lib/agentseek-m3-business/runs/<run_id 用户批准定名>（不复用 R1 run） |
 | store/workspace | <业务根>/store/（SQLite）+ /workspace/（CsvWorkspace 0600 原子读回销毁） |
-| 监督 | 新 run 专属第二监督（新 manifest+unit agentseek-m3-biz-supervisor.service+新 pins；UMask=0077、120s 冻结、不 enable；R1/M0/M2 三监督零改动） |
-| 服务配置基准 | **schema 2 十二字段**（bind_host=approved_bind_host="192.10.50.172"）；禁用草案已重钉 `a353954a…77b77`（approved=false+plans=[]）；最终件 approved=true 另建重钉 |
+| 监督 | 新 run 专属第二监督（agentseek-m3-biz-supervisor.service **已部署 active**，MainPID 实采在册；**8 字段 pins-v2 `8c1555ac…afcd` 已落盘**（unit=完整单元名），上游创建链引用待最终材料轮逐项重生成核对；R1/M0/M2 三监督零改动） |
+| 服务配置基准 | **schema 2 十二字段**（bind_host=approved_bind_host="192.10.50.172"）；禁用草案 `a353954a…77b77`；**身份 pins 已升级 v2（8 字段）**；最终件 approved=true 另建重钉 |
 | 服务单元 | agentseek-business-broker.service（disabled 默认；窗口内 start 不 enable） |
 | 证书 | 业务专用内部 CA agentseek-business-ca（180d）+服务器证书（90d，CN=agentseek-business-node，**SAN=IP:192.10.50.172**，TLS≥1.2）；CA 私钥留 .172；公共证书受控交 .171 |
 | broker token | 64 位随机十六进制（32-256 可打印 ASCII 合同内）；.172 生成受控交 .171 0600 文件 |
@@ -129,3 +129,11 @@ env -u PYTHONPATH \
 ## I. 边界
 
 本轮零执行：未启服务、未创建 guest、未切实际安装、未改网络/.env/反代/防火墙；R1 状态/历史材料/production/标签全保留；动态项未伪造（G 节如实标注填写时机）；报告不含 token/API key/完整下载链接/批准正文。
+
+## J. v5 增补（监督单元修复轮后状态，2026-09-21）
+
+1. **已部署基础设施实况**（窗口一部署 1-6，保留待用/回退由用户裁定）：13100 三条规则生效、/opt/agentseek-business-releases/3009d82/venv（bind 轮版本，**4ebd197 落位另批**）、bizroot 目录树、业务 CA+证书（SAN=IP 实证）、broker token（.171 私有文件在位 d52e0d85/5111a50c）、第二监督 active。
+2. **执行前待用户批准三步**：a) 4ebd197 安装落位（新 /opt venv+44/2 复验）；b) 最终材料生成（8 字段 pins 上游引用闭合+grants/permits/plans+服务 approved=true 最终件+网关 8 字段配置）；c) 新窗口指定（UTC+北京双注）。
+3. **W0 新规**：.172 唯一台账点，全部 writer 确认（含 codex 本人）实收后再定窗口。
+4. **验收终点不变**：.171 用户工作区自动回写+完整摘要 376b7875… 核对；浏览器下载 NOT RUN；不改 .60、不启下载。
+5. 观察项（非阻塞）：闭包首跑 1 例瞬态失败（test_secure_ownership，复现矩阵 867×2+单文件 12×3 全过）——已交 Codex 排查测试间状态污染。
