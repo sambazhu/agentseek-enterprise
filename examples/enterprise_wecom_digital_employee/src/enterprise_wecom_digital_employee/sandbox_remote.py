@@ -81,7 +81,7 @@ class RemoteCsvRunner:
             db.close()
 
 
-def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
+def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnostic_only=False):
     """Explicit opt-in; workspace files only, no channel media upload/send."""
 
     def workspace_result(runtime, outcome):
@@ -176,6 +176,10 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
             gateway_failure("result_thread", exc)
             return {"state": "unavailable_or_rejected", "retry_allowed": False, "grant_available": False}
         result["grant_available"] = False
+        if diagnostic_only:
+            result["authorization"] = {"state": "diagnostic_disabled"}
+            result["next_action"] = "Read-only diagnosis; no execution tool is installed."
+            return result
         result["authorization"] = {"state": "unavailable_or_blocked"}
         try:
             if bool(input_ref) != bool(instruction):
@@ -205,4 +209,4 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None):
         except Exception:
             return {"state": "unavailable_or_rejected"}
 
-    return [run_sandbox_task, get_sandbox_task_result, read_sandbox_csv_result]
+    return [get_sandbox_task_result] if diagnostic_only else [run_sandbox_task, get_sandbox_task_result, read_sandbox_csv_result]

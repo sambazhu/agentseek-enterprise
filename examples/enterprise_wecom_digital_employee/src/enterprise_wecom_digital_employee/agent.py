@@ -249,12 +249,59 @@ def _direct_capability_tools(*, tool_grants: tuple[str, ...] | None) -> list[Any
     return tools
 
 
-def build_spec(*, sandbox_tools: Sequence[Any] = ()):
+def _build_diagnostic_agent(tools):
+    """Keep DeepAgent/ToolRuntime, without MCP, Work, memory or execution tools."""
+    import logging
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    if [getattr(t, "name", None) for t in tools] != ["get_sandbox_task_result"]:
+        raise ValueError("diagnostic tool set must be exactly the result reader")
+
+    class ResultOnly(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(request.override(tools=list(tools)))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(request.override(tools=list(tools)))
+
+        def wrap_tool_call(self, request, handler):
+            if request.tool_call["name"] != "get_sandbox_task_result":
+                return ToolMessage(content="diagnostic_tool_denied", tool_call_id=request.tool_call["id"])
+            return handler(request)
+
+        async def awrap_tool_call(self, request, handler):
+            if request.tool_call["name"] != "get_sandbox_task_result":
+                return ToolMessage(content="diagnostic_tool_denied", tool_call_id=request.tool_call["id"])
+            return await handler(request)
+
+    _register_enterprise_harness_profile()
+    settings = get_settings()
+    graph = create_deep_agent(model=settings.build_model(), tools=list(tools),
+        system_prompt="Read-only sandbox diagnosis. Call get_sandbox_task_result once for the user's query. "
+                      "Report the returned state. Never create, retry execution or invent tool names.",
+        backend=StateBackend(), context_schema=EnterpriseAgentRuntimeContext, state_schema=EnterpriseAgentState,
+        middleware=[ResultOnly()],
+        permissions=[FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny")])
+    installed = graph.nodes["tools"].bound.tools_by_name
+    if any(name in installed for name in ("run_sandbox_task", "call_mcp_tool", "read_sandbox_csv_result")):
+        raise ValueError("unexpected execution tool in diagnostic graph")
+    logging.getLogger(__name__).warning(
+        "sandbox_diagnostic model_tools=get_sandbox_task_result business_execution_tools=absent other_dispatch=denied")
+    timeout = settings.openai_request_timeout_s
+    graph.nodes["model"].timeout = TimeoutPolicy.coerce(timeout if timeout > 0 else None)
+    return graph
+
+
+def build_spec(*, sandbox_tools: Sequence[Any] = (), diagnostic_only=False):
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
     settings = get_settings()
+    if diagnostic_only and settings.work_enabled:
+        raise ValueError("diagnostic spec requires WORK disabled")
     registry = get_playbook_registry() if settings.work_enabled else None
     routed_runnable = (
+        _build_diagnostic_agent(sandbox_tools) if diagnostic_only else
         _build_runtime_runnable(registry, sandbox_tools=sandbox_tools)
         if sandbox_tools else _build_runtime_runnable(registry)
     )
