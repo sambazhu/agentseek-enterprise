@@ -27,8 +27,10 @@ from .m3_supervisor_snapshot import SupervisorReader
 from .m3_target_tracking import track_pending
 from .models import Code, canonical, require
 from .worker_process import run_worker
+from .execution_diagnostic import diagnosed, phase
 
 
+@diagnosed("launcher")
 def launch(config_path: Path, digest: str) -> dict:
     """Trusted installation pins the config digest out of band; never retries."""
     config = _decode(_pinned(config_path, digest))
@@ -50,17 +52,20 @@ def launch(config_path: Path, digest: str) -> dict:
         require(tracking != _path(installed["quota_directory"]), Code.DENIED)
     if "previous_tracking_directory" in installed:
         require(tracking != _path(installed["previous_tracking_directory"]), Code.DENIED)
-    binding = launch_isolated(_path(config["create_file"]),
-                              installation_digest=config["create_sha256"],
-                              candidate_sha256=config["candidate_sha256"])
-    raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.m3_launcher", "--attach"],
-                     canonical({"path": str(config_path), "sha256": digest, "binding": asdict(binding)}).encode(),
-                     budget=10, environment={})
+    with phase("create_worker"):
+        binding = launch_isolated(_path(config["create_file"]),
+                                  installation_digest=config["create_sha256"],
+                                  candidate_sha256=config["candidate_sha256"])
+    with phase("attach_worker"):
+        raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.m3_launcher", "--attach"],
+                         canonical({"path": str(config_path), "sha256": digest, "binding": asdict(binding)}).encode(),
+                         budget=10, environment={})
     result = _decode(raw)
     require(result == {"schema": 1, "binding": asdict(binding), "registered_and_observed": True}, Code.UNKNOWN)
     return result
 
 
+@diagnosed("closeout")
 def check_closed(config_path: Path, digest: str, binding: CreateBinding) -> dict:
     """One bounded read-only check; caller may not treat this as B approval.
 

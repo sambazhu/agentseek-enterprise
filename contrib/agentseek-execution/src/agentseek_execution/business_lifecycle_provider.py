@@ -13,6 +13,7 @@ from .m3_create_process import _path, _pinned
 from .m3_create_worker import CreatePlan
 from .m3_lifecycle import execute
 from .m3_probe_process import _decode, config_bytes
+from .execution_diagnostic import diagnosed, phase, emit
 
 
 class LifecycleBusinessProvider:
@@ -26,6 +27,7 @@ class LifecycleBusinessProvider:
         self.validated = False
 
     def validate_request(self, request, data):
+        self._diagnostic_request = (request.owner_id, request.request_id)
         expected = self.session_for.validate_request(request, data)
         life = _decode(_pinned(self.path, self.digest))
         launcher = _decode(_pinned(_path(life["launcher"]), life["launcher_sha256"]))
@@ -36,6 +38,7 @@ class LifecycleBusinessProvider:
         self.session_for.validate_installation(installed, precreate)
         self.validated = True
 
+    @diagnosed("provider_create")
     def create(self, attempt):
         if self.attempt is not None or not self.validated:
             raise ValueError("provider already used")
@@ -47,17 +50,21 @@ class LifecycleBusinessProvider:
         if saved["config_sha256"] != self.digest or saved["result"]["registered_and_observed"] is not True:
             raise ValueError("creation receipt mismatch")
         # Trusted factory verifies the saved binding against the sealed vault.
-        self.session = self.session_for(saved["result"]["binding"])
+        with phase("session_reconstruct"):
+            self.session = self.session_for(saved["result"]["binding"])
 
+    @diagnosed("provider_run")
     def run(self, attempt, command, timeout):
         if attempt != self.attempt or self.session is None or timeout != 15:
             raise ValueError("no registered session")
         return self.session.run(command, timeout=timeout)
 
+    @diagnosed("provider_destroy")
     def destroy(self, attempt):
         if attempt != self.attempt or self.session is None:
             # Lost creation/session reconstruction: no guessed target, retain
             # reconciliation state and leave the independent supervisor alive.
+            emit("provider_destroy", "skipped")
             return False
         try:
             self.session.terminate()

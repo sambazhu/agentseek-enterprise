@@ -116,7 +116,7 @@ def test_attach_actual_receipt_and_cli(prepared, monkeypatch, mode):  # noqa: C9
 
 
 @pytest.mark.parametrize("failure", ["create", "attach"])
-def test_launcher_never_retries_or_advances_after_failure(prepared, monkeypatch, failure):
+def test_launcher_never_retries_or_advances_after_failure(prepared, monkeypatch, failure, caplog):
     calls = []
 
     def creating(*args, **kwargs):
@@ -135,6 +135,11 @@ def test_launcher_never_retries_or_advances_after_failure(prepared, monkeypatch,
     with pytest.raises(ContractError):
         module.launch(prepared.launcher, prepared.launcher_digest)
     assert calls == (["create"] if failure == "create" else ["create", "attach"])
+    records = [json.loads(r.getMessage().split("execution_stage ", 1)[1])
+               for r in caplog.records if r.getMessage().startswith("execution_stage ")]
+    assert any(r["stage"] == failure + "_worker" and r["event"] == "failed" for r in records)
+    if failure == "create":
+        assert not any(r["stage"] == "attach_worker" for r in records)
 
 
 @pytest.mark.parametrize("fault", ["script", "tracking_mode", "tracking_nonempty", "create_pin"])
@@ -155,7 +160,7 @@ def test_bad_attach_installation_rejected_before_create(prepared, monkeypatch, f
     assert calls == []
 
 
-def test_launcher_calls_fixed_bounded_attach_with_binding(prepared, monkeypatch):
+def test_launcher_calls_fixed_bounded_attach_with_binding(prepared, monkeypatch, caplog):
     from agentseek_execution.m3_create_receipt import CreateBinding
     s = prepared
     binding = CreateBinding(**create.perform(s.launch)["binding"])
@@ -173,6 +178,11 @@ def test_launcher_calls_fixed_bounded_attach_with_binding(prepared, monkeypatch)
     monkeypatch.setattr(module, "run_worker", bounded)
     assert module.launch(s.launcher, s.launcher_digest)["registered_and_observed"] is True
     assert len(calls) == 1
+    records = [json.loads(r.getMessage().split("execution_stage ", 1)[1])
+               for r in caplog.records if r.getMessage().startswith("execution_stage ")]
+    assert [(r["stage"], r["event"]) for r in records] == [
+        ("launcher", "started"), ("create_worker", "started"), ("create_worker", "complete"),
+        ("attach_worker", "started"), ("attach_worker", "complete"), ("launcher", "complete")]
 
 
 @pytest.mark.parametrize("mode", ["success", "not_closed", "wrong_binding", "wrong_tracking", "wrong_fence"])

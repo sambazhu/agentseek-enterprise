@@ -13,15 +13,17 @@ import selectors
 import signal
 import subprocess
 import time
+import uuid
 from collections.abc import Mapping, Sequence
-from contextlib import suppress
 
 from .models import Code, ContractError, require
+from .execution_diagnostic import diagnosed, emit
 
 MAX_REQUEST = 65536
 MAX_OUTPUT = 1024 * 1024
 
 
+@diagnosed("worker_exchange")
 def run_worker(command: Sequence[str], request: bytes, *, budget: float, environment: Mapping[str, str]) -> bytes:
     """POSIX trusted-worker call. No shell, inherited secrets, or stderr capture.
 
@@ -33,28 +35,49 @@ def run_worker(command: Sequence[str], request: bytes, *, budget: float, environ
     require(math.isfinite(budget) and 0 < budget <= 600)
     require(bool(command) and all(isinstance(part, str) and part for part in command))
     deadline = time.monotonic() + budget
-    process = subprocess.Popen(  # noqa: S603 -- command is trusted service composition, never a request field
-        list(command),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=dict(environment),
-        start_new_session=True,
-        close_fds=True,
-    )
+    worker_id = uuid.uuid4().hex
+    started = time.monotonic()
+    emit("worker_spawn", "started", worker_id=worker_id, started=started)
     try:
-        return _exchange(process, request, deadline)
-    except Exception:
+        process = subprocess.Popen(  # noqa: S603 -- trusted service composition
+            list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=dict(environment), start_new_session=True, close_fds=True)
+    except BaseException as exc:
+        emit("worker_spawn", "failed", worker_id=worker_id, started=started, exc=exc)
+        raise
+    emit("worker_spawn", "spawned", worker_id=worker_id, child_pid=process.pid, started=started)
+    try:
+        result = _exchange(process, request, deadline)
+        emit("worker_exchange", "complete", worker_id=worker_id, child_pid=process.pid, started=started)
+        return result
+    except BaseException as exc:
+        emit("worker_exchange", "failed", worker_id=worker_id, child_pid=process.pid,
+             started=started, exc=exc)
+        if not isinstance(exc, Exception):
+            raise
         raise ContractError(Code.UNKNOWN) from None
     finally:
         # Kill the entire local worker process group, including children holding
         # pipe handles after the worker exited. Does not prove a remote VM stopped.
-        with suppress(ProcessLookupError):
+        emit("worker_cleanup", "started", worker_id=worker_id, child_pid=process.pid, started=started)
+        try:
             os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            emit("worker_cleanup", "group_absent", worker_id=worker_id, child_pid=process.pid)
+        except BaseException as exc:
+            emit("worker_cleanup", "failed", worker_id=worker_id, child_pid=process.pid, exc=exc)
+            raise
+        else:
+            emit("worker_cleanup", "kill_sent", worker_id=worker_id, child_pid=process.pid)
         try:
             process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            raise ContractError(Code.UNKNOWN) from None
+            emit("worker_cleanup", "reaped", worker_id=worker_id, child_pid=process.pid,
+                 returncode=process.returncode, started=started)
+        except BaseException as exc:
+            emit("worker_cleanup", "failed", worker_id=worker_id, child_pid=process.pid, exc=exc)
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise ContractError(Code.UNKNOWN) from None
+            raise
         finally:
             if process.stdin is not None:
                 process.stdin.close()

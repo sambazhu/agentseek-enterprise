@@ -16,8 +16,10 @@ from .m3_probe_dispatch import DispatchDirectory
 from .m3_probe_process import _decode, config_bytes
 from .m3_slot import _save
 from .models import Code, canonical, require
+from .execution_diagnostic import diagnosed, phase
 
 
+@diagnosed("lifecycle")
 def execute(path, digest, action):
     require(sys.platform == "linux" and os.getuid() == os.geteuid() == 0, Code.DENIED)
     config = _decode(_pinned(path, digest))
@@ -55,14 +57,16 @@ def execute(path, digest, action):
                     and completed["slot"] == "A" and completed["rows_observed"] == 5
                     and completed["next_create_authorized"] is False
                     and completed["create"] == asdict(binding), Code.DENIED)
-        _save(fd, "create-intent.json", {"schema": 1, "config_sha256": digest})
+        with phase("intent_save"):
+            _save(fd, "create-intent.json", {"schema": 1, "config_sha256": digest})
         if previous is None:
             result = launch(launcher, launcher_sha)
         else:
             result = launch_successor(launcher, launcher_sha, _path(previous["launcher"]),
                                       previous["launcher_sha256"], binding)
         require(_decode(_pinned(path, digest)) == config, Code.UNKNOWN)
-        _save(fd, "create-result.json", {"schema": 1, "config_sha256": digest, "result": result})
+        with phase("result_save"):
+            _save(fd, "create-result.json", {"schema": 1, "config_sha256": digest, "result": result})
         return {"schema": 1, "saved": True, "next_create_authorized": False}
     finally:
         os.close(fd)
