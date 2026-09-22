@@ -73,6 +73,22 @@ def test_pinned_approval_actual_private_file(fixture):
     assert snapshot.binding == binding and snapshot.expires_epoch == 1120
 
 
+@pytest.mark.parametrize("port,accepted", [(80, True), (13080, True), (1024, True),
+    (65535, True), (0, False), (443, False), (1023, False), (65536, False),
+    (True, False), (80.0, False), ("80", False)])
+def test_reader_admits_only_explicit_business_port_or_existing_high_ports(fixture, port, accepted):
+    config = fixture[0]
+    kwargs = dict(endpoint="https://control.example.invalid", api_key="synthetic-key",
+                  ca_file=config.parent / "ca", domain="example.invalid", proxy_port=port)
+    if accepted:
+        reader = module.PlatformReader(**kwargs)
+        assert reader._proxy_port == port
+        assert reader._tls.check_hostname and reader._tls.verify_mode == ssl.CERT_REQUIRED
+    else:
+        with pytest.raises(ContractError):
+            module.PlatformReader(**kwargs)
+
+
 @pytest.mark.parametrize("mode", ["changed", "foreign", "expired", "public", "revoked", "duplicate"])
 def test_approval_rejects(fixture, mode):
     _, binding, path, digest, _, _ = fixture

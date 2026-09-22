@@ -100,7 +100,9 @@ class PlatformReader:
         )
         require(type(api_key) is str and 0 < len(api_key) <= 4096 and all(33 <= ord(c) <= 126 for c in api_key))
         require(type(domain) is str and re.fullmatch(r"[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*", domain) is not None)
-        require(type(proxy_port) is int and 1024 <= proxy_port <= 65535)
+        # The approved same-host business path uses CubeProxy's HTTP port 80.
+        # Keep existing R1 high ports; do not admit arbitrary privileged ports.
+        require(type(proxy_port) is int and (proxy_port == 80 or 1024 <= proxy_port <= 65535))
         require(ca_file.is_absolute() and ca_file.resolve() == ca_file and ca_file.is_file(), Code.DENIED)
         self._tls = ssl.create_default_context(cafile=str(ca_file))
         require(self._tls.check_hostname and self._tls.verify_mode == ssl.CERT_REQUIRED, Code.DENIED)

@@ -210,6 +210,8 @@ def test_worker_argv_never_contains_csv_or_credentials(monkeypatch, plan):
 @pytest.mark.parametrize("operation", ["run", "terminate", "run_timeout"])
 def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation, identity_fixture):
     import httpx
+    import ssl
+    from agentseek_execution import m3_platform_evidence as platform
     plan.value["control"] = dict(endpoint="https://example.invalid", api_key="synthetic",
         ca_file=str(setup.root / "ca"), domain="example.invalid", proxy_port=80)
     pins, supervisor, _, _, _ = identity_fixture
@@ -221,8 +223,12 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
                                      module.config_bytes(setup.source.vault_key_file))
     sent = vault.read_intent(module.CreateBinding(**plan.binding))["sent_mono"]
     monkeypatch.setattr(module, "system_clock", lambda: SimpleNamespace(boot_id="boot", monotonic=sent))
-    monkeypatch.setattr(module, "PlatformReader", lambda **kwargs: SimpleNamespace(_tls=True,
-        collect_created=lambda *a: SimpleNamespace(started_epoch=time.time())))
+    # Exercise the real constructor: mocking the entire reader hid its port gate.
+    (setup.root / "ca").write_text("synthetic CA; TLS construction stubbed")
+    monkeypatch.setattr(platform.ssl, "create_default_context",
+                        lambda **kwargs: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+    monkeypatch.setattr(platform.PlatformReader, "collect_created",
+                        lambda *a: SimpleNamespace(started_epoch=time.time()))
     real_verify = module.verify_identity
     identity_calls = []
     def verify(snapshot, pins):
