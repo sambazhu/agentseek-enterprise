@@ -95,9 +95,34 @@ def example(root):
     return root / "input.json", sha(raw)
 
 
+def example_parameters(root):
+    """Public fake site-parameter shape; no real-machine discovery or migration."""
+    path, _ = example(root)
+    spec = json.loads(path.read_bytes())
+    docs = spec["documents"]
+    create = {k: v for k, v in docs["approval"]["plan"].items() if k not in {"restricted", "request_sha256"}}
+    pins = dict(docs["precreate"]["supervisor_identity"])
+    for name, pin in (("executable", "executable_sha256"), ("script", "script_sha256"), ("unit_file", "unit_sha256")):
+        pins[name], pins[pin] = spec["identity_files"][name]["path"], spec["identity_files"][name]["sha256"]
+    second = docs["installation"]["batch_sequence"][1]
+    params = dict(schema=1, output_directory=spec["output_directory"], sources=spec["sources"],
+                  identity_files=spec["identity_files"], directories=spec["directories"], create=create,
+                  second_plan={k: second[k] for k in ("create_token", "request_sha256")}, window=docs["window"],
+                  supervisor_identity=pins, template_pins=docs["precreate"]["template_pins"],
+                  request=docs["permits"]["permits"][0]["request"], input_sha256=docs["session"]["input_sha256"],
+                  instruction_sha256=docs["session"]["instruction_sha256"],
+                  listener={k: docs["service"][k] for k in ("bind_host", "bind_port")})
+    raw = (json.dumps(params, sort_keys=True, indent=2) + "\n").encode()
+    target = path.parent / "parameters.json"
+    with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(raw)
+    return target, hashlib.sha256(raw).hexdigest()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True)
+    parser.add_argument("--parameters", action="store_true", help="also emit synthetic site parameters for the input adapter")
     args = parser.parse_args()
-    path, digest = example(args.directory)
+    path, digest = (example_parameters if args.parameters else example)(args.directory)
     print(json.dumps({"synthetic_only": True, "input": str(path), "sha256": digest}))
