@@ -169,7 +169,11 @@ def compile_materials(spec):
         need(name not in visiting, "reference_cycle")
         visiting.add(name)
         value = resolve(templates[name])
-        need(type(value) is dict and set(value) == set(FIELDS[name].split()), "field_set")
+        fields = set(FIELDS[name].split())
+        optional = {"diagnostics_enabled"} if name == "session" else set()
+        need(type(value) is dict and set(value) in (fields, fields | optional), "field_set")
+        if name == "session":
+            need(type(value.get("diagnostics_enabled", False)) is bool, "diagnostics_type")
         values[name] = value
         expected[name] = encode(value)
         visiting.remove(name)

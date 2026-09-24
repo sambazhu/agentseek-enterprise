@@ -23,7 +23,8 @@ PARAMETERS = {"schema", "output_directory", "sources", "identity_files", "direct
 
 def build_input(parameters):
     p = copy.deepcopy(parameters)
-    bm.need(type(p) is dict and set(p) == PARAMETERS, "parameter_fields")
+    bm.need(type(p) is dict and set(p) in (PARAMETERS, PARAMETERS | {"diagnostics_enabled"}), "parameter_fields")
+    bm.need(type(p.get("diagnostics_enabled", False)) is bool, "diagnostics_type")
     bm.need(type(p["schema"]) is int and p["schema"] == 1, "parameter_schema")
     create = p["create"]
     bm.need(set(create) == {"run_id", "create_token", "template_id", "boot_id", "candidate_sha256", "domain", "endpoint"}, "create_fields")
@@ -91,6 +92,8 @@ def build_input(parameters):
                         plans=[dict(owner_id=req["owner_id"], request_id=req["request_id"], lifecycle_file=f("lifecycle"),
                                     lifecycle_sha256=h("lifecycle"), business_file=f("session"), business_sha256=h("session"))]),
     }
+    if "diagnostics_enabled" in p:
+        documents["session"]["diagnostics_enabled"] = p["diagnostics_enabled"]
     return dict(schema=1, output_directory=p["output_directory"], sources=p["sources"], identity_files=p["identity_files"],
                 directories=p["directories"], documents=documents)
 

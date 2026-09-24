@@ -34,6 +34,62 @@ def test_complete_command_stream():
     assert module.command_stdout(stream()) == "ok"
 
 
+@pytest.mark.parametrize("end", [{"status": "exited"}, {"status": "exit status 0"},
+    {"status": "exited with code 0"}, {"exit_code": 0}, {"exitCode": 0, "status": "exited"}])
+def test_sdk_status_and_empty_end_envelope(end):
+    body = frame({"event": {"start": {"pid": 1}}}) + frame({"event": {"data": {"stdout": "b2s="}}})
+    body += frame({"event": {"end": end}}) + b"\x02\x00\x00\x00\x00"
+    assert module.command_stdout(body) == "ok"
+
+
+@pytest.mark.parametrize("end", [{}, {"exitCode": True}, {"exited": True}, {"status": "running"},
+    {"exitCode": 0, "status": "exit status 1"}, {"exitCode": 0, "exit_code": 0},
+    {"status": "garbage exited with code 0 secret"}])
+def test_ambiguous_exit_never_success(end):
+    with pytest.raises(module.CommandProtocolError): module.end_code(end)
+
+
+@pytest.mark.parametrize("body,kind", [
+    (b"\x00\x00\x00\x00\x01{", "protocol"),
+    (frame({"event": {"unknown": {}}}) + frame({}, 2), "protocol"),
+    (frame({"event": {"data": {"stdout": "!!!!"}}}) + frame({}, 2), "protocol"),
+    (stream(code=1), "program"), (stream(b""), "program"), (stream(b"not-json-SECRET"), "program"),
+    (stream(b"\xff"), "program"),
+    (frame({"event": {"data": {"stderr": "U0VDUkVU"}}}) + frame({"event": {"end": {"exitCode": 0}}}) + frame({}, 2), "program"),
+    (stream()[:-1], "protocol"),
+])
+def test_decode_classification_and_content_free_evidence(body, kind):
+    evidence = module.new_evidence()
+    with pytest.raises(ValueError) as error: module.decode_command(body, evidence)
+    assert module.classify_error(error.value) == kind
+    module.validate_evidence(evidence)
+    assert "SECRET" not in json.dumps(evidence) and "U0VDUkVU" not in json.dumps(evidence)
+    assert not str(error.value)
+
+
+def test_evidence_frame_list_is_bounded():
+    body = frame({"event": {"start": {}}}) * 40 + frame({"event": {"end": {"exitCode": 0}}}) + frame({}, 2)
+    evidence = module.new_evidence()
+    assert module.command_stdout(body, evidence) == ""
+    assert len(evidence["frames"]) == 32 and evidence["frames_truncated"] is True
+    module.validate_evidence(evidence)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_failure_evidence_config_type_and_parent_redaction(plan, monkeypatch, caplog, enabled):
+    plan.value["diagnostics_enabled"] = enabled
+    plan.digest = plan.write()
+    assert module.read_plan(plan.path, plan.digest)["diagnostics_enabled"] is enabled
+    diag = dict(stage="decode", error="program", elapsed_ms=3, ready_attempts=1, http_status=200)
+    if enabled: diag["evidence"] = module.new_evidence()
+    monkeypatch.setattr(module, "run_worker", lambda *a, **kw: json.dumps(dict(result=None, diagnostic=diag)).encode())
+    with pytest.raises(ContractError): module.ApprovedCsvSession(plan.path, plan.digest, plan.binding)._invoke("run")
+    if enabled:
+        diag["evidence"]["stdout_prefix"] = "SECRET"
+        with pytest.raises(ContractError): module.ApprovedCsvSession(plan.path, plan.digest, plan.binding)._invoke("run")
+        assert "SECRET" not in caplog.text
+
+
 @pytest.mark.parametrize("statuses,success", [([503, 502, 204], True), ([200], True),
     ([401], False), ([403], False), ([404], False), ([302], False), ([503] * 6, False)])
 def test_readiness_only_retries_read_only_transient_responses(monkeypatch, statuses, success):
@@ -207,7 +263,7 @@ def test_worker_argv_never_contains_csv_or_credentials(monkeypatch, plan):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("operation", ["run", "terminate", "run_timeout"])
+@pytest.mark.parametrize("operation", ["run", "terminate", "run_timeout", "decode_default", "decode_enabled"])
 def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operation, identity_fixture):
     import httpx
     import ssl
@@ -216,6 +272,7 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
         ca_file=str(setup.root / "ca"), domain="example.invalid", proxy_port=80)
     pins, supervisor, _, _, _ = identity_fixture
     plan.value["supervisor_identity"] = asdict(pins)
+    if operation == "decode_enabled": plan.value["diagnostics_enabled"] = True
     plan.digest = plan.write()
     monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(module, "os", SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
@@ -238,6 +295,7 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
     monkeypatch.setattr(module, "verify_identity", verify)
     monkeypatch.setattr(module, "SupervisorReader", lambda path: SimpleNamespace(read=lambda **kwargs: supervisor))
     output = json.dumps({"csv": base64.b64encode(b"group,total\nA,1\n").decode(), "groups": 1})
+    if operation.startswith("decode_"): output = "PRIVATE-business-content"
     calls = []
     class Response:
         status_code = 200
@@ -266,6 +324,18 @@ def test_worker_fixed_protocol_and_exact_target(monkeypatch, setup, plan, operat
             calls.append("terminate")
             return Response()
     monkeypatch.setattr(httpx, "Client", Client)
+    if operation.startswith("decode_"):
+        diagnostic = {}
+        with pytest.raises(module.CommandProgramError):
+            module.perform(dict(path=str(plan.path), sha256=plan.digest, binding=plan.binding,
+                operation="run", data=base64.b64encode(plan.data).decode()), diagnostic)
+        assert calls == ["run"] and diagnostic["stage"] == "decode"
+        assert ("evidence" in diagnostic) == (operation == "decode_enabled")
+        assert "PRIVATE" not in json.dumps(diagnostic)
+        if "evidence" in diagnostic:
+            module.validate_evidence(diagnostic["evidence"])
+            assert diagnostic["evidence"]["substage"] == "csv_result"
+        return
     if operation == "run_timeout":
         diagnostic = {}
         with pytest.raises(httpx.ReadTimeout):

@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import re
 import shlex
 import struct
 import sys
@@ -57,9 +58,11 @@ def wait_ready(client, origin, headers, deadline, diagnostic):
 
 def read_plan(path, digest):
     value = _decode(_pinned(path, digest))
-    require(set(value) == {"schema", "csv_approved", "termination_approved", "expires_epoch",
+    fields = {"schema", "csv_approved", "termination_approved", "expires_epoch",
         "expected_create", "input_sha256", "instruction_sha256", "vault_directory", "vault_key_file",
-        "control", "supervisor_directory", "supervisor_identity"}, Code.DENIED)
+        "control", "supervisor_directory", "supervisor_identity"}
+    require(set(value) in (fields, fields | {"diagnostics_enabled"})
+            and type(value.get("diagnostics_enabled", False)) is bool, Code.DENIED)
     require(type(value["schema"]) is int and value["schema"] == 1
             and value["csv_approved"] is True and value["termination_approved"] is True, Code.DENIED)
     expected = CreateBinding(**value["expected_create"])
@@ -125,12 +128,15 @@ class ApprovedCsvSession:
             diagnostic = value["diagnostic"]
             # Never log child exception messages, headers, paths or payloads.
             allowed_stages = {"validation", "identity", "readiness", "command", "stream", "decode", "terminate", "complete"}
-            allowed_errors = {"none", "timeout", "connect", "contract", "protocol", "internal"}
-            require(type(diagnostic) is dict and set(diagnostic) ==
-                    {"stage", "error", "elapsed_ms", "ready_attempts", "http_status"}
+            allowed_errors = {"none", "timeout", "connect", "contract", "protocol", "program", "internal"}
+            fields = {"stage", "error", "elapsed_ms", "ready_attempts", "http_status"}
+            require(type(diagnostic) is dict and set(diagnostic) in (fields, fields | {"evidence"})
                     and diagnostic["stage"] in allowed_stages and diagnostic["error"] in allowed_errors
                     and all(type(diagnostic[k]) is int and 0 <= diagnostic[k] <= 600000
                             for k in ("elapsed_ms", "ready_attempts", "http_status")), Code.UNKNOWN)
+            if "evidence" in diagnostic:
+                require(value["result"] is None, Code.UNKNOWN)
+                validate_evidence(diagnostic["evidence"])
             logging.getLogger(__name__).warning("csv_worker operation=%s diagnostic=%s", operation, canonical(diagnostic))
             require(value["result"] is not None, Code.UNKNOWN)
             return value["result"]
@@ -152,8 +158,76 @@ class ApprovedCsvSession:
         pass  # All HTTP clients live in bounded children and are already closed.
 
 
-def command_stdout(body):
+class CommandProtocolError(ValueError):
+    """Malformed/ambiguous transport envelope; never contains response text."""
+
+
+class CommandProgramError(ValueError):
+    """Explicit process failure or invalid application result; no output text."""
+
+
+def new_evidence():
+    return dict(substage="frames", frames=[], frames_truncated=False, stdout_bytes=0,
+                stderr_bytes=0, end_seen=False, stream_end_seen=False, exit_code=None)
+
+
+def validate_evidence(value):
+    require(type(value) is dict and set(value) == set(new_evidence()), Code.UNKNOWN)
+    require(value["substage"] in {"frames", "frame_json", "event", "end_event", "process_result", "stdout_utf8", "csv_result"}, Code.UNKNOWN)
+    require(type(value["frames"]) is list and len(value["frames"]) <= 32, Code.UNKNOWN)
+    for pair in value["frames"]:
+        require(type(pair) is list and len(pair) == 2 and all(type(n) is int for n in pair)
+                and 0 <= pair[0] <= 255 and 0 <= pair[1] <= 4294967295, Code.UNKNOWN)
+    require(all(type(value[k]) is bool for k in ("frames_truncated", "end_seen", "stream_end_seen")), Code.UNKNOWN)
+    require(all(type(value[k]) is int and 0 <= value[k] <= LIMIT for k in ("stdout_bytes", "stderr_bytes")), Code.UNKNOWN)
+    require(value["exit_code"] is None or type(value["exit_code"]) is int and -2147483648 <= value["exit_code"] <= 2147483647, Code.UNKNOWN)
+
+
+def end_code(end):
+    """SDK 0.7 status vocabulary, with conflicting evidence rejected, no default 0."""
+    if type(end) is not dict or end.get("error"):
+        raise CommandProgramError if type(end) is dict and end.get("error") else CommandProtocolError
+    codes = []
+    if "exitCode" in end and "exit_code" in end:
+        raise CommandProtocolError
+    for name in ("exitCode", "exit_code"):
+        if name in end:
+            code = end[name]
+            if type(code) is not int or not -2147483648 <= code <= 2147483647:
+                raise CommandProtocolError
+            codes.append(code)
+    if "status" in end:
+        status = end["status"]
+        if type(status) is not str:
+            raise CommandProtocolError
+        if status == "exited":
+            codes.append(0)
+        else:
+            match = re.fullmatch(r"(?:exit status|exited with code) (-?\d{1,10})", status)
+            signal = re.fullmatch(r"(?:signal|terminated by signal) (\d{1,3})", status)
+            if match:
+                codes.append(int(match[1]))
+            elif signal and 1 <= int(signal[1]) <= 127:
+                codes.append(128 + int(signal[1]))
+            else:
+                raise CommandProtocolError
+    if not codes or len(set(codes)) != 1 or not -2147483648 <= codes[0] <= 2147483647:
+        raise CommandProtocolError
+    return codes[0]
+
+
+def command_stdout(body, evidence=None):
     """Bounded Connect stream; zero exit and complete terminator required."""
+    from .models import ContractError
+    try:
+        return _command_stdout(body, evidence if evidence is not None else new_evidence())
+    except (CommandProgramError, CommandProtocolError):
+        raise
+    except (ContractError, ValueError, UnicodeError, TypeError, KeyError):
+        raise CommandProtocolError from None
+
+
+def _command_stdout(body, evidence):
     require(type(body) is bytes and len(body) <= LIMIT, Code.UNKNOWN)
     state, offset, ended = _CommandState(), 0, False
     while offset < len(body):
@@ -161,16 +235,59 @@ def command_stdout(body):
         flag = body[offset]
         size = struct.unpack(">I", body[offset + 1:offset + 5])[0]
         offset += 5
+        evidence["substage"] = "frames"
+        if len(evidence["frames"]) < 32:
+            evidence["frames"].append([flag, size])
+        else:
+            evidence["frames_truncated"] = True
         require(flag in (0, 2) and size <= LIMIT and offset + size <= len(body), Code.UNKNOWN)
-        value = _decode(body[offset:offset + size])
+        evidence["substage"] = "frame_json"
+        value = {} if flag == 2 and size == 0 else _decode(body[offset:offset + size])
         offset += size
         if flag == 2:
             require(not value.get("error"), Code.UNKNOWN)
             ended = True
+            evidence["stream_end_seen"] = True
         else:
+            evidence["substage"] = "event"
+            event = value.get("event")
+            if type(event) is dict and set(event) == {"end"}:
+                evidence["substage"] = "end_event"
+                value = {"event": {"end": {"exitCode": end_code(event["end"])}}}
             state.event(value)
-    require(ended and state.ended and state.exit_code == 0 and not state.stderr, Code.UNKNOWN)
-    return bytes(state.stdout).decode("utf-8")
+            evidence.update(stdout_bytes=len(state.stdout), stderr_bytes=len(state.stderr),
+                            end_seen=state.ended, exit_code=state.exit_code)
+    require(ended and state.ended, Code.UNKNOWN)
+    evidence["substage"] = "process_result"
+    if state.exit_code != 0 or state.stderr:
+        raise CommandProgramError
+    evidence["substage"] = "stdout_utf8"
+    try:
+        return bytes(state.stdout).decode("utf-8")
+    except UnicodeError:
+        raise CommandProgramError from None
+
+
+def decode_command(body, evidence=None):
+    stdout = command_stdout(body, evidence)
+    if evidence is not None:
+        evidence["substage"] = "csv_result"
+    try:
+        decode_csv_result(stdout)
+    except (ValueError, UnicodeError, TypeError, KeyError):
+        raise CommandProgramError from None
+    return stdout
+
+
+def classify_error(exc):
+    import httpx
+    from .models import ContractError
+    return ("timeout" if isinstance(exc, httpx.TimeoutException) else
+            "connect" if isinstance(exc, httpx.ConnectError) else
+            "program" if isinstance(exc, CommandProgramError) else
+            "protocol" if isinstance(exc, CommandProtocolError) else
+            "contract" if isinstance(exc, ContractError) else
+            "protocol" if isinstance(exc, (ValueError, UnicodeError)) else "internal")
 
 
 def perform(payload, diagnostic=None):
@@ -248,8 +365,13 @@ def perform(payload, diagnostic=None):
                 require(len(buffer) + len(part) <= LIMIT, Code.UNKNOWN)
                 buffer.extend(part)
     diagnostic["stage"] = "decode"
-    stdout = command_stdout(bytes(buffer))
-    decode_csv_result(stdout)
+    evidence = new_evidence() if plan.get("diagnostics_enabled", False) else None
+    try:
+        stdout = decode_command(bytes(buffer), evidence)
+    except Exception:
+        if evidence is not None:
+            diagnostic["evidence"] = evidence
+        raise
     return {"stdout": stdout}
 
 
@@ -270,11 +392,7 @@ def main():
         result = perform(payload, diagnostic)
         diagnostic["stage"] = "complete"
     except Exception as exc:
-        from .models import ContractError
-        diagnostic["error"] = ("timeout" if isinstance(exc, httpx.TimeoutException) else
-            "connect" if isinstance(exc, httpx.ConnectError) else
-            "contract" if isinstance(exc, ContractError) else
-            "protocol" if isinstance(exc, (ValueError, UnicodeError)) else "internal")
+        diagnostic["error"] = classify_error(exc)
     diagnostic["elapsed_ms"] = min(600000, max(0, int((time.monotonic() - started) * 1000)))
     print(canonical(dict(result=result, diagnostic=diagnostic)))
 

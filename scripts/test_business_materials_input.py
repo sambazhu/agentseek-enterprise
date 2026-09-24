@@ -101,3 +101,20 @@ def test_wrong_parameter_pin_has_no_writes(case):
     with pytest.raises(bm.MaterialError, match="parameters_digest"):
         adapter.prepare(case[0], "0" * 64, case[2], generate=True)
     assert not case[2].exists()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_optional_diagnostics_is_pinned_in_session_only(case, enabled):
+    case = edit(case, lambda p: p.update(diagnostics_enabled=enabled))
+    adapter.prepare(*case, generate=True)
+    root = case[0].parent / "output"
+    session = json.loads((root / "session.json").read_bytes())
+    assert session["diagnostics_enabled"] is enabled
+    assert "diagnostics_enabled" not in json.loads((root / "service.json").read_bytes())
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_diagnostics_requires_explicit_boolean(case, value):
+    case = edit(case, lambda p: p.update(diagnostics_enabled=value))
+    with pytest.raises(bm.MaterialError): adapter.prepare(*case, generate=True)
+    assert not case[2].exists()
