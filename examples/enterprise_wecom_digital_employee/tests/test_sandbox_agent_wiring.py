@@ -22,12 +22,15 @@ def test_default_agent_disabled_and_explicit_tools_registered(monkeypatch, tmp_p
         return original(**kwargs)
     monkeypatch.setattr(module, "create_deep_agent", capture)
     try:
-        assert "run_sandbox_task" not in module.build_agent().nodes["tools"].bound.tools_by_name
+        default_tools = module.build_agent().nodes["tools"].bound.tools_by_name
+        assert "run_sandbox_task" not in default_tools
+        assert {"list_workspace_delivery_files", "deliver_workspace_file"} <= default_tools.keys()
+        assert "deliver_workspace_file" not in module.build_agent(profile_tool_grants=()).nodes["tools"].bound.tools_by_name
         assert "run_sandbox_task" in module.build_agent(sandbox_tools=tools).nodes["tools"].bound.tools_by_name
         assert "non-sandbox result" not in prompts[0]
-        assert "safe alternative calculation is allowed" in prompts[1]
-        assert "whether a workspace file was actually saved" in prompts[1]
-        assert "Never move untrusted code" in prompts[1]
+        assert "safe alternative calculation is allowed" in prompts[-1]
+        assert "whether a workspace file was actually saved" in prompts[-1]
+        assert "Never move untrusted code" in prompts[-1]
     finally:
         module.get_settings.cache_clear()
 

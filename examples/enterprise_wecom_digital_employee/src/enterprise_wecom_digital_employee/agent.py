@@ -111,6 +111,7 @@ class EnterpriseAgentState(DeepAgentState):
     latest_user_message: NotRequired[str]
     playbook_route: NotRequired[dict[str, Any]]
     work_request_key: NotRequired[str]
+    _native_file_delivery: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +199,7 @@ def build_agent(
             tool_grants=binding.spec.tool_grants if binding is not None else profile_tool_grants,
         )
     )
+    from enterprise_wecom_digital_employee.native_file_delivery import native_file_tools
     agent = create_deep_agent(
         model=settings.build_model(),
         tools=[
@@ -206,8 +208,20 @@ def build_agent(
             *employee_memory_tools(),
             *enabled_work_tools,
             *sandbox_tools,
+            *(native_file_tools() if binding is None and (
+                profile_tool_grants is None or {
+                    "list_workspace_delivery_files", "deliver_workspace_file"
+                }.issubset(profile_tool_grants)
+            ) else []),
         ],
         system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding) + (
+            "\nNative workspace file delivery is separate from sandbox execution. Only on the user's "
+            "explicit request, list saved files and call deliver_workspace_file for the unique selection. "
+            "Never auto-send on task completion. api_accepted is not proof of user receipt or opening. "
+            "Never automatically retry an uncertain send; only a new explicit user resend request permits "
+            "another delivery. Do not claim the file was sent unless the tool confirms api_accepted."
+            if binding is None else ""
+        ) + (
             "\nSandbox CSV pilot: run_sandbox_task is only for an uploaded CSV with "
             "group,amount columns and a group-wise sum request. Ordinary questions need no sandbox. "
             "Use the current file reference and the user's exact requested instruction; "
@@ -218,7 +232,8 @@ def build_agent(
             "workspace.state is available. When workspace.download.state is available, "
             "include its exact URL as the summary.csv download link; never invent or alter the URL. "
             "Otherwise explain that browser access is not ready; use get_sandbox_task_result "
-            "to renew a link without recreating a sandbox. No chat attachment upload or send is performed. "
+            "to renew a link without recreating a sandbox. Sandbox tools do not send chat attachments; "
+            "native file delivery requires a separate explicit user request. "
             "If sandbox work fails, safe alternative calculation is allowed: label it explicitly as "
             "a non-sandbox result and state whether a workspace file was actually saved. "
             "Do not present model arithmetic as verified tool execution. Never move untrusted code "
@@ -317,6 +332,7 @@ def build_spec(*, sandbox_tools: Sequence[Any] = (), diagnostic_only=False):
         if not isinstance(runnable_input, dict):
             return runnable_input
         runnable_input = dict(runnable_input)
+        runnable_input["_native_file_delivery"] = context.state.get("_native_file_delivery", "")
         if sandbox_tools and isinstance(context.state.get("current_files"), list):
             runnable_input["current_files"] = list(context.state["current_files"])
         if latest_user_message := _clean(context.state.get("latest_user_message")):

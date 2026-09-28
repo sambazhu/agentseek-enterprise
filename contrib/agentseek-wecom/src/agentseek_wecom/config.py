@@ -234,6 +234,18 @@ class WeComSettings(BaseSettings):
             "AGENTSEEK_WECOM_APP_TRANSPORT_ENABLED",
         ),
     )
+    native_file_delivery_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "BUB_WECOM_NATIVE_FILE_DELIVERY_ENABLED", "AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_ENABLED",
+        ),
+    )
+    native_file_delivery_directory: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BUB_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY", "AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY",
+        ),
+    )
     app_agent_id: str = Field(
         default="",
         validation_alias=AliasChoices("BUB_WECOM_APP_AGENT_ID", "AGENTSEEK_WECOM_APP_AGENT_ID"),
@@ -402,6 +414,7 @@ class WeComSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_runtime_settings(self) -> WeComSettings:
+        self._validate_native_file_delivery()
         if self.durable_mode == "sqlite":
             if not self.durable_sqlite_path.strip():
                 raise ValueError("durable_sqlite_path is required when durable_mode='sqlite'")
@@ -429,6 +442,16 @@ class WeComSettings(BaseSettings):
                 raise ValueError("long_connection_secret is required when long connection is enabled")
         self._validate_app_transport()
         return self
+
+    def _validate_native_file_delivery(self) -> None:
+        if self.native_file_delivery_enabled and (
+            not self.app_transport_enabled
+            or self.durable_mode != "sqlite"
+            or not Path(self.native_file_delivery_directory).is_absolute()
+        ):
+            raise ValueError(
+                "native file delivery requires application transport, sqlite outbox and absolute private directory"
+            )
 
     def _validate_app_transport(self) -> None:
         if not self.app_transport_enabled:
