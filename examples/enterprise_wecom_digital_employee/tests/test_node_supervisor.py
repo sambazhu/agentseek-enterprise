@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import threading
 
 import pytest
@@ -21,6 +23,32 @@ from sandbox_poc.node_supervisor import (
 RUN = "run-20260908-abc"
 ALIAS = "agentseek-m0-poc"
 TPL = "tpl-m0-poc"
+
+
+@pytest.mark.parametrize("mask", [0, 0o022, 0o077, 0o777])
+def test_manifest_private_independent_of_umask(tmp_path, mask):
+    store = ManifestStore(tmp_path / "manifest.json")
+    previous = os.umask(mask)
+    try:
+        store.register_run(RUN, ALIAS, TPL)
+        assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+        store.register_sandbox("synthetic-guest")
+        assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+        assert "synthetic-guest" in ManifestStore(store.path).registered_ids()
+    finally:
+        os.umask(previous)
+    assert not list(tmp_path.glob("manifest.json.tmp-*"))
+
+
+def test_manifest_replace_failure_preserves_old_bytes(tmp_path, monkeypatch):
+    store = ManifestStore(tmp_path / "manifest.json")
+    store.register_run(RUN, ALIAS, TPL)
+    before = store.path.read_bytes()
+    def fail(*args): raise OSError("synthetic replace failure")
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError): store.register_sandbox("new")
+    assert store.path.read_bytes() == before
+    assert not list(tmp_path.glob("manifest.json.tmp-*"))
 
 
 class Clocks:

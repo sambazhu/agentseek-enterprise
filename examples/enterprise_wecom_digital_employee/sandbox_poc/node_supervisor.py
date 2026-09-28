@@ -37,6 +37,8 @@ import json
 import logging
 import math
 import os
+import stat
+import tempfile
 import re
 import socket
 import threading
@@ -414,12 +416,19 @@ class ManifestStore:
                         **self.data.get("sandboxes", {}),
                     }
                     self.data = merged
-                tmp = self.path.with_name(f"{self.path.name}.tmp-{os.getpid()}")
-                with open(tmp, "w") as out:
-                    json.dump(self.data, out, indent=2)
-                    out.flush()
-                    os.fsync(out.fileno())
-                os.replace(tmp, self.path)
+                fd, tmp = tempfile.mkstemp(prefix=f"{self.path.name}.tmp-", dir=self.path.parent)
+                try:
+                    with os.fdopen(fd, "w") as out:
+                        os.fchmod(out.fileno(), 0o600)
+                        json.dump(self.data, out, indent=2)
+                        out.flush()
+                        os.fsync(out.fileno())
+                        if stat.S_IMODE(os.fstat(out.fileno()).st_mode) != 0o600:
+                            raise _invalid("manifest permissions")
+                    os.replace(tmp, self.path)
+                finally:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp)
                 with contextlib.suppress(OSError):
                     dirfd = os.open(self.path.parent, os.O_RDONLY)
                     try:
