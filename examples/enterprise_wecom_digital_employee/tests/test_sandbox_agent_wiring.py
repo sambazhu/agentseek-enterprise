@@ -15,9 +15,19 @@ def test_default_agent_disabled_and_explicit_tools_registered(monkeypatch, tmp_p
     monkeypatch.setenv("AGENTSEEK_WORK_ENABLED", "false")
     module.get_settings.cache_clear()
     tools = sandbox_business_tools(resolve=lambda *args: None, backend_for=lambda *args: None)
+    prompts = []
+    original = module.create_deep_agent
+    def capture(**kwargs):
+        prompts.append(kwargs["system_prompt"])
+        return original(**kwargs)
+    monkeypatch.setattr(module, "create_deep_agent", capture)
     try:
         assert "run_sandbox_task" not in module.build_agent().nodes["tools"].bound.tools_by_name
         assert "run_sandbox_task" in module.build_agent(sandbox_tools=tools).nodes["tools"].bound.tools_by_name
+        assert "non-sandbox result" not in prompts[0]
+        assert "safe alternative calculation is allowed" in prompts[1]
+        assert "whether a workspace file was actually saved" in prompts[1]
+        assert "Never move untrusted code" in prompts[1]
     finally:
         module.get_settings.cache_clear()
 

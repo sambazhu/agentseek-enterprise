@@ -27,6 +27,7 @@ from .m3_supervisor_snapshot import SupervisorReader
 from .m3_target_tracking import track_pending
 from .models import Code, canonical, require
 from .worker_process import run_worker
+from .execution_diagnostic import diagnostic_payload, take_diagnostic_flag, failure_envelope
 from .execution_diagnostic import diagnosed, phase
 
 
@@ -58,7 +59,7 @@ def launch(config_path: Path, digest: str) -> dict:
                                   candidate_sha256=config["candidate_sha256"])
     with phase("attach_worker"):
         raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.m3_launcher", "--attach"],
-                         canonical({"path": str(config_path), "sha256": digest, "binding": asdict(binding)}).encode(),
+                         canonical(diagnostic_payload({"path": str(config_path), "sha256": digest, "binding": asdict(binding)})).encode(),
                          budget=10, environment={})
     result = _decode(raw)
     require(result == {"schema": 1, "binding": asdict(binding), "registered_and_observed": True}, Code.UNKNOWN)
@@ -73,7 +74,7 @@ def check_closed(config_path: Path, digest: str, binding: CreateBinding) -> dict
     B's schema-3 create repeats current closeout and successor admission.
     """
     raw = run_worker([sys.executable, "-I", "-m", "agentseek_execution.m3_launcher", "--closeout"],
-                     canonical({"path": str(config_path), "sha256": digest, "binding": asdict(binding)}).encode(),
+                     canonical(diagnostic_payload({"path": str(config_path), "sha256": digest, "binding": asdict(binding)})).encode(),
                      budget=10, environment={})
     result = _decode(raw)
     require(result == {"schema": 1, "binding": asdict(binding), "known_target_absent": True,
@@ -99,7 +100,9 @@ def launch_successor(config_path: Path, digest: str, previous_path: Path, previo
     return launch(config_path, digest)
 
 
-def attach(payload: dict, *, closeout: bool = False) -> dict:
+def attach(payload: dict, *, closeout: bool = False, diagnostic=None) -> dict:
+    diagnostic = diagnostic if diagnostic is not None else {}
+    diagnostic["substage"] = "validation"
     """Internal bounded worker; accepts only a binding matching the pinned create."""
     require(sys.platform == "linux" and os.getuid() == 0 and os.geteuid() == 0, Code.DENIED)
     require(type(payload) is dict and set(payload) == {"path", "sha256", "binding"}, Code.DENIED)
@@ -136,6 +139,7 @@ def attach(payload: dict, *, closeout: bool = False) -> dict:
     platform = PlatformReader(endpoint=plan["endpoint"], api_key=api_key.decode("ascii"), ca_file=ca,
                               domain=binding.domain, proxy_port=13080)
     if closeout:
+        diagnostic["substage"] = "closeout"
         evidence = collect_closeout(platform, fence, old, _path(config["tracking_directory"]), reader, pins,
                                     empty_manifest=True, registered_ids=(*previous_ids, receipt.sandbox_id))
         require(evidence.sandbox_id == receipt.sandbox_id and evidence.state == "known_target_absent", Code.UNKNOWN)
@@ -148,6 +152,7 @@ def attach(payload: dict, *, closeout: bool = False) -> dict:
     script = _path(config["supervisor_script"])
     _pinned(script, config["supervisor_sha256"])
     # Same process group as the enclosing attach worker; no nested detached child.
+    diagnostic["substage"] = "registration"
     result = subprocess.run(  # noqa: S603 -- trusted pinned supervisor script, sealed ID
         [sys.executable, "-I", str(script), "--manifest", str(supervisor_dir / "manifest.json"),
          "--alarm-file", str(supervisor_dir / "alarm"), "--register-sandbox", receipt.sandbox_id],
@@ -158,6 +163,7 @@ def attach(payload: dict, *, closeout: bool = False) -> dict:
     registered_at = manifest["sandboxes"][receipt.sandbox_id]["registered_at"]
     # The reader requires registration timestamps not newer than the heartbeat.
     # Wait only for a fresh real heartbeat; never rewrite it or retry creation.
+    diagnostic["substage"] = "heartbeat"
     deadline = time.monotonic() + 3
     while True:
         beat = _decode(config_bytes(supervisor_dir / "manifest.json.heartbeat"))
@@ -169,6 +175,7 @@ def attach(payload: dict, *, closeout: bool = False) -> dict:
                                    registered_ids=(*previous_ids, receipt.sandbox_id))
     current_identity = verify_identity(final, pins)
     require((identity.pid, identity.start_ticks) == (current_identity.pid, current_identity.start_ticks), Code.UNKNOWN)
+    diagnostic["substage"] = "tracking"
     observed = track_pending(platform, fence, old, _path(config["tracking_directory"]))
     require(observed.state == "exact_running_observed" and observed.sandbox_id == receipt.sandbox_id, Code.UNKNOWN)
     _pinned(_path(payload["path"]), payload["sha256"])
@@ -187,11 +194,15 @@ def main() -> None:
     parser.add_argument("--binding-file", type=Path, help="Private prior launcher result, pinned separately")
     parser.add_argument("--binding-sha256")
     args = parser.parse_args()
+    enabled, diagnostic = False, {"substage": "validation"}
     try:
-        require(sys.flags.isolated and sys.platform == "linux", Code.DENIED)
         if args.attach or args.closeout:
-            result = attach(_decode(sys.stdin.buffer.read(16385)), closeout=args.closeout)
+            payload = _decode(sys.stdin.buffer.read(16385))
+            enabled = take_diagnostic_flag(payload)
+            require(sys.flags.isolated and sys.platform == "linux", Code.DENIED)
+            result = attach(payload, closeout=args.closeout, diagnostic=diagnostic)
         else:
+            require(sys.flags.isolated and sys.platform == "linux", Code.DENIED)
             require(args.config is not None and args.sha256 is not None, Code.DENIED)
             prior = (args.previous_config, args.previous_sha256, args.binding_file, args.binding_sha256)
             require(all(item is None for item in prior) or all(item is not None for item in prior), Code.DENIED)
@@ -204,7 +215,9 @@ def main() -> None:
             else:
                 result = launch(args.config, args.sha256)
         sys.stdout.write(canonical(result))
-    except Exception:
+    except Exception as exc:
+        if enabled:
+            sys.stdout.write(canonical(failure_envelope("attach", diagnostic["substage"], exc)))
         sys.exit(2)
 
 

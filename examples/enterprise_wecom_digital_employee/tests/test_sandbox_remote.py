@@ -26,6 +26,15 @@ from enterprise_wecom_digital_employee.sandbox_remote import RemoteCsvRunner, re
 from test_sandbox_deepagent_loop import Context, State, ScriptedModel
 
 
+def test_tool_description_allows_honest_safe_fallback():
+    tools = remote_csv_tools(grant_for=None, file_store=None, runner=None)
+    description = tools[0].description
+    assert "Safe fallback calculations" in description
+    assert "non-sandbox results" in description
+    assert "never" in description and "workspace delivery" in description
+    assert "Do not bypass" in description
+
+
 @pytest.fixture
 def remote(tmp_path):
     scope = ("tenant", "user", "session")

@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 from .models import Code, ContractError, require
-from .execution_diagnostic import diagnosed, emit
+from .execution_diagnostic import diagnosed, emit, observe_worker_failure
 
 MAX_REQUEST = 65536
 MAX_OUTPUT = 1024 * 1024
@@ -123,5 +123,8 @@ def _exchange(process: subprocess.Popen, request: bytes, deadline: float) -> byt
                         require(len(output) <= MAX_OUTPUT, Code.UNKNOWN)
         remaining = deadline - time.monotonic()
         require(remaining > 0, Code.UNKNOWN)
-        require(process.wait(timeout=remaining) == 0, Code.UNKNOWN)
+        code = process.wait(timeout=remaining)
+        if code != 0:
+            observe_worker_failure(bytes(output))
+        require(code == 0, Code.UNKNOWN)
     return bytes(output)

@@ -13,7 +13,7 @@ from .m3_create_process import _path, _pinned
 from .m3_create_worker import CreatePlan
 from .m3_lifecycle import execute
 from .m3_probe_process import _decode, config_bytes
-from .execution_diagnostic import diagnosed, phase, emit
+from .execution_diagnostic import diagnosed, phase, emit, worker_details
 
 
 class LifecycleBusinessProvider:
@@ -43,7 +43,8 @@ class LifecycleBusinessProvider:
         if self.attempt is not None or not self.validated:
             raise ValueError("provider already used")
         self.attempt = attempt
-        result = execute(self.path, self.digest, "create")
+        with worker_details(getattr(self.session_for, "diagnostics_enabled", False)):
+            result = execute(self.path, self.digest, "create")
         if result.get("saved") is not True:
             raise ValueError("creation not confirmed")
         saved = _decode(config_bytes(Path(self.config["directory"]) / "create-result.json"))
@@ -68,7 +69,8 @@ class LifecycleBusinessProvider:
             return False
         try:
             self.session.terminate()
-            result = execute(self.path, self.digest, "closeout")
+            with worker_details(getattr(self.session_for, "diagnostics_enabled", False)):
+                result = execute(self.path, self.digest, "closeout")
             return result.get("known_target_absent") is True and result.get("next_create_authorized") is False
         finally:
             self.session.close()

@@ -34,6 +34,7 @@ from .m3_supervisor_identity import IdentityPins
 from .m3_supervisor_snapshot import SupervisorReader, system_clock
 from .models import Code, canonical, require
 from .worker_process import run_worker
+from .execution_diagnostic import diagnostic_payload, take_diagnostic_flag, failure_envelope
 
 
 def launch_isolated(path: Path, *, installation_digest: str, candidate_sha256: str) -> CreateBinding:
@@ -48,11 +49,11 @@ def launch_isolated(path: Path, *, installation_digest: str, candidate_sha256: s
     require(path.is_absolute() and path.resolve() == path, Code.DENIED)
     raw = run_worker(
         [sys.executable, "-I", "-m", "agentseek_execution.m3_create_process"],
-        canonical({
+        canonical(diagnostic_payload({
             "path": str(path),
             "installation_digest": installation_digest,
             "candidate_sha256": candidate_sha256,
-        }).encode(),
+        })).encode(),
         budget=10,
         environment={},
     )
@@ -93,8 +94,10 @@ def _history_ids(vault, history, sequence):
     return tuple(ids)
 
 
-def perform(payload: dict) -> dict:
+def perform(payload: dict, diagnostic=None) -> dict:
     """Run ONLY in the externally bounded subprocess, never an in-process API."""
+    diagnostic = diagnostic if diagnostic is not None else {}
+    diagnostic["substage"] = "validation"
     require(sys.platform == "linux" and os.getuid() == 0 and os.geteuid() == 0, Code.DENIED)
     require(type(payload) is dict and set(payload) == {"path", "installation_digest", "candidate_sha256"})
     _digest(payload["candidate_sha256"])
@@ -131,6 +134,7 @@ def perform(payload: dict) -> dict:
     plan.binding(installed["approval_sha256"])
     require(plan.candidate_sha256 == payload["candidate_sha256"], Code.DENIED)
     require(system_clock().boot_id == plan.boot_id, Code.DENIED)
+    diagnostic["substage"] = "sources"
     request_path = _path(installed["request_file"])
     request = _pinned(request_path, plan.request_sha256)
     api_path, ca_path = _path(precreate["api_key_file"]), _path(precreate["ca_file"])
@@ -205,6 +209,7 @@ def perform(payload: dict) -> dict:
             require(_history_ids(vault, history, sequence) == registered_ids, Code.DENIED)
 
     def collect():
+        diagnostic["substage"] = "admission"
         revalidate()
         started = time.monotonic()
         deadline = admission()
@@ -212,6 +217,7 @@ def perform(payload: dict) -> dict:
         # Final private reads must not age the live observations past their 2s
         # freshness window. Bound the entire collection/revalidation interval.
         require(0 <= time.monotonic() - started < 2, Code.DENIED)
+        diagnostic["substage"] = "create"
         return deadline
 
     worker = CreateWorker(
@@ -229,15 +235,21 @@ def perform(payload: dict) -> dict:
         previous_create=previous,
         collect_closeout=closeout,
     )
+    diagnostic["substage"] = "create"
     binding = worker.create(request)
     return {"schema": 1, "installation_digest": payload["installation_digest"], "binding": asdict(binding)}
 
 
 def main() -> None:
+    enabled, diagnostic = False, {"substage": "validation"}
     try:
         raw = sys.stdin.buffer.read(65537)
-        sys.stdout.write(canonical(perform(_decode(raw))))
-    except Exception:
+        payload = _decode(raw)
+        enabled = take_diagnostic_flag(payload)
+        sys.stdout.write(canonical(perform(payload, diagnostic)))
+    except Exception as exc:
+        if enabled:
+            sys.stdout.write(canonical(failure_envelope("create", diagnostic["substage"], exc)))
         sys.exit(2)
 
 

@@ -44,3 +44,17 @@ def test_lost_delete_response_is_not_cleanup_success(monkeypatch):
     with pytest.raises(TimeoutError):
         p.destroy("attempt")
     assert events == ["close"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_create_details_scoped_and_reset_after_failure(monkeypatch, enabled):
+    from agentseek_execution.execution_diagnostic import diagnostic_payload
+    p = provider(monkeypatch)
+    p.validated = True
+    p.session_for.diagnostics_enabled = enabled
+    def execute(*args):
+        assert diagnostic_payload({}).get("diagnostics_enabled", False) is enabled
+        raise ValueError("synthetic")
+    monkeypatch.setattr(module, "execute", execute)
+    with pytest.raises(ValueError): p.create("attempt")
+    assert diagnostic_payload({}) == {}

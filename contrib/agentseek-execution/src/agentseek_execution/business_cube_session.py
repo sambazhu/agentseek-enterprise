@@ -86,6 +86,7 @@ class ApprovedCsvSessionFactory:
         plan = read_plan(self.path, self.digest)
         require(hashlib.sha256(data).hexdigest() == plan["input_sha256"]
                 and hashlib.sha256(request.instruction.encode()).hexdigest() == plan["instruction_sha256"], Code.DENIED)
+        self.diagnostics_enabled = plan.get("diagnostics_enabled", False)
         return plan["expected_create"]
 
     def __call__(self, binding):

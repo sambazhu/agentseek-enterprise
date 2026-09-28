@@ -218,7 +218,12 @@ def build_agent(
             "workspace.state is available. When workspace.download.state is available, "
             "include its exact URL as the summary.csv download link; never invent or alter the URL. "
             "Otherwise explain that browser access is not ready; use get_sandbox_task_result "
-            "to renew a link without recreating a sandbox. No chat attachment upload or send is performed."
+            "to renew a link without recreating a sandbox. No chat attachment upload or send is performed. "
+            "If sandbox work fails, safe alternative calculation is allowed: label it explicitly as "
+            "a non-sandbox result and state whether a workspace file was actually saved. "
+            "Do not present model arithmetic as verified tool execution. Never move untrusted code "
+            "to the host to bypass isolation, or duplicate uncertain side effects. "
+            "An alternative answer does not make the sandbox task succeeded."
             if sandbox_tools else ""
         ),
         skills=["/skills"],

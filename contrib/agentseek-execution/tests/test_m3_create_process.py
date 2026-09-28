@@ -87,6 +87,14 @@ def setup(request, monkeypatch):
     return s
 
 
+def test_missing_key_reports_sources_before_platform_access(setup):
+    (setup.root / "api-key").unlink()
+    diagnostic = {}
+    with pytest.raises(Exception): module.perform(setup.launch, diagnostic)
+    assert diagnostic == {"substage": "sources"}
+    assert setup.network == []
+
+
 def test_pinned_loader_composes_actual_live_create_and_seals(setup):
     s = setup
     result = module.perform(s.launch)

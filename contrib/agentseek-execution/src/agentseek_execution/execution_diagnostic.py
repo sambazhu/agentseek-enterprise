@@ -14,6 +14,63 @@ import uuid
 from .models import ContractError
 
 _scope = ContextVar("execution_diagnostic", default=None)
+_worker_details = ContextVar("worker_details", default=False)
+WORKER_STAGES = {"create": {"validation", "sources", "admission", "create"},
+                 "attach": {"validation", "registration", "heartbeat", "tracking", "closeout"}}
+
+
+@contextmanager
+def worker_details(enabled):
+    token = _worker_details.set(enabled is True)
+    try:
+        yield
+    finally:
+        _worker_details.reset(token)
+
+
+def diagnostic_payload(payload):
+    return dict(payload, diagnostics_enabled=True) if _worker_details.get() else payload
+
+
+def take_diagnostic_flag(payload):
+    if type(payload) is not dict:
+        return False
+    flag = payload.pop("diagnostics_enabled", False)
+    if type(flag) is not bool:
+        raise ValueError
+    return flag
+
+
+def failure_envelope(component, substage, exc):
+    if component not in WORKER_STAGES or substage not in WORKER_STAGES[component]:
+        raise ValueError
+    return dict(worker_failure=dict(schema=1, component=component, substage=substage,
+                                    error=error_kind(exc)))
+
+
+def observe_worker_failure(raw):
+    """Nonzero-exit stdout only; never capture stderr, raw output or messages."""
+    if not _worker_details.get() or len(raw) > 1024:
+        return
+    try:
+        def pairs(items):
+            obj = {}
+            for key, value in items:
+                if key in obj: raise ValueError
+                obj[key] = value
+            return obj
+        obj = json.loads(raw, object_pairs_hook=pairs)
+        if type(obj) is not dict or set(obj) != {"worker_failure"}: return
+        d = obj["worker_failure"]
+        if type(d) is not dict or set(d) != {"schema", "component", "substage", "error"}: return
+        if type(d["schema"]) is not int or d["schema"] != 1: return
+        if d["component"] not in WORKER_STAGES or d["substage"] not in WORKER_STAGES[d["component"]]: return
+        if d["error"] not in {"contract", "TimeoutError", "TimeoutExpired", "PermissionError", "ProcessLookupError",
+            "FileNotFoundError", "OSError", "ValueError", "RuntimeError", "CancelledError", "KeyboardInterrupt", "SystemExit", "other"}: return
+        scope = _scope.get() or ("unbound", "unbound")
+        logging.getLogger(__name__).warning("worker_failure %s", json.dumps(dict(d, scope_id=scope[0], request_sha256=scope[1]), sort_keys=True))
+    except Exception:
+        pass
 STAGES = frozenset({"provider_create", "provider_run", "provider_destroy", "lifecycle",
     "intent_save", "result_save", "launcher", "create_worker", "attach_worker",
     "session_reconstruct", "closeout", "worker_spawn", "worker_exchange", "worker_cleanup"})

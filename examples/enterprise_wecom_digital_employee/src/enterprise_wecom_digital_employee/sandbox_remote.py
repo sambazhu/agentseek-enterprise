@@ -133,6 +133,9 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
         A historical failed request does not deny a distinct new server grant.
         Server authorization is rechecked on invocation; never infer approval
         from user text or retry an old request. Grant visibility is not execution.
+        Safe fallback calculations may be offered as non-sandbox results, never
+        as evidence of sandbox success or workspace delivery. Do not bypass
+        isolation or repeat uncertain side effects to obtain a fallback.
         """
         stage = "resolve"
         try:
