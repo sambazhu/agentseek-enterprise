@@ -214,8 +214,8 @@ def test_grant_visible_separately_from_history_without_writes(remote, history):
     tools = remote_csv_tools(grant_for=lambda _: s.grant, file_store=s.files, runner=s.runner)
     before = s.gateway.path.read_bytes()
     result = asyncio.run(tools[1].coroutine(s.runtime))
-    assert result["state"] == ("no_task" if history == "none" else
-                               "workspace_pending" if history == "succeeded" else history)
+    assert result["state"] == "not_executed"
+    assert result["request_id"] == s.grant.request_id and result["attempt"] is None
     assert result["grant_available"] is True
     assert result["authorization"]["request_id"] == s.grant.request_id
     assert result["authorization"]["action_checked"] is False
@@ -282,7 +282,7 @@ def test_graph_reads_new_grant_then_executes_once_despite_old_failure(remote):
     result = asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=s.request.instruction)],
         "current_files": [s.record.to_dict()]}, context=s.context))
     outputs = [json.loads(m.content) for m in result["messages"] if isinstance(m, ToolMessage)]
-    assert outputs[0]["state"] == "failed" and outputs[0]["grant_available"]
+    assert outputs[0]["state"] == "not_executed" and outputs[0]["grant_available"]
     assert outputs[1]["workspace"]["state"] == "available"
     assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
     again = asyncio.run(tools[1].coroutine(s.runtime))

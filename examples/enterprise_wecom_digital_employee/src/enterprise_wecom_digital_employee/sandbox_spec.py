@@ -41,9 +41,12 @@ def _build_spec(*, diagnostic_only):
         raise ValueError("diagnosis requires an existing mirror")
     store = BusinessStore(mirror)
     files = LocalFileStore(FilesSettings.from_env())
+    runner = RemoteCsvRunner(client=client, store=store)
     tools = remote_csv_tools(grant_for=grants, file_store=files,
-                             runner=RemoteCsvRunner(client=client, store=store),
+                             runner=runner,
                              downloads=None if diagnostic_only else configured_workspace_downloads(files),
                              diagnostic_only=diagnostic_only)
-    return (build_agent_spec(sandbox_tools=tools, diagnostic_only=True) if diagnostic_only
-            else build_agent_spec(sandbox_tools=tools))
+    if diagnostic_only:
+        return build_agent_spec(sandbox_tools=tools, diagnostic_only=True)
+    from .sandbox_result_guard import guarded_spec
+    return guarded_spec(build_agent_spec(sandbox_tools=tools), grant_for=grants, runner=runner)
