@@ -12,6 +12,7 @@ from functools import wraps
 
 from agentseek_files.models import FileScope
 from langchain.tools import ToolRuntime, tool
+from loguru import logger as tool_logger
 
 from .sandbox_authorization import SandboxRequestResolver, runtime_scope, scoped_owner
 from .sandbox_composition import scoped_csv_bytes
@@ -119,20 +120,21 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
             runtime = inspect.signature(fn).bind(*args, **kwargs).arguments.get("runtime")
             call = getattr(runtime, "tool_call_id", None)
             call_hash = hashlib.sha256(call.encode()).hexdigest() if isinstance(call, str) else "absent"
-            logger = logging.getLogger(__name__)
-            logger.info("sandbox_tool name=%s event=%s phase=start call_sha256=%s", fn.__name__, event, call_hash)
+            # Use the application's existing sinks. Do not configure root logging
+            # or add per-tool handlers; stdlib INFO is dropped by the gateway.
+            tool_logger.info("sandbox_tool name={} event={} phase=start call_sha256={}", fn.__name__, event, call_hash)
             try:
                 result = await fn(*args, **kwargs)
             except BaseException as exc:
                 phase = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
-                logger.info("sandbox_tool name=%s event=%s phase=%s", fn.__name__, event, phase)
+                tool_logger.info("sandbox_tool name={} event={} phase={}", fn.__name__, event, phase)
                 raise
             state = result.get("state")
             allowed = {"succeeded", "failed", "reconciling", "not_executed", "no_task", "available",
                        "workspace_pending", "download_pending", "unavailable_or_rejected"}
             request_id = result.get("request_id")
             request_hash = hashlib.sha256(request_id.encode()).hexdigest() if isinstance(request_id, str) else "absent"
-            logger.info("sandbox_tool name=%s event=%s phase=complete state=%s current=%s request_sha256=%s",
+            tool_logger.info("sandbox_tool name={} event={} phase=complete state={} current={} request_sha256={}",
                         fn.__name__, event, state if state in allowed else "other",
                         result.get("matches_current_request") is True, request_hash)
             return result

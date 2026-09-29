@@ -3,7 +3,6 @@
 
 import asyncio
 import json
-import logging
 from dataclasses import asdict, replace
 import hashlib
 
@@ -144,11 +143,10 @@ def test_guard_store_error_does_not_release_model_claim(remote, tmp_path, monkey
     assert "暂不可核验" in text and "SECRET" not in text and "FAKE" not in text
 
 
-def test_audit_start_end_correlated_and_no_body(remote, caplog):
-    caplog.set_level(logging.INFO)
+def test_audit_start_end_correlated_and_no_body(remote, sandbox_tool_logs):
     s = remote
     asyncio.run(tools_for(s)[1].coroutine(s.runtime))
-    events = [r.getMessage() for r in caplog.records if r.getMessage().startswith("sandbox_tool")]
+    events = [r["message"] for r in sandbox_tool_logs if r["message"].startswith("sandbox_tool")]
     assert len(events) == 2
     assert "phase=start" in events[0] and "phase=complete state=not_executed current=True" in events[1]
     assert events[0].split("event=")[1].split()[0] == events[1].split("event=")[1].split()[0]
@@ -156,14 +154,13 @@ def test_audit_start_end_correlated_and_no_body(remote, caplog):
         assert value not in " ".join(events)
 
 
-def test_audit_cancel_is_terminal_observation(remote, monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+def test_audit_cancel_is_terminal_observation(remote, monkeypatch, sandbox_tool_logs):
     def cancelled(*args):
         raise asyncio.CancelledError()
     monkeypatch.setattr(remote.runner, "request_for_grant", cancelled)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(tools_for(remote)[1].coroutine(remote.runtime))
-    assert any("phase=cancelled" in r.getMessage() for r in caplog.records)
+    assert any("phase=cancelled" in r["message"] for r in sandbox_tool_logs)
 
 
 @pytest.mark.parametrize("execute", [False, True])
