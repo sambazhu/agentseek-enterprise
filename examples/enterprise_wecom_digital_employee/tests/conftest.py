@@ -13,7 +13,7 @@ def sandbox_tool_logs():
     from loguru import logger
     records = []
     sink = logger.add(lambda message: records.append(message.record.copy()), level="INFO",
-                      filter=lambda record: record["name"] == "enterprise_wecom_digital_employee.sandbox_remote",
+                      filter=lambda record: record["message"].startswith("sandbox_tool "),
                       format="{message}")
     try:
         yield records

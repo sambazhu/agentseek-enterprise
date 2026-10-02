@@ -2,20 +2,17 @@
 
 import asyncio
 import hashlib
-import inspect
 import json
 import logging
 import sqlite3
-import uuid
 from dataclasses import asdict
-from functools import wraps
 
 from agentseek_files.models import FileScope
 from langchain.tools import ToolRuntime, tool
-from loguru import logger as tool_logger
 
 from .sandbox_authorization import SandboxRequestResolver, runtime_scope, scoped_owner
 from .sandbox_composition import scoped_csv_bytes
+from .tool_observation import observed
 
 
 def gateway_failure(stage, exc):
@@ -112,33 +109,6 @@ class RemoteCsvRunner:
 
 def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnostic_only=False):
     """Explicit opt-in; workspace files only, no channel media upload/send."""
-
-    def observed(fn):
-        @wraps(fn)
-        async def wrapped(*args, **kwargs):
-            event = uuid.uuid4().hex
-            runtime = inspect.signature(fn).bind(*args, **kwargs).arguments.get("runtime")
-            call = getattr(runtime, "tool_call_id", None)
-            call_hash = hashlib.sha256(call.encode()).hexdigest() if isinstance(call, str) else "absent"
-            # Use the application's existing sinks. Do not configure root logging
-            # or add per-tool handlers; stdlib INFO is dropped by the gateway.
-            tool_logger.info("sandbox_tool name={} event={} phase=start call_sha256={}", fn.__name__, event, call_hash)
-            try:
-                result = await fn(*args, **kwargs)
-            except BaseException as exc:
-                phase = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
-                tool_logger.info("sandbox_tool name={} event={} phase={}", fn.__name__, event, phase)
-                raise
-            state = result.get("state")
-            allowed = {"succeeded", "failed", "reconciling", "not_executed", "no_task", "available",
-                       "workspace_pending", "download_pending", "unavailable_or_rejected"}
-            request_id = result.get("request_id")
-            request_hash = hashlib.sha256(request_id.encode()).hexdigest() if isinstance(request_id, str) else "absent"
-            tool_logger.info("sandbox_tool name={} event={} phase=complete state={} current={} request_sha256={}",
-                        fn.__name__, event, state if state in allowed else "other",
-                        result.get("matches_current_request") is True, request_hash)
-            return result
-        return wrapped
 
     def workspace_result(runtime, outcome, request, *, current=True, publish=False):
         result = asdict(outcome)
@@ -296,7 +266,8 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
                 raise ValueError("not current successful artifact")
             data = await asyncio.to_thread(runner.store.read, owner, artifact_ref)
             return {"state": "available", "filename": "summary.csv", "csv": data.decode("utf-8"),
-                    "request_id": request.request_id, "attempt": outcome.attempt, "matches_current_request": True}
+                    "request_id": request.request_id, "attempt": outcome.attempt,
+                    "artifact_ref": outcome.artifact_ref, "matches_current_request": True}
         except Exception:
             return {"state": "unavailable_or_rejected"}
 

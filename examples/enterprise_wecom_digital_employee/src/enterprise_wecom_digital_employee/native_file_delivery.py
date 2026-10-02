@@ -4,6 +4,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
 from enterprise_wecom_digital_employee.sandbox_authorization import runtime_scope
+from enterprise_wecom_digital_employee.tool_observation import observed
 
 
 def native_file_tools():
@@ -25,6 +26,7 @@ def native_file_tools():
             return {"status": "unavailable", "files": []}
 
     @tool
+    @observed
     async def deliver_workspace_file(file_ref: str, runtime: ToolRuntime) -> dict:
         """Send one existing file to the authenticated employee, only on explicit request.
 
