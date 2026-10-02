@@ -2,9 +2,9 @@
 # ruff: noqa: F811
 
 import asyncio
+import hashlib
 import json
 from dataclasses import asdict, replace
-import hashlib
 
 import pytest
 from agentseek_langchain.spec import InvocationContext, RunnableSpec
@@ -52,7 +52,9 @@ def test_current_state_not_latest_owner_row(remote, state):
         other = s.gateway.reserve(replace(s.request, request_id="newer-history"))
         s.gateway.record(other, "failed", None)
     out = asyncio.run(tools_for(s)[1].coroutine(s.runtime))
-    assert out["state"] == state
+    assert out.get("execution_state", out["state"]) == state
+    if state == "succeeded":
+        assert out["workspace"]["state"] == "unavailable"  # No trusted publication mapping.
     assert out["request_id"] == s.request.request_id and out["attempt"] == result.attempt
 
 
@@ -165,13 +167,13 @@ def test_audit_cancel_is_terminal_observation(remote, monkeypatch, sandbox_tool_
 
 @pytest.mark.parametrize("execute", [False, True])
 def test_production_spec_real_graph_current_request_boundary(remote, tmp_path, monkeypatch, execute):
-    from deepagents import create_deep_agent
-    from agentseek_langchain.profiles import messages_spec
-    from enterprise_wecom_digital_employee import agent, sandbox_spec
     import agentseek_execution.business_http as http
     import agentseek_files.store as files
     import agentseek_files.workspace_download as downloads
-    from test_sandbox_deepagent_loop import Context, State, ScriptedModel
+    from agentseek_langchain.profiles import messages_spec
+    from deepagents import create_deep_agent
+    from enterprise_wecom_digital_employee import agent, sandbox_spec
+    from test_sandbox_deepagent_loop import Context, ScriptedModel, State
 
     s = remote
     old = s.gateway.reserve(replace(s.request, request_id="W17"))

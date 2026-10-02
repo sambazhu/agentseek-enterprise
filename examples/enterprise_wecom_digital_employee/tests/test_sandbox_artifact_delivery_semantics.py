@@ -75,12 +75,14 @@ def test_second_task_same_file_initial_delivery_returns_old_receipt(case):
         first = await binding.deliver(file_ref(save()))
         record = save(now + timedelta(minutes=1))
         second = await replace(binding, message_id="message-2").deliver(file_ref(record))
-        assert first == second and first["status"] == "api_accepted"
+        assert second == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+        assert first["status"] == "api_accepted"
         assert calls == ["upload", "send"]
         resend = replace(binding, message_id="message-3", user_text="把 summary.csv 再发给我")
         third = await resend.deliver(file_ref(record))
         assert third["delivery_id"] != first["delivery_id"]
-        assert await resend.deliver(file_ref(record)) == third
+        assert await resend.deliver(file_ref(record)) == dict(third, reused_receipt=True,
+            delivery_notice="已有投递记录，本次未再次发送。")
         assert calls == ["upload", "send", "upload", "send"]
 
     asyncio.run(run())

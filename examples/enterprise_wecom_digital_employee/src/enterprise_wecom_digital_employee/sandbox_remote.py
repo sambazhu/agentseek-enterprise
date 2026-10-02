@@ -140,7 +140,7 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
             return result
         return wrapped
 
-    def workspace_result(runtime, outcome, request, *, current=True):
+    def workspace_result(runtime, outcome, request, *, current=True, publish=False):
         result = asdict(outcome)
         result.update(request_id=request.request_id, matches_current_request=current,
                       result_origin="current_request" if current else "historical")
@@ -152,13 +152,12 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
             return result
         try:
             scope = runtime_scope(runtime)
-            data = runner.store.read(scoped_owner(scope), outcome.artifact_ref)
-            record = file_store.store_bytes(scope=FileScope(*scope), filename="summary.csv", data=data,
-                mime_type="text/csv", direction="outbound")
-            if file_store.original_path(record).read_bytes() != data:
-                raise ValueError("workspace readback failed")
+            from .sandbox_workspace_binding import WorkspaceBindings, association
+            bindings = WorkspaceBindings(runner, file_store)
+            record = (bindings.publish if publish else bindings.read)(scope, request, outcome)
             result["workspace"] = dict(state="available", file_id=record.file_id, filename=record.filename,
                                        sha256=record.sha256, size_bytes=record.size_bytes,
+                                       association=association(record, request, outcome),
                                        download={"state": "disabled"})
         except Exception:
             result["execution_state"] = result["state"]
@@ -189,6 +188,8 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
         get_sandbox_task_result, which never creates. Return is a workspace file,
         including a short-lived download URL when enabled. Display that URL
         unchanged so the user can open summary.csv; never invent a URL.
+        Workspace association identifies this attempt, not a new physical copy.
+        Same-day identical outputs may share a file; this never permits resend.
         A historical failed request does not deny a distinct new server grant.
         Server authorization is rechecked on invocation; never infer approval
         from user text or retry an old request. Grant visibility is not execution.
@@ -201,9 +202,10 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
             request = resolver(runtime)(runtime, input_ref, instruction)
             data = scoped_csv_bytes(file_store, runtime, runtime_scope(runtime), input_ref)
             stage = "execute_thread"
+            fresh = await asyncio.to_thread(runner.store.snapshot, request) is None
             outcome = await asyncio.to_thread(runner.execute, request, data)
             stage = "workspace_thread"
-            return await asyncio.to_thread(workspace_result, runtime, outcome, request)
+            return await asyncio.to_thread(workspace_result, runtime, outcome, request, publish=fresh)
         except asyncio.CancelledError as exc:
             gateway_failure(stage, exc)
             # Cancelling the awaiting task does not prove the thread stopped.
@@ -219,6 +221,9 @@ def remote_csv_tools(*, grant_for, file_store, runner, downloads=None, diagnosti
 
         Historical success never proves current execution. not_executed means
         this request has no attempt, even if identical historical files exist.
+        Existing workspace mappings are read without refreshing file retention.
+        Missing, expired or interrupted mappings remain workspace_pending;
+        queries do not regenerate files or backfill historical associations.
         A true grant means
         a new approved action may be submitted, not that it has executed or that
         the node is ready. Supply both input_ref and the user's exact instruction

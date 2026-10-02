@@ -160,7 +160,8 @@ def test_one_users_uncertain_send_does_not_retry_or_block_other_user(delivery_pa
         return first, duplicate, other
 
     first, duplicate, other = asyncio.run(run())
-    assert first == duplicate and first["status"] == "uncertain"
+    assert duplicate == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+    assert first["status"] == "uncertain"
     assert other["status"] == "api_accepted"
     assert calls.count(("recipient-a", "timeout")) == 1
     assert "synthetic-secret" not in json.dumps(first)

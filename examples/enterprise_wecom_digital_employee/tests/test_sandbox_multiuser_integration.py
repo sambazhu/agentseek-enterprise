@@ -198,7 +198,8 @@ def test_uncertain_http_send_is_not_retried_and_other_recipient_can_complete(pai
         first = await deliver.coroutine(file_ref(pair.records["alice"]), a)
         duplicate = await deliver.coroutine(file_ref(pair.records["alice"]), a)
         other = await deliver.coroutine(file_ref(pair.records["bob"]), b)
-        assert first == duplicate and first["status"] == "uncertain"
+        assert duplicate == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+        assert first["status"] == "uncertain"
         assert other["status"] == "api_accepted"
         assert len(pair.calls) == 4
         assert "synthetic-private-error" not in json.dumps(first)

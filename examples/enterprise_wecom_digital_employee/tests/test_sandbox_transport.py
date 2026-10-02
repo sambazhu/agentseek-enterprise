@@ -1,24 +1,23 @@
 """Real graph -> to_thread -> HTTPX -> loopback TLS, no real model or Cube."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import ssl
 import threading
+from datetime import datetime, timedelta, timezone
 
+import pytest
+from agentseek_execution.business_http import BusinessHttpClient, make_tls_server
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-import pytest
-
-from agentseek_execution.business_http import BusinessHttpClient, make_tls_server
 from enterprise_wecom_digital_employee.sandbox_remote import remote_csv_tools
-from test_sandbox_remote import remote
-from test_sandbox_deepagent_loop import Context, State, ScriptedModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from test_sandbox_deepagent_loop import Context, ScriptedModel, State
+from test_sandbox_remote import remote  # noqa: F401 - pytest fixture
 
 
 @pytest.fixture
@@ -132,7 +131,8 @@ def test_real_https_graph_response_timeout_then_read_only_recovery(tls_graph, mo
     s.delay_response = False
     monkeypatch.setattr(httpx, "Client", original)
     recovered = asyncio.run(s.tools[1].coroutine(s.runtime))
-    assert recovered["workspace"]["state"] == "available"
+    assert recovered["workspace"]["state"] == "unavailable"
+    assert recovered["execution_state"] == "succeeded"  # Query never materializes missing mapping.
     assert s.events == ["create", "execute", "destroy"]
 
 
@@ -153,6 +153,7 @@ def test_graph_cancellation_does_not_cancel_thread_or_authorize_retry(tls_graph,
     asyncio.run(scenario())  # shutdown_default_executor waits for original worker
     assert s.gateway.snapshot(s.request).state == "succeeded"
     recovered = asyncio.run(s.tools[1].coroutine(s.runtime))
-    assert recovered["workspace"]["state"] == "available"
+    assert recovered["workspace"]["state"] == "unavailable"
+    assert recovered["execution_state"] == "succeeded"  # Cancelled publisher is not automatically retried.
     assert s.events == ["create", "execute", "destroy"]
     assert "stage=execute_thread error=CancelledError" in caplog.text

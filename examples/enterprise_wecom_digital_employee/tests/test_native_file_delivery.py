@@ -129,7 +129,8 @@ def test_channel_to_tools_to_real_outbox(rig):
         assert runtime.state[STATE_KEY] not in rig.message.context_str
         result = await deliver.coroutine(files[0]["file_ref"], runtime)
         duplicate = await deliver.coroutine(files[0]["file_ref"], runtime)
-        assert result == duplicate and result["status"] == "api_accepted"
+        assert duplicate == dict(result, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+        assert result["status"] == "api_accepted"
         assert result["user_receipt_confirmed"] is False
         assert len(rig.calls) == 2
         assert "SECRET" not in json.dumps(result)
@@ -163,7 +164,7 @@ def test_send_timeout_and_outbox_recovery_never_resend(rig):
             assert records[0].envelope["manual_recovery_only"] is True
             await rig.channel._recover_application_outbox(records[0])
         duplicate = await deliver.coroutine(file_ref(rig.record), runtime)
-        assert duplicate == result
+        assert duplicate == dict(result, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
         assert len(rig.calls) == 2
         await rig.client.aclose()
 

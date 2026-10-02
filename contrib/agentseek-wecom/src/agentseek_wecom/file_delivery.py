@@ -213,7 +213,7 @@ class FileDeliveryBinding:
         key = _digest([self.scope, self.recipient_key, selected_ref, self.message_id if resend else "initial"])
         owned, status = self.ledger.reserve(key)
         if not owned:
-            return _receipt(key, status)
+            return _receipt(key, status, reused=True)
         status = "upload_failed"
         try:
             data = self.read(record)
@@ -240,11 +240,13 @@ class FileDeliveryBinding:
         return _receipt(key, status)
 
 
-def _receipt(key: str, status: str):
+def _receipt(key: str, status: str, *, reused: bool = False):
     return {
         "delivery_id": key,
         "status": "uncertain" if status == "inflight" else status,
         "api_accepted": None if status in {"inflight", "uncertain"} else status == "api_accepted",
         "user_receipt_confirmed": False,
+        "reused_receipt": reused,
+        "delivery_notice": "已有投递记录，本次未再次发送。" if reused else "本次投递尝试结果；接口接受不代表用户实收。",
         "automatic_retry_allowed": False,
     }

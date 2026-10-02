@@ -2,28 +2,30 @@
 
 import asyncio
 import base64
-from dataclasses import asdict
 import hashlib
 import json
-from types import SimpleNamespace
 import time
+from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
-from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from agentseek_execution.business_broker import BusinessBroker, BusinessPermit
 from agentseek_execution.business_execution import BusinessRequest
-from agentseek_execution.csv_business import BusinessStore
 from agentseek_execution.business_workspace import CsvWorkspace
+from agentseek_execution.csv_business import BusinessStore
 from agentseek_files.models import FileScope
 from agentseek_files.settings import FilesSettings
 from agentseek_files.store import LocalFileStore
-
+from deepagents import create_deep_agent
 from enterprise_wecom_digital_employee.sandbox_authorization import (
-    ApprovedGrantCatalog, SandboxGrant, instruction_digest, scoped_owner,
+    ApprovedGrantCatalog,
+    SandboxGrant,
+    instruction_digest,
+    scoped_owner,
 )
 from enterprise_wecom_digital_employee.sandbox_remote import RemoteCsvRunner, remote_csv_tools
-from test_sandbox_deepagent_loop import Context, State, ScriptedModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from test_sandbox_deepagent_loop import Context, ScriptedModel, State
 
 
 def test_tool_description_allows_honest_safe_fallback():
@@ -97,6 +99,7 @@ def test_lost_response_recovered_without_second_submit(remote):
 
 def test_proven_pre_send_failure_closes_without_retry(remote, monkeypatch):
     from dataclasses import replace
+
     from agentseek_execution.business_http import BusinessRequestNotSent
     calls = []
     def fail(*args, **kwargs):
@@ -124,11 +127,12 @@ def test_not_found_is_not_proof_of_no_submission(remote, monkeypatch):
 
 
 def test_real_graph_remote_result_returns_workspace_file(remote, tmp_path):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
     from urllib.parse import urlsplit
+
     from agentseek_files.workspace_download import WorkspaceDownloads, WorkspaceDownloadSettings
     from agentseek_wecom.workspace_routes import register_workspace_routes
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     s = remote
     grants = tmp_path / "downloads"
@@ -178,7 +182,7 @@ def test_link_failure_and_renewal_never_resubmit(remote, tmp_path, monkeypatch):
     assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
 
 
-def test_workspace_mirror_failure_recovers_without_rerun(remote, monkeypatch):
+def test_workspace_mirror_failure_query_does_not_republish_or_rerun(remote, monkeypatch):
     s = remote
     tools = remote_csv_tools(grant_for=lambda runtime: s.grant, file_store=s.files, runner=s.runner)
     original = s.files.store_bytes
@@ -188,7 +192,8 @@ def test_workspace_mirror_failure_recovers_without_rerun(remote, monkeypatch):
     assert result["state"] == "workspace_pending" and result["cleanup_confirmed"]
     monkeypatch.setattr(s.files, "store_bytes", original)
     recovered = asyncio.run(tools[1].coroutine(s.runtime))
-    assert recovered["workspace"]["state"] == "available"
+    assert recovered["workspace"]["state"] == "unavailable"
+    assert recovered["execution_state"] == "succeeded"
     assert s.calls == ["execute"] and s.events == ["create", "execute", "destroy"]
 
 

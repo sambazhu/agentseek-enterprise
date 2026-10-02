@@ -33,6 +33,8 @@ def native_file_tools():
         For another send the USER must explicitly say '重发工作区文件 <file_ref>'
         or '把 summary.csv 再发给我'. Never invent confirmation, recipients or keys.
         api_accepted is NOT user receipt/opening. uncertain must not be retried.
+        When reused_receipt is true, say this is an existing receipt and NO new
+        file was sent in this call. Never describe it as a new successful send.
         This tool never executes a sandbox, renews retention or generates a file.
         """
         try:

@@ -69,7 +69,8 @@ def test_success_and_idempotency_before_upload(setup):
         return first, again
 
     first, again = asyncio.run(run())
-    assert first == again
+    assert again == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+    assert first["reused_receipt"] is False
     assert first["status"] == "api_accepted"
     assert first["api_accepted"] and not first["user_receipt_confirmed"]
     assert not first["automatic_retry_allowed"]
@@ -101,7 +102,8 @@ def test_explicit_resend_new_inbound_not_tool_nonce(setup):
         return first, same, second, duplicate
 
     first, same, second, duplicate = asyncio.run(run())
-    assert first == same and second == duplicate
+    assert same == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+    assert duplicate == dict(second, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
     assert first["delivery_id"] != second["delivery_id"]
     assert [c[0] for c in calls] == ["upload", "send", "upload", "send"]
 
@@ -232,4 +234,5 @@ def test_receipt_write_failure_stays_uncertain_and_reserved(setup, monkeypatch):
     first = asyncio.run(binding.deliver(file_ref(record)))
     assert first["status"] == "uncertain" and first["api_accepted"] is None
     again = asyncio.run(binding.deliver(file_ref(record)))
-    assert first == again and [c[0] for c in calls] == ["upload", "send"]
+    assert again == dict(first, reused_receipt=True, delivery_notice="已有投递记录，本次未再次发送。")
+    assert [c[0] for c in calls] == ["upload", "send"]
