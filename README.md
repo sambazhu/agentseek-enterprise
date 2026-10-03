@@ -16,9 +16,18 @@ template content at the exact locked commit.
 
 ## Enterprise WeCom Deployment
 
+`production` also includes the v0.1.3 **limited CSV sandbox MVP**: fixed
+`group,amount` aggregation, request/attempt-isolated results, deterministic
+ledger replies, and explicitly requested native file delivery. One enterprise,
+two private-chat users and serial execution passed end-to-end acceptance.
+Sandbox execution and native delivery are opt-in, not enabled by this merge.
+See the [deployment reference](examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp)
+and [frozen scope](examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md).
+General scripts, S3 revision recovery and parallel/multi-tenant execution are not included.
+
 This fork also carries the internally verified Enterprise WeCom digital
 employee solution. Use the `production` branch for the latest documentation or
-pin `enterprise-wecom-v0.1.2-ga` for the immutable runtime baseline. Do not use
+pin `enterprise-wecom-v0.1.2-ga` for the earlier immutable runtime baseline. Do not use
 upstream `main` as the deployment ref for that solution.
 
 ```bash

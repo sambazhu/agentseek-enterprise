@@ -37,6 +37,27 @@ digital employees.
 
 ## Setup
 
+### Optional v0.1.3 CSV sandbox and native file delivery
+
+Default setup uses `{{ cookiecutter.project_slug }}.agent:build_spec` with no
+sandbox tools and `AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_ENABLED=false`.
+The optional `sandbox` dependency extra adds `agentseek-execution[broker]` on the
+gateway; it does not install a Cube node or grant any execution authority.
+
+To opt in, follow the [deployment reference](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp),
+substituting this project's package name. Replace (do not duplicate) the SPEC
+line with `{{ cookiecutter.project_slug }}.sandbox_spec:build_spec`, and supply
+current approved private CONFIG and its full SHA256. CONFIG_SHA256 pins the
+gateway config, not grants.json. Keep delivery and browser downloads separately
+configured. Native delivery needs application transport, durable sqlite, a
+private ledger directory, trusted DM identity and explicit file selection.
+
+This is a fixed `group,amount` CSV aggregation MVP, not a general script service.
+Every live deployment needs its own installation checks, approvals and acceptance.
+Restoring the basic spec and removing both SANDBOX config keys disables sandbox
+tools without deleting results or workspace bindings. A separately approved
+broker stop and safe gateway restart are required for live closeout.
+
 ```bash
 agentseek task sync
 cp .env.example .env

@@ -1,7 +1,7 @@
 [project]
 name = "agentseek-execution"
 version = "0.1.0"
-description = "Offline execution contracts for AgentSeek (M1, no Cube integration)"
+description = "Execution contracts, isolated workers and an opt-in CSV sandbox business broker for AgentSeek"
 requires-python = ">=3.10,<3.14"
 dependencies = []
 

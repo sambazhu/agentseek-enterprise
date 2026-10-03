@@ -6,7 +6,14 @@ It runs a DeepAgents agent through AgentSeek gateway, receives WeCom intelligent
 
 ## Developer Documentation
 
-The current verified baseline is `enterprise-wecom-v0.1.2-ga`. Developers who
+`production` includes the opt-in v0.1.3 limited CSV sandbox MVP and native file
+delivery (NFD). Single-enterprise, two-user private-chat, serial end-to-end
+acceptance is complete. Both features remain disabled by default; execution
+requires new approved request/configuration/window material, delivery requires
+a separate explicit user request. See [deployment configuration and recovery](DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp)
+and the [current business contract](V0.1.3_SANDBOX_BUSINESS_REFERENCE.md).
+
+The earlier immutable GA baseline is `enterprise-wecom-v0.1.2-ga`. Developers who
 deploy or extend this framework should start with:
 
 - [企业数字员工框架研发指南](DEVELOPER_GUIDE.md)
@@ -26,15 +33,16 @@ deploy or extend this framework should start with:
 - [Read the concepts, boundaries, and deployment decisions](../../docs/concepts/enterprise-wecom-architecture.md)
 
 The sections below retain detailed implementation and historical rollout notes.
-When a version reference conflicts, the v0.1.2 release documents and immutable
-GA tag are authoritative.
+The v0.1.2 release documents describe that immutable tag. Current sandbox
+behavior is described by the v0.1.3 contract and acceptance records, not the
+older rollout notes below.
 
 The template injects `state["employee_context"]` and `state["short_term_memory"]` into the model-visible message list, so questions like `我是谁` and follow-ups like `我刚才说我要去哪里` can be answered from runtime context instead of asking the user to restate their OA account or prior message. It also configures a tenant-and-employee scoped persistent `StoreBackend` for explicitly requested durable preferences and work context, plus ContextSeek semantic recall across the same employee's sessions.
 
 ## Deployment Baseline
 
 Use the repository `production` branch for internal deployment and trial use.
-It points at the current Enterprise WeCom GA baseline. Use the GA tag when you
+It includes the limited v0.1.3 sandbox MVP. Use the earlier GA tag when you
 need an immutable rollback or audit target.
 
 v0.1.2 freezes three WeCom channel roles: an AI Bot chooses Callback or long

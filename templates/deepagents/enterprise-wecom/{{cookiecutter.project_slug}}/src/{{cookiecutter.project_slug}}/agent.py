@@ -117,6 +117,7 @@ class EnterpriseAgentState(DeepAgentState):
     playbook_route: NotRequired[dict[str, Any]]
     work_request_key: NotRequired[str]
     work_creation_replay_response: NotRequired[str]
+    _native_file_delivery: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +178,7 @@ def build_agent(
     binding: PlaybookBinding | None = None,
     profile_tool_grants: tuple[str, ...] | None = None,
     shared_capability_tools: Sequence[Any] = (),
+    sandbox_tools: Sequence[Any] = (),
 ) -> Any:
     """Build the local DeepAgents runnable."""
 
@@ -204,6 +206,7 @@ def build_agent(
             tool_grants=binding.spec.tool_grants if binding is not None else profile_tool_grants,
         )
     )
+    from {{ cookiecutter.project_slug }}.native_file_delivery import native_file_tools
     agent = create_deep_agent(
         model=settings.build_model(),
         tools=[
@@ -212,8 +215,44 @@ def build_agent(
             *employee_memory_tools(),
             *(production_service_tools() if binding is None else []),
             *enabled_work_tools,
+            *sandbox_tools,
+            *(native_file_tools() if binding is None and (
+                profile_tool_grants is None or {
+                    "list_workspace_delivery_files", "deliver_workspace_file"
+                }.issubset(profile_tool_grants)
+            ) else []),
         ],
-        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding),
+        system_prompt=_system_prompt(_STATIC_ASSETS, binding=binding) + (
+            "\nNative workspace file delivery is separate from sandbox execution. Only on the user's "
+            "explicit request, list saved files and call deliver_workspace_file for the unique selection. "
+            "Never auto-send on task completion. api_accepted is not proof of user receipt or opening. "
+            "Never automatically retry an uncertain send; only a new explicit user resend request permits "
+            "another delivery. Do not claim the file was sent unless the tool confirms api_accepted."
+            if binding is None else ""
+        ) + (
+            "\nSandbox CSV pilot: run_sandbox_task is only for an uploaded CSV with "
+            "group,amount columns and a group-wise sum request. Ordinary questions need no sandbox. "
+            "Use the current file reference and the user's exact requested instruction; "
+            "the server checks approval. Never invent approval or retry a rejected, failed or "
+            "reconciling task. A historical succeeded task, prior conversation, identical CSV or "
+            "same-name file never proves the current request executed. get_sandbox_task_result "
+            "is current-request only; not_executed is not success. Check request/attempt attribution. "
+            "Use native workspace listing for explicitly requested historical files, labelled historical. Never retry a "
+            "reconciling task. Report cleanup_confirmed truthfully. Read a returned artifact "
+            "with read_sandbox_csv_result before summarizing its numbers. Results are returned "
+            "to the user's file workspace; only say a workspace file is available when "
+            "workspace.state is available. When workspace.download.state is available, "
+            "include its exact URL as the summary.csv download link; never invent or alter the URL. "
+            "Otherwise explain that browser access is not ready; use get_sandbox_task_result "
+            "to renew a link without recreating a sandbox. Sandbox tools do not send chat attachments; "
+            "native file delivery requires a separate explicit user request. "
+            "If sandbox work fails, safe alternative calculation is allowed: label it explicitly as "
+            "a non-sandbox result and state whether a workspace file was actually saved. "
+            "Do not present model arithmetic as verified tool execution. Never move untrusted code "
+            "to the host to bypass isolation, or duplicate uncertain side effects. "
+            "An alternative answer does not make the sandbox task succeeded."
+            if sandbox_tools else ""
+        ),
         skills=["/skills"],
         backend=backend,
         context_schema=EnterpriseAgentRuntimeContext,
@@ -242,12 +281,62 @@ def _direct_capability_tools(*, tool_grants: tuple[str, ...] | None) -> list[Any
     return tools
 
 
-def build_spec():
+def _build_diagnostic_agent(tools):
+    """Keep DeepAgent/ToolRuntime, without MCP, Work, memory or execution tools."""
+    import logging
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    if [getattr(t, "name", None) for t in tools] != ["get_sandbox_task_result"]:
+        raise ValueError("diagnostic tool set must be exactly the result reader")
+
+    class ResultOnly(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(request.override(tools=list(tools)))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(request.override(tools=list(tools)))
+
+        def wrap_tool_call(self, request, handler):
+            if request.tool_call["name"] != "get_sandbox_task_result":
+                return ToolMessage(content="diagnostic_tool_denied", tool_call_id=request.tool_call["id"])
+            return handler(request)
+
+        async def awrap_tool_call(self, request, handler):
+            if request.tool_call["name"] != "get_sandbox_task_result":
+                return ToolMessage(content="diagnostic_tool_denied", tool_call_id=request.tool_call["id"])
+            return await handler(request)
+
+    _register_enterprise_harness_profile()
+    settings = get_settings()
+    graph = create_deep_agent(model=settings.build_model(), tools=list(tools),
+        system_prompt="Read-only sandbox diagnosis. Call get_sandbox_task_result once for the user's query. "
+                      "Report the returned state. Never create, retry execution or invent tool names.",
+        backend=StateBackend(), context_schema=EnterpriseAgentRuntimeContext, state_schema=EnterpriseAgentState,
+        middleware=[ResultOnly()],
+        permissions=[FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny")])
+    installed = graph.nodes["tools"].bound.tools_by_name
+    if any(name in installed for name in ("run_sandbox_task", "call_mcp_tool", "read_sandbox_csv_result")):
+        raise ValueError("unexpected execution tool in diagnostic graph")
+    logging.getLogger(__name__).warning(
+        "sandbox_diagnostic model_tools=get_sandbox_task_result business_execution_tools=absent other_dispatch=denied")
+    timeout = settings.openai_request_timeout_s
+    graph.nodes["model"].timeout = TimeoutPolicy.coerce(timeout if timeout > 0 else None)
+    return graph
+
+
+def build_spec(*, sandbox_tools: Sequence[Any] = (), diagnostic_only=False):
     """Return the RunnableSpec loaded by AGENTSEEK_LANGCHAIN_SPEC."""
 
     settings = get_settings()
+    if diagnostic_only and settings.work_enabled:
+        raise ValueError("diagnostic spec requires WORK disabled")
     registry = get_playbook_registry() if settings.work_enabled else None
-    routed_runnable = _build_runtime_runnable(registry)
+    routed_runnable = (
+        _build_diagnostic_agent(sandbox_tools) if diagnostic_only else
+        _build_runtime_runnable(registry, sandbox_tools=sandbox_tools)
+        if sandbox_tools else _build_runtime_runnable(registry)
+    )
     base_spec = messages_spec(routed_runnable, include_agents_md=False)
 
     def build_input(context: InvocationContext) -> object:
@@ -261,6 +350,9 @@ def build_spec():
         runnable_input["employee_context"] = (
             {"oa_account": _clean(employee.get("oa_account"))} if isinstance(employee, Mapping) else {}
         )
+        runnable_input["_native_file_delivery"] = context.state.get("_native_file_delivery", "")
+        if sandbox_tools and isinstance(context.state.get("current_files"), list):
+            runnable_input["current_files"] = list(context.state["current_files"])
         if latest_user_message := _clean(context.state.get("latest_user_message")):
             runnable_input["latest_user_message"] = latest_user_message
         if isinstance(context.state.get("playbook_route"), Mapping):
@@ -295,20 +387,27 @@ def build_spec():
     )
 
 
-def _build_runtime_runnable(registry: PlaybookRegistry | None) -> object:
+def _build_runtime_runnable(registry: PlaybookRegistry | None, *, sandbox_tools: Sequence[Any] = ()) -> object:
     if registry is None:
-        return build_agent()
+        return build_agent(sandbox_tools=sandbox_tools) if sandbox_tools else build_agent()
     shared_tools = registry.shared_capability_tools()
+    # A server must explicitly opt in and the profile must grant the capability.
+    sandbox_kwargs = (
+        {"sandbox_tools": sandbox_tools}
+        if sandbox_tools and "run_sandbox_task" in registry.profile.tool_grants else {}
+    )
     return RoutedAgentRunnable(
         direct=build_agent(
             profile_tool_grants=registry.profile.tool_grants,
             shared_capability_tools=shared_tools,
+            **sandbox_kwargs,
         ),
         by_playbook={
             reference: build_agent(
                 binding=registry.get(reference),
                 profile_tool_grants=registry.profile.tool_grants,
                 shared_capability_tools=shared_tools,
+                **sandbox_kwargs,
             )
             for reference in registry.playbook_refs
         },

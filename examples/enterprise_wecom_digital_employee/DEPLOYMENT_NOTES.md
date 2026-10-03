@@ -1,4 +1,58 @@
-# Enterprise WeCom Digital Employee — Deployment Notes (Mac mini)
+# Enterprise WeCom Digital Employee — Deployment Notes
+
+## v0.1.3 limited CSV sandbox MVP
+
+Current scope: fixed `group,amount` CSV aggregation to `summary.csv`, one
+enterprise, two private-chat users, serial execution and explicit file delivery.
+Live acceptance is recorded in [the business reference](V0.1.3_SANDBOX_BUSINESS_REFERENCE.md).
+Source promotion is not installation, execution or delivery authorization.
+
+### Installation and configuration reference
+
+| Surface | Requirement |
+| --- | --- |
+| Gateway dependencies | Example/generated project optional `sandbox` extra supplies `agentseek-execution[broker]`; basic dependencies remain unchanged. Selecting the extra does not activate a spec. |
+| Node dependencies | Separately installed, reviewed `agentseek-execution[cube]` wheel/venv; isolated workers use the installed interpreter with `-I -m`. PYTHONPATH alone is insufficient. No node reinstall is implied by this documentation/template patch. |
+| Broker entry | Existing `agentseek_execution.business_service` module (`python -m`), private approved service config and its full SHA256; no extra console entry is needed. |
+| Basic SPEC | `<package>.agent:build_spec`; default, with no sandbox tools. Lifecycle default does not prove a running process's value. |
+| Business SPEC | `<package>.sandbox_spec:build_spec`; replace and deduplicate the existing SPEC line, never append a second one. Example package is `enterprise_wecom_digital_employee`. |
+| `AGENTSEEK_SANDBOX_BUSINESS_CONFIG` | Absolute private approved gateway-config.json path, only when enabling the business spec. |
+| `AGENTSEEK_SANDBOX_BUSINESS_CONFIG_SHA256` | Full SHA256 of the gateway config bytes, **not** grants.json. The config separately pins grants.json via `grants_sha256`. |
+| `AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_ENABLED` | Default `false`. Native file delivery is independent of sandbox execution and browser downloads. |
+| `AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY` | Existing absolute gateway-owned 0700 directory; requires application transport, durable sqlite, file store and trusted DM identity. See [WeCom configuration](../../contrib/agentseek-wecom/README.md#native-file-delivery-nfd). |
+| Browser workspace download | Default `AGENTSEEK_WORKSPACE_DOWNLOAD_MODE=disabled`; signed links are optional, not evidence of attachment receipt. |
+| Private material | New request/tokens/window, owner/scope/input/instruction pins, permits/grants and independent readback; never reuse expired acceptance material. Do not commit real credentials or authority documents. |
+
+Optional dependency install example (not executed in this run; rendered TOML
+and dependency declarations are tested, not a fresh resolved deployment):
+
+```bash title="not executed in this run"
+uv sync --extra sandbox
+```
+
+Operator TODO: independently resolve/install the reviewed candidate in the
+target environment and verify imports before approving any live adoption.
+Do not change the repository lock or existing node venv as a side effect.
+
+### Adoption, verification and closeout reference
+
+| Stage | Required gate |
+| --- | --- |
+| Prepare | Separate approvals, current window and materials, node and gateway stores both free of unresolved rows; archived manifest rebuild only if explicitly approved. DRAFT PASS is not final authorization. |
+| Adopt node | Named node operator updates unit config+digest, starts broker, checks actual cmdline/TLS/listener/logs/supervisor and reports ready. No gateway switch before ready. |
+| Adopt gateway | Versioned env with unique SPEC/CONFIG/CONFIG_SHA256; explicit BUB aliases must not override intended values. One approved restart after delivery/outbox safety checks. |
+| Runtime evidence | Environ, actual entrypoint logs, health/subscription and CONFIG pin are live evidence. Separate subprocess imports and captured tool/GuardedRunnable construction are not live-process assembly proof. |
+| Execute | Trusted upload binding then separate execution approval; one natural model invocation/creation. Observe request/attempt logs, both ledgers, durable bytes and active closeout evidence. Logs do not replace the ledger. |
+| Publish/deliver | Workspace binding is immutable; result queries do not rematerialize missing files or extend file expiry. Separate explicit file request, ambiguity rejection, exact file_ref, trusted recipient and visibility hard gate. API acceptance is not user receipt/opening/hash verification. |
+| Restore | Named node operator stops an idle terminal broker after real-time guest/inflight/closeout checks; do not disable or modify unit unless separately approved. Then restore a reviewed basic-spec env, remove both SANDBOX keys and safely restart the gateway. NFD may stay enabled only in an already approved NFD-only baseline. |
+| Preserve | Keep all stores, manifest archives, quotas/fences, outbox/receipts, artifacts and workspace-bindings.sqlite. No deletion, reset or old authorization renewal. |
+
+General arbitrary scripts, parallel guests, S3 WorkspaceRevision recovery,
+multi-enterprise/group broadcasting and automatic task-triggered delivery are
+outside this MVP. The following Mac mini notes are historical, not v0.1.3
+adoption instructions.
+
+## Historical Mac mini deployment notes
 
 Handoff notes from deploying/verifying this example on a company Mac mini
 (branch `enterprise/wecom-runtime`, then integration branch

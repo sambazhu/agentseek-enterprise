@@ -3,16 +3,32 @@ title: Execution contract component reference
 type: reference
 audience: [A2, A3]
 runs: no
-verified_on: 2026-09-09
+verified_on: 2026-10-03
 sources:
   - contrib/agentseek-execution/src/agentseek_execution/models.py
   - contrib/agentseek-execution/src/agentseek_execution/authorization.py
   - contrib/agentseek-execution/src/agentseek_execution/ledger.py
   - contrib/agentseek-execution/src/agentseek_execution/service.py
   - contrib/agentseek-execution/src/agentseek_execution/broker_daemon.py
+  - contrib/agentseek-execution/src/agentseek_execution/business_service.py
+  - contrib/agentseek-execution/src/agentseek_execution/csv_business.py
 ---
 
-# agentseek-execution（M1 合同与 M2 Broker 候选）
+# agentseek-execution
+
+## 当前受限 CSV MVP（v0.1.3）
+
+| 项 | 合同 / 边界 |
+| --- | --- |
+| 已验链路 | 真实模型自主调用、一次创建、固定 CSV 汇总、双侧持久化、主动 closeout、工作区回写、明确索取后原生投递与用户实收；单企业双私聊用户串行 |
+| 业务入口 | `agentseek_execution.business_service`，沿用 `python -m` 入口；私有批准配置与完整 SHA256 必需，不在 import 时监听 |
+| 安装 | 独立包，不自动加入根 workspace 或 Bub 插件；gateway 选装 `broker` extra，Linux node 另审安装 `cube` extra；隔离 worker `-I` 要求包已安装，不能仅靠 PYTHONPATH |
+| 权限 | 当前 request/owner/scope/input/instruction 精确绑定；过期配置、旧额度、DRAFT 预演均不授权新创建 |
+| 持久化 | owner/attempt 物理隔离；网关工作区绑定与投递账本由对应组件拥有 |
+| 未验范围 | 通用脚本、并行、多租户、S3 WorkspaceRevision 提交/恢复；M1/M2 模块不等于这些能力完整上线 |
+| 配置与恢复 | [MVP 部署参考](../../examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp)，默认关闭，现场恢复需另批且全量保全 |
+
+## 原 M1/M2 合同（历史阶段边界）
 
 | 模块 | 合同 |
 | --- | --- |
@@ -25,6 +41,9 @@ sources:
 | `cube_journal` / `cube_worker` | 加密创建意图/回执；锁定SDK、固定命令、停止对账；需Linux实机验证 |
 
 ## 使用边界
+
+以下 M1/M2 说明保留原阶段范围；“未计真实 VM 验收”只描述该历史候选，
+不否定上方受限 CSV 业务链的后续验收。
 
 - 独立 Python 3.10–3.13 组件；M1核心无第三方依赖；broker extra锁定cryptography，cube extra另含SDK0.7.0。
 - 未加入根 workspace/plugin 注册；不会被现有网关自动加载。

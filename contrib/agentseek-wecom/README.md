@@ -74,6 +74,20 @@ AGENTSEEK_WECOM_USERID_CACHE_TTL_SECONDS=3600
 
 When enabled, the channel keeps the original callback value in `context.from_userid` / `context.wecom.open_userid`, and writes the converted plaintext userid to `context.userid` and `context.oa_account`.
 
+## Native file delivery (NFD)
+
+| Setting / gate | Contract |
+| --- | --- |
+| `AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_ENABLED` | Defaults to `false`; independent from browser download links and sandbox activation. |
+| `AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY` | Existing absolute private 0700 directory, owned by gateway UID; stores the private delivery ledger. |
+| Prerequisites | Enabled application transport with reviewed application credentials/visibility, durable sqlite outbox and scoped file store. |
+| Recipient | Bound from the trusted private-chat address; not supplied by the model. Visibility is refreshed as needed and enforced before send. |
+| File selection | Explicit user request, unique scoped file or exact file_ref; same-name ambiguity is refused. Task completion does not trigger delivery. |
+| Result | `api_accepted` is not user receipt/opening; uncertainty does not authorize automatic retries. Logs do not substitute for receipts or ledgers. |
+
+Implementation: `file_delivery.py` and `application_transport.py`. Installation,
+adoption and safe closeout: [MVP deployment reference](../../examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp).
+
 ## Run
 
 Enable the channel through Bub's channel runner with the plugins group installed:

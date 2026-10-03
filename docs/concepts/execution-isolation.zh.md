@@ -3,18 +3,24 @@ title: 执行隔离与沙箱
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-09-06
+verified_on: 2026-10-03
 sources:
   - docs/concepts/enterprise-wecom-architecture.zh.md
   - examples/enterprise_wecom_digital_employee/ROADMAP.md
   - examples/enterprise_wecom_digital_employee/V0.1.3_EXECUTION_ISOLATION_PLAN.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md
 ---
 
 # 执行隔离与沙箱
 
 执行隔离限制一次 Skill、Tool 或 Playbook 动作可以访问的文件、网络和资源，
-并把执行进程的故障与 Gateway 分开。v0.1.3 当前方案选择 CubeSandbox 一个后端，
-仍处于架构评审阶段，尚未实现或部署。
+并把执行进程的故障与 Gateway 分开。v0.1.3 受限 CSV MVP 已使用 CubeSandbox
+完成固定汇总验收，不执行模型生成的任意代码。单企业、双用户私聊、串行执行
+已验通当前请求隔离、账本回复、工作区关联与明确索取后的原生文件实收；配置仍默认关闭。
+参见[当前合同与范围](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md)。
+
+下文保留**原始较宽架构方案**。通用脚本、S3 Content Store/WorkspaceRevision
+恢复、并行 guest 和多租户执行属后续范围，不因受限 MVP 完成而声明已实现。
 
 ## 部署、数据与执行边界
 

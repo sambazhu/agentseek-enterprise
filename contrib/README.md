@@ -26,7 +26,11 @@ agentseek follows Bub's extension conventions. `AGENTSEEK_*` environment variabl
 | [agentseek-schedule-sqlalchemy](agentseek-schedule-sqlalchemy/README.md) | `schedule` | Persist APScheduler jobs in a SQLAlchemy-backed store. |
 | [agentseek-contextseek](agentseek-contextseek/README.md) | `contextseek` | ContextSeek semantic context runtime plugin: retrieves context before model turns and writes responses back after turns. |
 | [agentseek-enterprise](agentseek-enterprise/README.md) | `enterprise` | Enterprise runtime context plugin: injects employee identity into turn state for WeCom, LangChain, DeepAgents, and MCP workflows. |
-| [agentseek-wecom](agentseek-wecom/README.md) | `wecom` | Enterprise WeChat intelligent robot callback channel with encrypted text and stream replies. |
+| [agentseek-wecom](agentseek-wecom/README.md) | `wecom` | AI Bot callback/long-connection and application transport; opt-in `file_delivery` with durable outbox and trusted recipient checks. |
+| [agentseek-files](agentseek-files/README.md) | `files` | Scoped file intake/store and optional `workspace_download` links; execution and native attachment delivery remain separate. |
+| [agentseek-work](agentseek-work/README.md) | `work` | Governed WorkItem contracts, evidence, publication and delivery state. |
+| [agentseek-execution](agentseek-execution/README.md) | n/a | Explicitly installed execution contracts/workers and opt-in `business_service` CSV broker; not auto-loaded as a Bub plugin. |
+| [agentseek-skill-mcp](agentseek-skill-mcp/README.md) | `skill_mcp` | Skill/MCP platform configuration synchronization adapter and plugin. |
 
 ## Documentation Boundary
 

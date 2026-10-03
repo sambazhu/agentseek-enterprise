@@ -49,6 +49,26 @@ default = ".agents/mcp.json"
 description = "MCP server configuration path."
 aliases = ["BUB_MCP_CONFIG_PATH"]
 
+# Optional v0.1.3 features. The default RunnableSpec remains the basic agent.
+[env.AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_ENABLED]
+required = false
+default = "false"
+description = "Opt-in explicit native file delivery; requires app transport and durable sqlite."
+aliases = ["BUB_WECOM_NATIVE_FILE_DELIVERY_ENABLED"]
+
+[env.AGENTSEEK_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY]
+required = false
+description = "Existing absolute private delivery ledger directory, owned by the gateway UID, mode 0700."
+aliases = ["BUB_WECOM_NATIVE_FILE_DELIVERY_DIRECTORY"]
+
+[env.AGENTSEEK_SANDBOX_BUSINESS_CONFIG]
+required = false
+description = "Absolute private approved gateway-config.json path; only for sandbox_spec:build_spec."
+
+[env.AGENTSEEK_SANDBOX_BUSINESS_CONFIG_SHA256]
+required = false
+description = "Full SHA256 of gateway-config.json, not the grants digest; required with the sandbox config."
+
 [env.AGENTSEEK_WORK_ENABLED]
 required = false
 default = "false"

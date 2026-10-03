@@ -30,6 +30,9 @@ dependencies = [
     "tokenizers>=0.23.0",
 ]
 
+[project.optional-dependencies]
+sandbox = ["agentseek-execution[broker]"]
+
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
@@ -45,6 +48,7 @@ where = ["src"]
 agentseek = { path = {{ cookiecutter._agentseek_source_path_posix | tojson }}, editable = true }
 agentseek-contextseek = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-contextseek") | tojson }}, editable = true }
 agentseek-enterprise = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-enterprise") | tojson }}, editable = true }
+agentseek-execution = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-execution") | tojson }}, editable = true }
 agentseek-files = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-files") | tojson }}, editable = true }
 agentseek-langchain = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-langchain") | tojson }}, editable = true }
 agentseek-schedule-sqlalchemy = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/contrib/agentseek-schedule-sqlalchemy") | tojson }}, editable = true }
@@ -54,6 +58,7 @@ agentseek-work = { path = {{ (cookiecutter._agentseek_source_path_posix ~ "/cont
 agentseek = { git = "{{ cookiecutter._agentseek_source_url }}" }
 agentseek-contextseek = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-contextseek" }
 agentseek-enterprise = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-enterprise" }
+agentseek-execution = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-execution" }
 agentseek-files = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-files" }
 agentseek-langchain = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-langchain" }
 agentseek-schedule-sqlalchemy = { git = "{{ cookiecutter._agentseek_source_url }}", subdirectory = "contrib/agentseek-schedule-sqlalchemy" }

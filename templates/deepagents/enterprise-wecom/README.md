@@ -21,6 +21,20 @@ This template scaffolds a WeCom-facing enterprise digital employee:
 
 ## Deployment Model
 
+The generated project includes opt-in v0.1.3 CSV sandbox and native file delivery
+modules. Default configuration keeps the basic agent spec and disables native
+delivery; the `sandbox` extra installs gateway-side execution dependencies only.
+Generation is not approval to start a broker, create a sandbox or send a file.
+See the [MVP deployment reference](../../../examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp).
+The source example's acceptance does not establish a new generated deployment's
+live acceptance. Unrelated example-only Skill/MCP platform synchronization is
+not introduced by this template update.
+
+This fork's template is delivered from this repository's local Cookiecutter
+directory. The CLI's default named-template catalog is separately locked to
+upstream; this patch does not publish or change that catalog. Use the local-path
+creation workflow in the [developer quickstart](../../../examples/enterprise_wecom_digital_employee/DEVELOPER_QUICKSTART.md#路径二从模板创建新项目).
+
 One generated project is one logical deployment unit for one digital employee.
 The digital employee has one business identity (`digital_employee_id`), one
 active Profile and capability pool, and may own zero or more Playbooks. A

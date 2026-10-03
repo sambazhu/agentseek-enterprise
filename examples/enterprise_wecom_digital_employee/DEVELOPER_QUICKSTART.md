@@ -72,6 +72,11 @@ cp .env.example .env
 
 ## 路径二：从模板创建新项目
 
+本 fork 的 v0.1.3 模板改动位于当前仓库 `templates/deepagents/enterprise-wecom`。
+CLI 默认命名模板使用独立锁定的上游 catalog；裸 `deepagents/enterprise-wecom`
+不保证选择到本 fork。当前分发应使用下方本地路径方式，不改上游 catalog lock。
+本次在临时目录测试本地路径创建、生成模块导入与关闭态；未启动生成项目的现场服务。
+
 安装 AgentSeek CLI 后，在一个不会与现有目录重名的位置运行：
 
 ```bash title="not executed in this run"

@@ -3,19 +3,27 @@ title: Execution Isolation and Sandboxes
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-09-06
+verified_on: 2026-10-03
 sources:
   - docs/concepts/enterprise-wecom-architecture.md
   - examples/enterprise_wecom_digital_employee/ROADMAP.md
   - examples/enterprise_wecom_digital_employee/V0.1.3_EXECUTION_ISOLATION_PLAN.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md
 ---
 
 # Execution Isolation and Sandboxes
 
 Execution isolation limits the files, network, and resources available to one Skill, Tool,
 or Playbook action and separates execution failures from the Gateway.
-The v0.1.3 proposal selects CubeSandbox as its only production backend.
-It remains an architecture proposal, not an implemented or deployed feature.
+The v0.1.3 limited CSV MVP uses CubeSandbox for fixed aggregation, not arbitrary
+model-generated code. One enterprise, two private-chat users and serial execution
+passed end-to-end acceptance, including request-isolated ledger replies,
+workspace association and explicitly requested native file receipt.
+Configuration remains opt-in. See the [current contract and boundaries](https://github.com/sambazhu/agentseek-enterprise/blob/production/examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md).
+
+The sections below retain the **broader original architecture proposal**.
+General scripts, S3 Content Store/WorkspaceRevision recovery, parallel guests
+and multi-tenant execution are future scope, not capabilities completed by this MVP.
 
 ## Deployment, data, and execution boundaries
 

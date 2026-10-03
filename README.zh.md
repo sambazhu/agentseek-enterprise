@@ -15,8 +15,15 @@ commit 获取。
 
 ## 企业微信数字员工部署
 
+`production` 已包含 v0.1.3 **受限 CSV 沙箱 MVP**：固定 `group,amount`
+分组汇总、当前请求/attempt 结果隔离、账本确定性回复、用户明确索取后的原生文件投递。
+已验范围为单企业、双用户私聊、串行执行；本次合并不自动启用沙箱或原生投递。
+参见[部署参考](examples/enterprise_wecom_digital_employee/DEPLOYMENT_NOTES.md#v013-limited-csv-sandbox-mvp)
+与[冻结范围](examples/enterprise_wecom_digital_employee/V0.1.3_SANDBOX_BUSINESS_REFERENCE.md)。
+通用脚本、S3 revision 恢复、并行和多租户执行不在已验范围。
+
 本 fork 同时维护已经内部验收的企业微信数字员工方案。最新说明以 `production`
-分支为准；需要不可变运行基线时固定到 `enterprise-wecom-v0.1.2-ga`。企业部署不要
+分支为准；需要此前的不可变运行基线时固定到 `enterprise-wecom-v0.1.2-ga`。企业部署不要
 直接使用上游 `main`。
 
 ```bash
