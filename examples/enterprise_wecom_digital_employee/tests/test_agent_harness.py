@@ -341,7 +341,11 @@ def test_spec_carries_route_from_runtime_state_into_routed_runnable_input(
     context = InvocationContext(
         prompt="查看当前 ReportArtifact",
         session_id="wecom:test",
-        state={"playbook_route": route, "employee_context": {"oa_account": "test-employee", "name": "测试"}},
+        state={
+            "playbook_route": route,
+            "employee_context": {"oa_account": "test-employee", "name": "测试"},
+            "_native_file_delivery": "synthetic-delivery-context",
+        },
         workspace=tmp_path,
         agents_md=None,
     )
@@ -351,3 +355,4 @@ def test_spec_carries_route_from_runtime_state_into_routed_runnable_input(
     assert isinstance(runnable_input, dict)
     assert runnable_input["playbook_route"] == route
     assert runnable_input["employee_context"] == {"oa_account": "test-employee"}
+    assert runnable_input["_native_file_delivery"] == "synthetic-delivery-context"

@@ -23,6 +23,8 @@ def test_sync_once_then_merge_cached_platform_and_local(tmp_path, monkeypatch, f
     monkeypatch.setattr(sdk, "sync_skills", lambda _: [])
     monkeypatch.setattr(sdk, "build_skill_system_prompt", lambda *a: "")
     monkeypatch.setattr(agent, "_patch_sdk_skill_for_null_category", lambda: None)
+    # The sync assigns the mocked loader's None result; restore assets after this test.
+    monkeypatch.setattr(agent, "_STATIC_ASSETS", agent._STATIC_ASSETS)
     monkeypatch.setattr(agent, "load_static_agent_assets", lambda _: None)
     monkeypatch.setattr(agent, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(agent, "get_settings", lambda: SimpleNamespace(resolved_mcp_config_path=lambda: effective))
@@ -50,6 +52,7 @@ def test_old_path_collision_skips_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_patch_sdk_skill_for_null_category", lambda: None)
     monkeypatch.setattr(sdk, "load_agent_config", AsyncMock(return_value=SimpleNamespace(skills=[], mcps=[])))
     monkeypatch.setattr(sdk, "sync_skills", lambda _: [])
+    monkeypatch.setattr(agent, "_STATIC_ASSETS", agent._STATIC_ASSETS)
     monkeypatch.setattr(agent, "load_static_agent_assets", lambda _: None)
     sync = AsyncMock()
     monkeypatch.setattr(sdk, "sync_mcp_config", sync)

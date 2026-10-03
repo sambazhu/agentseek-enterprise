@@ -3,7 +3,7 @@ title: Enterprise WeCom Evolution Roadmap
 type: explanation
 audience: [A2, A3, A4]
 runs: no
-verified_on: 2026-09-04
+verified_on: 2026-10-03
 sources:
   - examples/enterprise_wecom_digital_employee/README.md
   - examples/enterprise_wecom_digital_employee/PRODUCTION_FREEZE.md
@@ -14,7 +14,11 @@ sources:
   - examples/enterprise_wecom_digital_employee/V0.1.1_M4_IMPLEMENTATION.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_PLATFORM_FREEZE.md
   - examples/enterprise_wecom_digital_employee/GA_READINESS_V0.1.2.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_EXECUTION_ISOLATION_PLAN.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_DUAL_USER_CLOSURE_REPORT.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_PRODUCTION_INTEGRATION.md
   - docs/concepts/enterprise-wecom-architecture.zh.md
+  - docs/concepts/execution-isolation.zh.md
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/profile.yaml
   - examples/enterprise_wecom_digital_employee/digital_employees/industry-report/pack.yaml
   - docs/concepts/enterprise-wecom-template.zh.md
@@ -26,7 +30,8 @@ sources:
 本文记录 `enterprise-wecom` 的已交付基线、当前限制和后续路线。
 
 文档中的 v0.0.9、v0.1.0、v0.1.1 和 v0.1.2 章节保留已交付能力、
-历史决策与验收记录。v0.1.3 起的章节是当前待执行路线；
+历史决策与验收记录。v0.1.3 已按限定 CSV MVP 范围收官，原扩展范围单独保留；
+v0.1.4 起的章节是后续路线；
 不能把历史章节中的早期设想当作尚未实现的需求。
 
 ## 当前定位
@@ -46,7 +51,7 @@ sources:
 - MCP policy 和 audit；
 - Langfuse 与本地 JSONL 双通道观测；
 - PostgreSQL SCRAM、最小权限账号、pgvector、bge-m3 ONNX 等生产化配置；
-- Mac mini 单实例准生产验证。
+- Linux 单实例生产活体验证，并保留 Mac mini 单实例部署能力。
 
 v0.1.0 和 v0.1.1 在此基础上进一步完成：
 
@@ -58,7 +63,9 @@ v0.1.0 和 v0.1.1 在此基础上进一步完成：
 - DOCX Artifact、发布账本、一次性 signed-link 交付和下载消费；
 - 单会话串行化、队列背压、快速 ACK、exactly-once 交付和健康回归。
 
-当前生产基线是 `enterprise-wecom-v0.1.2-ga`。产品形态是：
+不可变 GA 标签仍为 `enterprise-wecom-v0.1.2-ga`；`production` 代码基线在此基础上
+吸收生产修复与 v0.1.3 限定 CSV MVP。合并代码不等于切换现场服务，沙箱仍须显式启用。
+产品形态是：
 
 ```text
 一个企微 AI Bot（Callback 或长连接二选一）
@@ -77,7 +84,8 @@ Playbook。一个数字员工拥有一个 Profile、一个统一能力池和零�
 Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具，尚未完成
 第二个真实部门数字员工与业务服务的生产验证。原 v0.1.2 M0
 已将该目标冻结为信息技术部数字员工的“信息系统需求评审与
-立项评估”；实施已转入 v0.1.3。
+立项评估”。在扩大 Skill 和 Playbook 数量前，先于 v0.1.3 建立执行隔离；
+第二部门的组织授权、扩展 SDK 和业务落地顺延到 v0.1.4。
 
 所以 v0.0.8 之后的 `enterprise-wecom`，已经不只是一个聊天示例。
 它是可部署、可观测、可审计的企业数字员工运行底座。
@@ -103,16 +111,20 @@ Multi-Playbook Registry 已经实现，但第二个 Playbook 仍是测试夹具�
 - 部门授权仍依赖特定 Scope 和组织名称匹配，尚未形成通用组织授权模型；
 - 身份 Provider 当前以 DM 为主，缺少标准的可插拔 Provider Registry；
 - Capability Registry 已统一，但新增业务 MCP 仍需要编写 Python 适配代码；
+- 业务 Python Tool 和本地脚本仍可能在 Gateway 进程内执行，缺少独立进程、
+  文件系统、网络和资源边界；
 - 只有一个真实生产 Playbook，通用边界尚未经过第二项业务服务验证；
-- 企微队列、stream 和去重仍以单进程内存态为主，不支持多实例协同和重启恢复；
+- durable inbox/outbox、msgid 去重和重启恢复已落盘，但多主机共享存储和
+  同一会话的多实例仲裁尚未完成；
 - signed-link 使用短时一次性 Token，尚未增加浏览器侧 OIDC、SAML 或企微网页身份认证；
 - Report Claim 具备来源绑定和可追溯性，但尚未形成独立事实核验闭环；
 - `delivered` WorkItem 用于持续修订，会长期占用同类任务 Scope，尚无正式归档和新建机制；
 - 报告 Composition 与 Output Guard 模块偏大，继续增加合同类型会提高维护成本；
 - 模板能生成项目，但尚未随模板提供完整的扩展测试骨架和第二 Playbook 示例。
 
-因此下一阶段不是重复建设 research、content 或 DOCX，而是把已经验证的
-证券报告实现提炼成可复用、可扩展、可规模化运行的平台能力。
+因此下一阶段不是重复建设 research、content 或 DOCX，而是先把可能执行脚本、
+解析不可信文件或加载原生库的能力移出 Gateway 进程，建立可审计的执行沙箱；
+随后再把已经验证的证券报告实现提炼成可复用、可扩展、可规模化运行的平台能力。
 
 ## 关键澄清
 
@@ -847,6 +859,10 @@ Playbook 的有效工具集，不把全部 Playbook 工具合并为一个无边�
 
 ### Sandbox 的新定位
 
+> 本节保留 v0.1.0 阶段的历史设想，当时的 `LocalTaskSandbox` 未作为安全沙箱
+> 交付。其本地目录加 allowlist 方案不足以形成进程和资源隔离，已由 v0.1.3 的
+> Execution Broker、CubeSandbox 单后端与版本化工作数据路线取代。
+
 sandbox 仍是 v0.1.0 的底层能力，但只为已授权的 WorkItem 服务。
 
 沙箱不应简单设计成“每个员工一个常驻执行沙箱”。
@@ -968,8 +984,8 @@ v0.1.2 收口企微 Callback、AI Bot 长连接和自建应用三种渠道，
 
 M0.1–M0.6 均已完成 Linux 活体复验并快进合入 GitLab/GitHub
 `production` 提交 `04c4b4a70baa2a04ae612e6416553b3f92c239f5`。
-本版本不交付第二个真实部门数字员工；原计划的组织授权、
-扩展 SDK、第二部门 Playbook 和分布式运行时转入 v0.1.3。
+本版本不交付第二个真实部门数字员工；执行隔离转入 v0.1.3，原计划的组织授权、
+扩展 SDK、第二部门 Playbook 和分布式运行时顺延到 v0.1.4。
 
 ### M0：当前状态与路线冻结
 
@@ -993,7 +1009,7 @@ M0.1–M0.6 均已完成 Linux 活体复验并快进合入 GitLab/GitHub
 
 M0 决策见 `V0.1.2_M0_PLATFORM_FREEZE.md`。首个交付物冻结为
 《信息系统立项评估报告》；数字员工只提供立项建议，不代替正式立项审批。
-该业务合同作为 v0.1.3 M1–M3 的输入保留，不属于 v0.1.2 GA
+该业务合同作为 v0.1.4 M1–M3 的输入保留，不属于 v0.1.2 GA
 的已交付范围。
 
 ### M0.1：企微协议基线
@@ -1175,10 +1191,135 @@ Profile 和一个 AI Bot；每个 Bot 在 Callback 与长连接中二选一。�
 辅助 userid 转换凭据与公共应用 Transport 凭据仍须独立配置、独立轮换，
 不能混用。
 
-## v0.1.3：平台化加固与第二个部门数字员工
+## v0.1.3：CubeSandbox 固定 CSV MVP（限定范围收官）
 
-v0.1.3 在 v0.1.2 三 Transport 和 durable 基座上，进入组织授权、
-扩展 SDK、第二部门数字员工与生产运行时加固。
+2026-10-03 用户确认按已验范围收官并推进 `production` 代码合并。
+交付范围为单企业、双单聊、串行任务、固定 CSV 分组汇总及用户明确索取文件。
+轮 A/B 均通过上传、可信身份绑定、自主工具调用、一次创建、持久化、主动 closeout、
+工作区回写、原生投递与用户实收核验，证据见
+[双用户收口报告](V0.1.3_DUAL_USER_CLOSURE_REPORT.md)。
+
+本版包含当前 request/attempt 隔离、账本确定性守卫、不可变工作区关联、
+查询不补写、同名多义拒绝和脱敏工具观测。默认基础 spec 不挂载沙箱工具；
+生产合并保留 v0.1.2 之后的记忆、工作流与 MCP 修复，不改变现场 NFD-only 保持态。
+合并验证与发布边界见[生产集成记录](V0.1.3_PRODUCTION_INTEGRATION.md)。
+
+### 原扩展方案（保留、延期，未纳入本版完成判定）
+
+以下核心架构与 M0–M6 清单保留原设计和历史进度，不据此宣称全部通过。
+S3 版本化资料、通用 WorkspaceRevision/跨 VM 恢复、脚本子 Agent、完整故障矩阵、
+跨进程 checkpoint 与群组/并发扩展待另立任务，不因 CSV MVP 收官自动获得实现或部署授权。
+早期 M0/M2 状态为历史快照，当前限定验收以双用户收口报告为准。
+版本决定与操作合同见 [M0 验证手册](V0.1.3_M0_CUBESANDBOX_VERIFICATION.md)。
+本节取代多 Provider 并行建设草案，v0.1.3 只交付 CubeSandbox 一个生产后端。
+Podman、Docker、Bubblewrap 和 E2B 保留调研结论，不实现替代后端或静默降级。
+
+详细评审、证据、数据粒度及验收合同见
+[V0.1.3_EXECUTION_ISOLATION_PLAN.md](V0.1.3_EXECUTION_ISOLATION_PLAN.md)；
+稳定概念见[执行隔离与沙箱](../../docs/concepts/execution-isolation.zh.md)。
+
+### 核心架构
+
+```text
+Gateway / 主 Agent（身份、会话、Work、交付）
+  -> 独立 Execution Broker（准入、lease、fencing、导入导出）
+       -> CubeSandbox 原生 SDK -> 独占 execution attempt 的微虚机
+       -> Execution Ledger + 私有 Content Store
+```
+
+每个部门数字员工仍是独立逻辑部署单元。Cube 可部署在远端内网 KVM 节点，
+不要求每台 Gateway 虚拟机嵌套运行沙箱。共享 Cube 服务必须验证不同服务身份
+的资源授权；不支持时分区部署，不依赖名称前缀代替权限。
+
+一次 execution attempt 可以有多个连续脚本命令；进入审批等待时释放 VM。
+资料按文件清单授权、版本固定并只读导入；workspace 按 task/work revision
+保存，候选输出按 attempt 收集，正式 Artifact 仍走来源合同、审批和发布。
+VM 销毁不影响已提交产物；VM 快照不作为业务真相源。
+
+### M0：Cube 准入与部署合同
+
+准入清单和进度见 [M0 记录](V0.1.3_M0_SANDBOX_ADMISSION.md)。
+
+- 锁定服务端、原生 SDK、模板和 Volume 插件版本，验证 DeepAgents 0.6.12 接口；
+- 确认独立测试节点的 KVM/网络、Content Store 和备份条件；
+- 完成最小 create/execute/导入/导出/delete PoC；
+- 实测 API 鉴权、默认拒绝网络、只读挂载和资源限制；验证文档默认值已显式收紧；
+- 输出评审通过项与缺口，用户确认后进入 M1。
+
+### M1：执行与文件合同
+
+进度：M1 已由用户确认 PASS，收官 `4a7e76f`，限离线合同范围。
+初版合同与 Fake/SQLite 离线参考实现见 [M1 合同](V0.1.3_M1_EXECUTION_CONTRACTS.md)，
+复验见 [M1 工单](V0.1.3_M1_VERIFICATION.md)。真实 VM/O4b 不计入 M1 通过项。
+
+- 定义 task_id、execution_id、attempt、InputManifest、OutputManifest、
+  WorkspaceRevision、ExecutionOutput；
+- 服务端校验 tenant、digital_employee、conversation、requester、Work 与文件 grant；
+- 建立 lease、fencing token、单写 revision、错误分类与幂等提交，Fake Provider 测试；
+- 普通 Turn 不因文件持久化静默创建 WorkItem；合同确认后进入 M2。
+
+### M2：Cube 执行接入
+
+进度：基于 M1 收官 `4a7e76f` 启动 `enterprise/v0.1.3-execution-broker`。
+[M2 切片与验收合同](V0.1.3_M2_BROKER_PLAN.md) 登记实现进度；
+已完成独立 Broker 部署候选：生命周期、加密创建回执、SDK worker、停止对账和固定探针。
+[运行合同](V0.1.3_M2_BROKER_RUNTIME.md) 与 [Linux 安装复验](V0.1.3_M2_BROKER_VERIFICATION.md)
+已交接；安装变更须用户放行，真实 B0–B9/O4b 待 Linux 验证，不计 M2 PASS。
+
+- 增加 `.171` 测试驱动模拟 DirectTurn / Work 请求的真实沙箱冒烟，提前验证 Broker 接缝；
+  不经过真实 Agent/企微，不替代 M4 的业务活体验证；进入 Turn 或创建 WorkItem 本身不启动 VM。
+
+- 独立 Broker 使用 Cube 原生 SDK，受控 create、execute、cancel、delete；
+- 模板与资源策略由服务端固定，密钥留在 Broker/代理，不进入 VM；
+- 设置每 VM 与总容量限制、队列、公平性、超时和失联对账；
+  本轮 PoC 明确全局容量1、忙时拒绝，不实现多用户公平队列，不宣称并发吞吐已验证；
+- Linux 真 VM 资源、网络、权限、进程树清理通过后进入 M3。
+
+### M3：资料挂载与输出提交
+
+- 小资料显式 SDK 导入；大资料可用已封存版本的 Cube 只读 Volume；
+- 本地临时 workspace 运算，Broker 导出并校验候选输出，用对象 API 提交；
+- 私有 S3 兼容 Content Store 保存不可变内容，ledger 事务发布 manifest；
+- 不挂整个部门/员工文件根，不把 SQLite/SeekDB 放入 S3 FUSE 卷；
+- 单写、过期 worker 拒绝、跨 VM 文件恢复和回收测试通过后进入 M4。
+
+### M4：DeepAgents、Turn 与 Playbook
+
+- 主 Agent 保持企业授权和只读资产；先接固定入口 Tool，再验证专用脚本子 Agent；
+- 一个 attempt 内可连续写/执行/读；重试或下一阶段使用新 VM；
+- ExecutionOutput 承载普通输出与中间稿；正式 Artifact 保留审批合同；
+- 首个无外部副作用的生成文件能力通过后进入 M5；
+- 有状态 SeekDB 等单独评估服务化，不作为每任务微虚机迁移的第一项。
+
+### M5：恢复、并发与对账
+
+- 在执行、导出、内容提交、ledger 提交与通知各点注入故障；
+- 验证 last-committed revision 恢复、孤儿 VM/对象回收与取消收敛；
+- 外部副作用未知时人工对账，禁止盲目重执行；
+- 跨员工、双群、跨数字员工并发与资源隔离全部通过后进入 M6。
+
+### M6：Linux canary 与发布
+
+- 同步示例、模板、部署预检、runbook、数据保留与观测；
+- 验证 VM/节点故障不拖死 Gateway，已提交产物在 VM 删除后仍可读取；
+- v0.1.2 渠道/记忆/身份/durable 回归、脱敏、备份恢复和回滚演练通过；
+- Linux 活体 PASS 后进入维护者合并与双端发布评估。
+
+### 本版边界
+
+- 已验范围仅为固定 CSV MVP；不宣称通用脚本执行、完整 M0–M6 或完整 I01–I07 完成；
+- 不启用自动投递、自动重试、并行 guest 或多企业；上游 AgentSeek/Bub 同步另议；
+- CubeSandbox 是唯一实现，准入失败保持 BLOCKED，不转宿主 Shell；
+- 微虚机安全不自动解决企业数据授权、网络外发、凭据使用或输出可信性；
+- 首版不启用 VM 快照自动恢复，不维护跨员工可写共享卷；
+- 沙箱进程退出不等于输出已提交，产物生成不等于审批/发布/交付；
+- 不迁移共享 ai_memory，不改变 v0.1.2 已验证的渠道行为；
+- 每阶段经用户确认后推进，不以路线文档代替部署或数据变更授权。
+
+## v0.1.4：平台化加固与第二个部门数字员工
+
+v0.1.4 在 v0.1.3 执行隔离基座上，进入组织授权、扩展 SDK、第二部门数字员工
+与生产运行时加固。以下业务合同仍沿用 v0.1.2 M0 冻结结果。
 
 ### M1：组织授权与身份 Provider 抽象
 
@@ -1245,11 +1386,11 @@ Playbook 治理可跨部门复用，而不是复制证券报告。
 - 两个部署的合同、工具、数据和 Artifact 互不串扰；
 - Shared Capability 由同一 SDK 和注册接口构建，不复制证券报告私有模块；
 - 同 Bot Multi-Playbook 仍由 M2 fixture 验证当前任务优先、确定性选择和歧义澄清；
-- Mac mini 完成跨部门、跨员工和重启后的活体复验。
+- Linux 完成跨部门、跨员工和重启后的活体复验。
 
 ### M4：生产运行时加固
 
-目标是从 Mac mini 单实例稳定运行演进到可恢复、可监控的生产部署。
+目标是从单机 Linux/兼容 Mac mini 的单实例运行演进到可恢复、可监控的生产部署。
 
 范围：
 
@@ -1259,7 +1400,7 @@ Playbook 治理可跨部门复用，而不是复制证券报告。
 - 定义多实例同会话单飞和实例失效接管协议；
 - 增加 `/health/live`、`/health/ready` 和关键依赖 readiness；
 - 增加队列深度、拒绝、超时、模型调用、MCP 和交付指标；
-- 提供容器或标准服务管理部署样例，保留现有 Mac mini 运行方式。
+- 提供 Linux 容器或标准服务管理部署样例，并保留现有 Mac mini 运行方式。
 
 验收：
 
@@ -1288,7 +1429,7 @@ Playbook 治理可跨部门复用，而不是复制证券报告。
 - 员工可以显式归档已交付任务，再创建同 Playbook 的新任务；
 - 历史 WorkItem、合同、Artifact、Publication 和 Delivery 保持不可变可审计。
 
-### v0.1.3 不做事项
+### v0.1.4 不做事项
 
 - 不使用 LLM-first 路由静默选择正式 Playbook；
 - 不恢复允许模型拼接 MCP server/tool 名的通用工具；
@@ -1317,8 +1458,9 @@ v0.0.9  文件输入、OCR、Office/PDF 理解和大文件分析
 v0.1.0  证券行业报告 WorkItem 全生命周期与 signed-link 交付
 v0.1.1  部门数字员工、Job Charter、统一能力池和 Multi-Playbook Foundation
 v0.1.2  企微 Callback/长连接/自建应用 Transport、durable 恢复与安全隔离
-v0.1.3  组织授权、扩展 SDK、第二个部门数字员工和生产运行时加固
-后续     多人治理、多数字员工协作、多格式产物和管理后台
+v0.1.3  固定 CSV 沙箱 MVP、双用户串行隔离、持久化、明确索取与原生文件实收
+v0.1.4  组织授权、扩展 SDK、第二个部门数字员工和生产运行时加固
+v0.1.5+ 多副本治理、多人治理、多数字员工协作、多格式产物和管理后台
 ```
 
 最终目标不是继续增加互不关联的工具，而是让研发团队能够在统一的身份、权限、

@@ -1,0 +1,21 @@
+[project]
+name = "agentseek-execution"
+version = "0.1.0"
+description = "Offline execution contracts for AgentSeek (M1, no Cube integration)"
+requires-python = ">=3.10,<3.14"
+dependencies = []
+
+[project.optional-dependencies]
+broker = ["cryptography==49.0.0"]
+cube = ["cryptography==49.0.0", "cubesandbox==0.7.0"]
+
+[project.scripts]
+agentseek-execution-broker = "agentseek_execution.broker_daemon:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_execution"]

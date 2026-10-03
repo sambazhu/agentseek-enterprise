@@ -220,12 +220,23 @@ class WeComChannel(Channel):
             self._app_transport.bind_inbound(self._handle_application_plain_message)
         app = self._transport.app
         self.app = app
+        workspace_downloads = None
+        if os.getenv("AGENTSEEK_WORKSPACE_DOWNLOAD_MODE", "disabled").strip() != "disabled":
+            from agentseek_files.workspace_download import configured_workspace_downloads
+
+            workspace_downloads = configured_workspace_downloads()
         if app is not None:
             if self._app_transport is not None:
                 self._app_transport.mount(app)
             self._register_artifact_routes(app)
+            if workspace_downloads is not None:
+                from agentseek_wecom.workspace_routes import register_workspace_routes
+
+                register_workspace_routes(app, workspace_downloads)
         elif settings.artifact_delivery_mode == "signed_link":
             raise RuntimeError("signed-link artifact delivery requires a WeCom transport with an ASGI application")
+        elif workspace_downloads is not None:
+            raise RuntimeError("workspace downloads require a transport with an ASGI application")
 
     @property
     def enabled(self) -> bool:
@@ -454,6 +465,7 @@ class WeComChannel(Channel):
         payload: dict[str, Any],
         idempotency_key: str,
         inbox_id: str | None = None,
+        manual_recovery_only: bool = False,
     ) -> str:
         transport = self._require_app_transport()
         source = transport.validate_source(digital_employee_id)
@@ -466,6 +478,8 @@ class WeComChannel(Channel):
         )
         stream_id = f"wecom_app_{hashlib.sha256(stable_scope.encode()).hexdigest()}"
         store = await self._ensure_durable_store()
+        if manual_recovery_only and store is None:
+            raise ValueError("manual-recovery delivery requires durable outbox")
         durable_outbox: OutboxRecord | None = None
         if store is not None:
             durable_outbox = await asyncio.to_thread(
@@ -477,6 +491,7 @@ class WeComChannel(Channel):
                     "digital_employee_id": source,
                     "target": _app_target_envelope(target),
                     "payload": payload,
+                    **({"manual_recovery_only": True} if manual_recovery_only else {}),
                 },
                 reply_deadline=datetime.now(UTC) + timedelta(hours=24),
                 now=datetime.now(UTC),
@@ -506,7 +521,10 @@ class WeComChannel(Channel):
             raise
         except Exception as exc:
             if durable_outbox is not None:
-                await self._mark_outbox(durable_outbox.outbox_id, "failed", error_type=type(exc).__name__)
+                await self._mark_outbox(
+                    durable_outbox.outbox_id, "blocked" if manual_recovery_only else "failed",
+                    error_type="delivery_outcome_ambiguous" if manual_recovery_only else type(exc).__name__,
+                )
             raise
         if durable_outbox is not None:
             await self._mark_outbox(durable_outbox.outbox_id, "delivered")
@@ -1552,6 +1570,9 @@ class WeComChannel(Channel):
             await self._mark_inbox(record.inbox_id, "completed")
 
     async def _recover_application_outbox(self, record: OutboxRecord) -> None:
+        if record.envelope.get("manual_recovery_only") is True:
+            await self._mark_outbox(record.outbox_id, "blocked", error_type="manual_reconciliation_required")
+            return
         transport = self._app_transport
         if transport is None:
             await self._mark_outbox(record.outbox_id, "blocked", error_type="transport_unavailable")
@@ -2534,7 +2555,64 @@ class WeComChannel(Channel):
         if self._on_receive is None:
             logger.warning("wecom.receive handler is not bound")
             return
+        message.context.pop("_native_file_delivery", None)
+        if self.settings.native_file_delivery_enabled:
+            try:
+                await self._bind_native_file_delivery(message)
+            except Exception as exc:
+                logger.warning("wecom.native_file binding unavailable error_type={}", type(exc).__name__)
         await self._on_receive(message)
+
+    async def _bind_native_file_delivery(self, message: ChannelMessage) -> None:
+        from agentseek_files.settings import FilesSettings
+        from agentseek_files.store import LocalFileStore
+
+        from agentseek_wecom.file_delivery import (
+            STATE_KEY,
+            DeliveryLedger,
+            FileDeliveryBinding,
+            issue_capability,
+        )
+
+        # No plaintext-ID fallback for unresolved bot identities, and no group fan-out.
+        address = getattr(message, _CONVERSATION_ADDRESS_ATTR, None)
+        if (not isinstance(address, ConversationAddress) or address.chat_type != "single"
+                or not address.plaintext_userid or self.settings.durable_mode != "sqlite"):
+            return
+        internal = message.context.get(_INTERNAL_CONTEXT_KEY, {})
+        message_id = internal.get("message_id") if isinstance(internal, dict) else None
+        if not isinstance(message_id, str) or not message_id:
+            return
+        files = FilesSettings.from_env()
+        if not files.enabled:
+            return
+        transport = self._require_app_transport()
+        source = transport.validate_source(self.settings.app_default_digital_employee_id)
+        target = WeComAppTarget(users=(address.plaintext_userid,))
+        scope = _file_scope(
+            tenant_id=os.environ.get("AGENTSEEK_ENTERPRISE_TENANT_ID", "default"),
+            employee_id=address.plaintext_userid, session_id=message.session_id,
+            channel=self.name, chat_id=None, message_id=None,
+        )
+
+        async def send(*, media_id, idempotency_key):
+            return await self.send_application_message(
+                digital_employee_id=source, target=target, message_type="file",
+                payload={"media_id": media_id}, idempotency_key=idempotency_key,
+                manual_recovery_only=True,
+            )
+
+        recipient_key = hashlib.sha256(
+            "\x1f".join((transport.tenant_id, transport.agent_id, source, target.stable_scope())).encode()
+        ).hexdigest()
+        binding = FileDeliveryBinding(
+            scope=(scope.tenant_key, scope.employee_key, scope.session_key),
+            message_id=message_id, user_text=content_of(message), recipient_key=recipient_key,
+            store=LocalFileStore(files),
+            ledger=DeliveryLedger(Path(self.settings.native_file_delivery_directory)),
+            upload=transport.upload_media, send=send,
+        )
+        message.context[STATE_KEY] = issue_capability(binding)
 
     def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
         self._dispatch_tasks.discard(task)

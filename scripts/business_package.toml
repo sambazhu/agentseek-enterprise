@@ -1,0 +1,14 @@
+[project]
+name = "agentseek-execution-business"
+version = "0.1.3a0"
+description = "Isolated CSV business node candidate; separate from the gateway and R1"
+requires-python = ">=3.10,<3.14"
+dependencies = ["cryptography==49.0.0", "httpx==0.28.1"]
+
+[build-system]
+requires = ["pdm-backend==2.4.9"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/agentseek_execution"]

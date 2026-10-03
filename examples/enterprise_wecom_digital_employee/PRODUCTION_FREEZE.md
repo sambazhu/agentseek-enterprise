@@ -1,13 +1,15 @@
 ---
-title: Enterprise WeCom v0.1.2 production freeze
+title: Enterprise WeCom production baseline and historical v0.1.2 freeze
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-09-04
+verified_on: 2026-10-03
 sources:
   - CHANGELOG.md
   - docs/concepts/enterprise-wecom-architecture.md
   - ROADMAP.md
+  - V0.1.3_PRODUCTION_INTEGRATION.md
+  - V0.1.3_DUAL_USER_CLOSURE_REPORT.md
   - V0.1.2_M0_1_WECOM_PROTOCOL_BASELINE.md
   - V0.1.2_M0_2_WECOM_TRANSPORT_VERIFICATION_RECORD.md
   - V0.1.2_M0_3_WECOM_DURABLE_VERIFICATION_RECORD.md
@@ -20,7 +22,24 @@ sources:
   - ../../contrib/agentseek-wecom/src/agentseek_wecom/transports/long_connection.py
 ---
 
-# Enterprise WeCom v0.1.2 production freeze
+# Enterprise WeCom production baseline
+
+## v0.1.3 limited CSV MVP — 2026-10-03
+
+| Item | Current boundary |
+| --- | --- |
+| Code promotion | Merge frozen sandbox branch `2ac1f53` into production baseline `b226413b`; retain both histories and production fixes |
+| Verified live scope | One enterprise, two private-chat users, serial fixed CSV execution, explicit file request and user receipt |
+| Default behavior | Basic spec; sandbox tools require a separately approved opt-in business configuration |
+| Field operations | No deployment, restart, broker start, sandbox create, delivery or cleanup authorized by the code merge |
+| Deferred work | Original M3–M6 expansion, general script agent, S3 revision recovery, complete failure/concurrency matrix and upstream synchronization |
+| Immutable tags | Existing enterprise GA and upstream Core tags unchanged; no new broad GA declaration |
+| Integration evidence | [Production integration record](V0.1.3_PRODUCTION_INTEGRATION.md) |
+
+## Historical v0.1.2 freeze
+
+The following baseline, verification and mirror requirements describe the historical
+v0.1.2 GA release, not the current production branch tip.
 
 ## Baseline
 

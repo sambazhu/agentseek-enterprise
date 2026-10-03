@@ -3,7 +3,7 @@ title: Enterprise WeCom changelog
 type: reference
 audience: [A3, A4]
 runs: no
-verified_on: 2026-09-04
+verified_on: 2026-10-03
 sources:
   - docs/concepts/enterprise-wecom-architecture.md
   - contrib/agentseek-files/src/agentseek_files
@@ -15,9 +15,32 @@ sources:
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_6_WECOM_APPLICATION_TRANSPORT.md
   - examples/enterprise_wecom_digital_employee/V0.1.2_M0_6_WECOM_APPLICATION_VERIFICATION_RECORD.md
   - examples/enterprise_wecom_digital_employee/GA_READINESS_V0.1.2.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_DUAL_USER_CLOSURE_REPORT.md
+  - examples/enterprise_wecom_digital_employee/V0.1.3_PRODUCTION_INTEGRATION.md
 ---
 
 # Enterprise WeCom changelog
+
+## v0.1.3 limited CSV MVP — 2026-10-03
+
+Scope — fixed CSV group-wise aggregation, one enterprise, two direct-chat users,
+serial execution and explicit native file delivery with actual receipt verification.
+This is not completion of the original M0–M6 expansion plan or general sandbox GA.
+
+| Area | Change |
+| --- | --- |
+| Execution | Opt-in remote CubeSandbox broker, one approved create per request, persisted attempt output and active closeout evidence |
+| Request isolation | Current-request result attribution and deterministic ledger-backed reply guard; historical success cannot substitute for a new execution |
+| Workspace | Immutable attempt/file association; reads do not recreate files or renew their lifetime |
+| Delivery | Explicit user selection, ambiguous-name rejection, trusted recipient binding and native file delivery |
+| Observation | Redacted loguru tool events with request digests; logs do not replace ledger state or user receipt |
+| Production integration | Preserve existing memory isolation, Work replay/confirmation and skill/MCP synchronization fixes |
+
+Sandbox tools remain absent from the default spec. Code promotion does not change
+deployed services, approve new sandbox tasks or enable automatic delivery/retry.
+The upstream AgentSeek/Bub versions and existing GA tags remain unchanged.
+Deferred scope and combined regression results are listed in the
+[production integration record](V0.1.3_PRODUCTION_INTEGRATION.md).
 
 ## Post-GA architecture clarification — 2026-09-04
 
